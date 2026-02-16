@@ -1,3 +1,16 @@
+
+import os
+st.write(os.listdir())
+
+
+
+
+
+
+
+
+
+
 import streamlit as st
 import bcrypt
 from database import create_tables, get_connection
@@ -105,3 +118,4 @@ st.subheader("Summary")
 st.write(f"Income: ₦{saved_income}")
 st.write(f"Expenses: ₦{total_expenses}")
 st.write(f"Balance: ₦{balance}")
+
