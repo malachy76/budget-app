@@ -1,2 +1,2 @@
-streamlit
-bcrypt
+streamlit==1.31.1
+bcrypt==4.1.2
