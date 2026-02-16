@@ -44,7 +44,7 @@ if st.session_state.user_id is None:
         if st.button("Login"):
             if login(username, password):
                 st.success("Logged in")
-                st.experimental_rerun()
+             st.rerun()
             else:
                 st.error("Invalid credentials")
 
@@ -105,4 +105,5 @@ st.subheader("Summary")
 st.write(f"Income: ₦{saved_income}")
 st.write(f"Expenses: ₦{total_expenses}")
 st.write(f"Balance: ₦{balance}")
+
 
