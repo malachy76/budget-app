@@ -44,7 +44,7 @@ if st.session_state.user_id is None:
         if st.button("Login"):
             if login(username, password):
                 st.success("Logged in")
-                st.rerun()          # Indented correctly
+                st.experimental_rerun()
             else:
                 st.error("Invalid credentials")
 
@@ -63,7 +63,7 @@ if st.session_state.user_id is None:
 # ---------------- LOGOUT ----------------
 if st.button("Logout"):
     st.session_state.user_id = None
-    st.rerun()          # Replaced deprecated experimental_rerun
+    st.experimental_rerun()
 
 # ---------------- APP CONTENT ----------------
 st.subheader("Add Income")
@@ -105,4 +105,3 @@ st.subheader("Summary")
 st.write(f"Income: ₦{saved_income}")
 st.write(f"Expenses: ₦{total_expenses}")
 st.write(f"Balance: ₦{balance}")
-
