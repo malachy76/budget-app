@@ -3,8 +3,9 @@ import sqlite3
 DB_NAME = "budget_v2.db"
 
 def get_connection():
+    # Create a connection with foreign key enforcement
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    conn.execute("PRAGMA foreign_keys = ON")  # Enforce foreign key constraints
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 def create_tables():
@@ -52,6 +53,7 @@ def create_tables():
 
     conn.commit()
     conn.close()
+
 
 
 
