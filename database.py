@@ -1,4 +1,4 @@
-  import sqlite3
+import sqlite3
 
 DB_NAME = "budget_v2.db"
 
@@ -43,3 +43,5 @@ def create_tables():
 
     conn.commit()
     conn.close()
+
+
