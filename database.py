@@ -3,8 +3,7 @@ import sqlite3
 DB_NAME = "budget_simple.db"
 
 def get_connection():
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    return conn
+    return sqlite3.connect(DB_NAME, check_same_thread=False)
 
 def create_tables():
     conn = get_connection()
@@ -30,7 +29,8 @@ def create_tables():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
         name TEXT,
-        amount INTEGER
+        amount INTEGER,
+        created_at TEXT
     )
     """)
 
