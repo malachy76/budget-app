@@ -1,42 +1,35 @@
 import sqlite3
 
-DB_NAME = "budget_v2.db"
-
 def get_connection():
-    # Create a connection with foreign key enforcement
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    return sqlite3.connect("budget.db", check_same_thread=False)
 
 def create_tables():
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Users table
+    # Users
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        password BLOB NOT NULL
+        username TEXT UNIQUE,
+        password BLOB
     )
     """)
 
-    # Income table (one per user)
+    # Income
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS income (
-        user_id INTEGER PRIMARY KEY,
-        amount INTEGER NOT NULL,
-        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        user_id INTEGER,
+        amount INTEGER
     )
     """)
 
-    # Expense lists
+    # Expense lists (categories)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS expense_lists (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        name TEXT NOT NULL,
-        FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        user_id INTEGER,
+        name TEXT
     )
     """)
 
@@ -44,16 +37,11 @@ def create_tables():
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS expenses (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        list_id INTEGER NOT NULL,
-        name TEXT NOT NULL,
-        amount INTEGER NOT NULL,
-        FOREIGN KEY(list_id) REFERENCES expense_lists(id) ON DELETE CASCADE
+        list_id INTEGER,
+        name TEXT,
+        amount INTEGER
     )
     """)
 
     conn.commit()
     conn.close()
-
-
-
-
