@@ -25,6 +25,13 @@ def create_tables():
     """)
 
     cursor.execute("""
+    CREATE TABLE IF NOT EXISTS savings (
+        user_id INTEGER PRIMARY KEY,
+        goal INTEGER
+    )
+    """)
+
+    cursor.execute("""
     CREATE TABLE IF NOT EXISTS expenses (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
