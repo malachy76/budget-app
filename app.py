@@ -2,22 +2,22 @@ import streamlit as st
 import bcrypt
 import pandas as pd
 import matplotlib.pyplot as plt
-from database import create_tables, get_connection
+from datetime import datetime
+from database import get_connection, create_tables
 
-# ---------------- PAGE SETUP ----------------
-st.set_page_config(page_title="Budget App", page_icon="💰")
+st.set_page_config(page_title="Simple Budget App", page_icon="💰")
 
 create_tables()
 conn = get_connection()
 cursor = conn.cursor()
 
-st.title("💰 Budget App")
+st.title("💰 Simple Budget App")
 
 # ---------------- SESSION ----------------
 if "user_id" not in st.session_state:
     st.session_state.user_id = None
 
-# ---------------- AUTH FUNCTIONS ----------------
+# ---------------- AUTH ----------------
 def login(username, password):
     cursor.execute(
         "SELECT id, password FROM users WHERE username=?",
@@ -28,7 +28,6 @@ def login(username, password):
         st.session_state.user_id = user[0]
         return True
     return False
-
 
 def register(username, password):
     hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
@@ -42,7 +41,7 @@ def register(username, password):
     except:
         return False
 
-# ---------------- LOGIN / REGISTER ----------------
+# ---------------- LOGIN UI ----------------
 if st.session_state.user_id is None:
     tab1, tab2 = st.tabs(["Login", "Register"])
 
@@ -53,14 +52,14 @@ if st.session_state.user_id is None:
             if login(u, p):
                 st.rerun()
             else:
-                st.error("Invalid username or password")
+                st.error("Invalid login")
 
     with tab2:
-        nu = st.text_input("New Username")
-        np = st.text_input("New Password", type="password")
+        u2 = st.text_input("New Username")
+        p2 = st.text_input("New Password", type="password")
         if st.button("Register"):
-            if register(nu, np):
-                st.success("Account created. Please login.")
+            if register(u2, p2):
+                st.success("Account created. Login now.")
             else:
                 st.error("Username already exists")
 
@@ -90,133 +89,101 @@ cursor.execute("SELECT amount FROM income WHERE user_id=?", (user_id,))
 row = cursor.fetchone()
 saved_income = row[0] if row else 0
 
-# ---------------- EXPENSE LISTS ----------------
-st.subheader("📂 Expense Lists")
+# ---------------- ADD EXPENSE ----------------
+st.subheader("➕ Add Expense")
 
-new_list = st.text_input("Create new expense list (e.g. Food, Transport)")
-if st.button("Create Expense List"):
-    if new_list:
+ename = st.text_input("Expense name")
+eamount = st.number_input("Amount", min_value=0)
+
+if st.button("Add Expense"):
+    if ename and eamount > 0:
         cursor.execute(
-            "INSERT INTO expense_lists (user_id, name) VALUES (?, ?)",
-            (user_id, new_list)
+            "INSERT INTO expenses (user_id, name, amount, created_at) VALUES (?, ?, ?, ?)",
+            (user_id, ename, eamount, datetime.now().strftime("%Y-%m"))
         )
         conn.commit()
-        st.success("Expense list created")
+        st.success("Expense added")
+        st.rerun()
+
+# ---------------- EXPENSE LIST ----------------
+st.subheader("📋 Expenses")
 
 cursor.execute(
-    "SELECT id, name FROM expense_lists WHERE user_id=?",
+    "SELECT id, name, amount FROM expenses WHERE user_id=?",
     (user_id,)
 )
-lists = cursor.fetchall()
-
-selected_list_id = None
-
-if not lists:
-    st.info("👆 Create your first expense list to start adding expenses.")
-else:
-    list_dict = {name: list_id for list_id, name in lists}
-    selected_list = st.selectbox("Select expense list", list_dict.keys())
-    selected_list_id = list_dict[selected_list]
-
-# ---------------- ADD EXPENSE ----------------
-if selected_list_id:
-    st.subheader("➕ Add Expense")
-    ename = st.text_input("Expense name")
-    eamount = st.number_input("Expense amount", min_value=0)
-
-    if st.button("Add Expense"):
-        if ename and eamount > 0:
-            cursor.execute(
-                "INSERT INTO expenses (list_id, name, amount) VALUES (?, ?, ?)",
-                (selected_list_id, ename, eamount)
-            )
-            conn.commit()
-            st.success("Expense added")
-            st.rerun()
-
-# ---------------- EDIT / DELETE EXPENSES ----------------
-st.subheader("📋 Expenses (Edit / Delete)")
-
-cursor.execute("""
-SELECT e.id, el.name, e.name, e.amount
-FROM expenses e
-JOIN expense_lists el ON e.list_id = el.id
-WHERE el.user_id = ?
-""", (user_id,))
-
 expenses = cursor.fetchall()
-total_expenses = 0
+
+total = 0
 
 if expenses:
-    for exp_id, category, name, amount in expenses:
-        col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+    for exp_id, name, amount in expenses:
+        col1, col2, col3 = st.columns([4, 2, 1])
 
         with col1:
-            st.write(f"**{category}** – {name}")
+            st.write(name)
 
         with col2:
             new_amount = st.number_input(
                 "₦",
                 value=amount,
-                min_value=0,
-                key=f"edit_{exp_id}"
+                key=f"amt_{exp_id}"
             )
 
         with col3:
-            if st.button("💾 Save", key=f"save_{exp_id}"):
-                cursor.execute(
-                    "UPDATE expenses SET amount=? WHERE id=?",
-                    (new_amount, exp_id)
-                )
-                conn.commit()
-                st.success("Updated")
-                st.rerun()
-
-        with col4:
-            if st.button("🗑 Delete", key=f"delete_{exp_id}"):
+            if st.button("🗑", key=f"del_{exp_id}"):
                 cursor.execute(
                     "DELETE FROM expenses WHERE id=?",
                     (exp_id,)
                 )
                 conn.commit()
-                st.warning("Deleted")
                 st.rerun()
 
-        total_expenses += amount
+        if new_amount != amount:
+            cursor.execute(
+                "UPDATE expenses SET amount=? WHERE id=?",
+                (new_amount, exp_id)
+            )
+            conn.commit()
+
+        total += amount
 else:
-    st.info("No expenses added yet.")
+    st.info("No expenses yet")
 
 # ---------------- SUMMARY ----------------
 st.subheader("📊 Summary")
 st.write(f"💵 Income: ₦{saved_income}")
-st.write(f"📉 Total Expenses: ₦{total_expenses}")
-st.write(f"💰 Balance: ₦{saved_income - total_expenses}")
+st.write(f"📉 Total Expenses: ₦{total}")
+st.write(f"💰 Balance: ₦{saved_income - total}")
 
-# ---------------- CHARTS ----------------
-st.subheader("📈 Expense Analytics")
+# ---------------- MONTHLY BREAKDOWN ----------------
+st.subheader("📅 Monthly Breakdown")
 
-if expenses:
-    df = pd.DataFrame(expenses, columns=["ID", "Category", "Expense", "Amount"])
+cursor.execute(
+    "SELECT DISTINCT created_at FROM expenses WHERE user_id=? ORDER BY created_at DESC",
+    (user_id,)
+)
+months = [m[0] for m in cursor.fetchall()]
 
-    fig1, ax1 = plt.subplots()
-    df.groupby("Category")["Amount"].sum().plot(
-        kind="pie",
-        autopct="%1.1f%%",
-        ax=ax1
+if months:
+    selected_month = st.selectbox("Select month", months)
+
+    cursor.execute(
+        "SELECT name, amount FROM expenses WHERE user_id=? AND created_at=?",
+        (user_id, selected_month)
     )
-    ax1.set_ylabel("")
-    st.pyplot(fig1)
+    month_data = cursor.fetchall()
 
-    fig2, ax2 = plt.subplots()
-    df.groupby("Category")["Amount"].sum().plot(
-        kind="bar",
-        ax=ax2
-    )
-    ax2.set_ylabel("Amount (₦)")
-    st.pyplot(fig2)
+    df = pd.DataFrame(month_data, columns=["Expense", "Amount"])
+    total_month = df["Amount"].sum()
 
-# ---------------- MONTHLY REPORT ----------------
-st.subheader("📅 Monthly Report")
-st.write(f"💵 Income: ₦{saved_income}")
-st.write(f"📉 Spent: ₦{total_expenses}")
-st.write(f"💰 Savings: ₦{saved_income - total_expenses}")
+    st.write(f"📉 Spent in {selected_month}: ₦{total_month}")
+    st.write(f"💰 Balance: ₦{saved_income - total_month}")
+
+    st.dataframe(df)
+
+    fig, ax = plt.subplots()
+    df.plot(kind="bar", x="Expense", y="Amount", ax=ax)
+    st.pyplot(fig)
+else:
+    st.info("No monthly data yet.")
