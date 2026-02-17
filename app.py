@@ -45,7 +45,7 @@ if st.session_state.user_id is None:
             if submitted:
                 if login(u, p):
                     st.success("Logged in successfully")
-                    st.experimental_rerun()
+                    st.rerun()
                 else:
                     st.error("Invalid username or password")
 
@@ -67,7 +67,7 @@ user_id = st.session_state.user_id
 if st.button("Logout"):
     st.session_state.user_id = None
     st.session_state.selected_list_id = None
-    st.experimental_rerun()
+    st.rerun()
 
 # ---------------- INCOME ----------------
 st.subheader("💵 Income")
