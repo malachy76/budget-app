@@ -1,7 +1,9 @@
 import streamlit as st
 import bcrypt
+import sqlite3
 from database import create_tables, get_connection
 
+# ---------------- CONFIG ----------------
 st.set_page_config(page_title="Budget App", page_icon="💰")
 create_tables()
 conn = get_connection()
@@ -19,18 +21,23 @@ if "selected_list_id" not in st.session_state:
 def login(username, password):
     cursor.execute("SELECT id, password FROM users WHERE username=?", (username,))
     user = cursor.fetchone()
-    if user and bcrypt.checkpw(password.encode(), user[1]):
-        st.session_state.user_id = user[0]
-        return True
+    if user:
+        stored_hash = user[1]
+        # Ensure stored hash is bytes
+        if isinstance(stored_hash, str):
+            stored_hash = stored_hash.encode("utf-8")
+        if bcrypt.checkpw(password.encode("utf-8"), stored_hash):
+            st.session_state.user_id = user[0]
+            return True
     return False
 
 def register(username, password):
-    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+    hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
     try:
         cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed))
         conn.commit()
         return True
-    except:
+    except sqlite3.IntegrityError:
         return False
 
 # ---------------- LOGIN / REGISTER ----------------
@@ -136,3 +143,5 @@ st.subheader("📊 Summary")
 st.write(f"Income: ₦{saved_income}")
 st.write(f"Expenses (selected list): ₦{total_expenses}")
 st.write(f"Balance: ₦{saved_income - total_expenses}")
+
+
