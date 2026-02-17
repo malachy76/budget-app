@@ -3,4 +3,3 @@ bcrypt
 pandas
 matplotlib
 reportlab
-openpyxl
