@@ -233,3 +233,7 @@ if months:
 
     st.download_button(
         "⬇️ Download PDF",
+        pdf_buffer.getvalue(),
+        file_name=f"budget_{month}.pdf",
+        mime="application/pdf"
+    )
