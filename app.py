@@ -113,30 +113,59 @@ savings_goal = row[0] if row else 0
 st.subheader("➕ Add Expense")
 
 ename = st.text_input("Expense name")
+category = st.selectbox("Category", ["Food", "Rent", "Transport", "Entertainment", "Other"])
 eamount = st.number_input("Amount", min_value=0)
 
 if st.button("Add Expense"):
     if ename and eamount > 0:
         cursor.execute(
-            "INSERT INTO expenses (user_id, name, amount, created_at) VALUES (?, ?, ?, ?)",
-            (user_id, ename, eamount, datetime.now().strftime("%Y-%m"))
+            "INSERT INTO expenses (user_id, name, category, amount, created_at) VALUES (?, ?, ?, ?, ?)",
+            (user_id, ename, category, eamount, datetime.now().strftime("%Y-%m"))
         )
         conn.commit()
         st.rerun()
 
 # ---------------- EXPENSES ----------------
 cursor.execute(
-    "SELECT id, name, amount FROM expenses WHERE user_id=?",
+    "SELECT id, name, category, amount FROM expenses WHERE user_id=?",
     (user_id,)
 )
 expenses = cursor.fetchall()
-total_spent = sum([e[2] for e in expenses])
+total_spent = sum([e[3] for e in expenses])
 
 st.subheader("📊 Dashboard")
 
 st.metric("Income", f"₦{saved_income}")
 st.metric("Expenses", f"₦{total_spent}")
 st.metric("Balance", f"₦{saved_income - total_spent}")
+
+df = pd.DataFrame(expenses, columns=["ID", "Name", "Category", "Amount"])
+st.dataframe(df)
+
+# ---------------- EDIT/DELETE ----------------
+st.subheader("✏️ Manage Expenses")
+for exp in expenses:
+    exp_id, exp_name, exp_cat, exp_amt = exp
+    col1, col2 = st.columns([1,1])
+    with col1:
+        if st.button(f"Edit {exp_name}", key=f"edit_{exp_id}"):
+            new_name = st.text_input("New name", exp_name, key=f"name_{exp_id}")
+            new_cat = st.selectbox("New category", ["Food", "Rent", "Transport", "Entertainment", "Other"],
+                                   index=["Food","Rent","Transport","Entertainment","Other"].index(exp_cat),
+                                   key=f"cat_{exp_id}")
+            new_amt = st.number_input("New amount", value=exp_amt, key=f"amt_{exp_id}")
+            if st.button("Save Changes", key=f"save_{exp_id}"):
+                cursor.execute(
+                    "UPDATE expenses SET name=?, category=?, amount=? WHERE id=?",
+                    (new_name, new_cat, new_amt, exp_id)
+                )
+                conn.commit()
+                st.rerun()
+    with col2:
+        if st.button(f"Delete {exp_name}", key=f"del_{exp_id}"):
+            cursor.execute("DELETE FROM expenses WHERE id=?", (exp_id,))
+            conn.commit()
+            st.rerun()
 
 # ---------------- ALERTS ----------------
 st.subheader("🔔 Alerts")
@@ -174,16 +203,16 @@ if months:
     month = st.selectbox("Select month", months)
 
     cursor.execute(
-        "SELECT name, amount FROM expenses WHERE user_id=? AND created_at=?",
+        "SELECT name, category, amount FROM expenses WHERE user_id=? AND created_at=?",
         (user_id, month)
     )
     data = cursor.fetchall()
 
-    df = pd.DataFrame(data, columns=["Expense", "Amount"])
-    st.dataframe(df)
+    df_month = pd.DataFrame(data, columns=["Expense", "Category", "Amount"])
+    st.dataframe(df_month)
 
     fig, ax = plt.subplots()
-    df.plot(kind="bar", x="Expense", y="Amount", ax=ax)
+    df_month.groupby("Category").sum().plot(kind="pie", y="Amount", ax=ax, autopct='%1.1f%%')
     st.pyplot(fig)
 
     # PDF export
@@ -192,11 +221,11 @@ if months:
     text = c.beginText(40, 800)
     text.textLine(f"Monthly Report: {month}")
     text.textLine(f"Income: ₦{saved_income}")
-    text.textLine(f"Spent: ₦{df['Amount'].sum()}")
+    text.textLine(f"Spent: ₦{df_month['Amount'].sum()}")
     text.textLine("")
 
-    for _, r in df.iterrows():
-        text.textLine(f"{r['Expense']} - ₦{r['Amount']}")
+    for _, r in df_month.iterrows():
+        text.textLine(f"{r['Expense']} ({r['Category']}) - ₦{r['Amount']}")
 
     c.drawText(text)
     c.showPage()
@@ -205,6 +234,4 @@ if months:
     st.download_button(
         "⬇️ Download PDF",
         pdf_buffer.getvalue(),
-        file_name=f"budget_{month}.pdf",
-        mime="application/pdf"
-    )
+        file_name=f"budget_{month}.pdf
