@@ -24,7 +24,6 @@ def login(username, password):
         (username,)
     )
     user = cursor.fetchone()
-
     if user and bcrypt.checkpw(password.encode(), user[1]):
         st.session_state.user_id = user[0]
         return True
@@ -133,23 +132,56 @@ if selected_list_id:
             )
             conn.commit()
             st.success("Expense added")
+            st.rerun()
 
-# ---------------- DISPLAY EXPENSES ----------------
-st.subheader("📋 Expenses")
+# ---------------- EDIT / DELETE EXPENSES ----------------
+st.subheader("📋 Expenses (Edit / Delete)")
+
 cursor.execute("""
-SELECT el.name, e.name, e.amount
+SELECT e.id, el.name, e.name, e.amount
 FROM expenses e
 JOIN expense_lists el ON e.list_id = el.id
 WHERE el.user_id = ?
 """, (user_id,))
 
-expense_data = cursor.fetchall()
-
+expenses = cursor.fetchall()
 total_expenses = 0
 
-if expense_data:
-    for category, name, amount in expense_data:
-        st.write(f"- **{category}** | {name}: ₦{amount}")
+if expenses:
+    for exp_id, category, name, amount in expenses:
+        col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+
+        with col1:
+            st.write(f"**{category}** – {name}")
+
+        with col2:
+            new_amount = st.number_input(
+                "₦",
+                value=amount,
+                min_value=0,
+                key=f"edit_{exp_id}"
+            )
+
+        with col3:
+            if st.button("💾 Save", key=f"save_{exp_id}"):
+                cursor.execute(
+                    "UPDATE expenses SET amount=? WHERE id=?",
+                    (new_amount, exp_id)
+                )
+                conn.commit()
+                st.success("Updated")
+                st.rerun()
+
+        with col4:
+            if st.button("🗑 Delete", key=f"delete_{exp_id}"):
+                cursor.execute(
+                    "DELETE FROM expenses WHERE id=?",
+                    (exp_id,)
+                )
+                conn.commit()
+                st.warning("Deleted")
+                st.rerun()
+
         total_expenses += amount
 else:
     st.info("No expenses added yet.")
@@ -163,11 +195,9 @@ st.write(f"💰 Balance: ₦{saved_income - total_expenses}")
 # ---------------- CHARTS ----------------
 st.subheader("📈 Expense Analytics")
 
-if expense_data:
-    df = pd.DataFrame(expense_data, columns=["Category", "Expense", "Amount"])
+if expenses:
+    df = pd.DataFrame(expenses, columns=["ID", "Category", "Expense", "Amount"])
 
-    # Pie Chart
-    st.write("### Where your money goes")
     fig1, ax1 = plt.subplots()
     df.groupby("Category")["Amount"].sum().plot(
         kind="pie",
@@ -177,8 +207,6 @@ if expense_data:
     ax1.set_ylabel("")
     st.pyplot(fig1)
 
-    # Bar Chart
-    st.write("### Expenses per category")
     fig2, ax2 = plt.subplots()
     df.groupby("Category")["Amount"].sum().plot(
         kind="bar",
@@ -189,7 +217,6 @@ if expense_data:
 
 # ---------------- MONTHLY REPORT ----------------
 st.subheader("📅 Monthly Report")
-
 st.write(f"💵 Income: ₦{saved_income}")
-st.write(f"📉 Total spent: ₦{total_expenses}")
+st.write(f"📉 Spent: ₦{total_expenses}")
 st.write(f"💰 Savings: ₦{saved_income - total_expenses}")
