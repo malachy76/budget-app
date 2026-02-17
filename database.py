@@ -7,16 +7,16 @@ def create_tables():
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Users table
+    # Users
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE,
-        password TEXT
+        password BLOB
     )
     """)
 
-    # Income table (linked to user)
+    # Income
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS income (
         user_id INTEGER,
@@ -24,10 +24,20 @@ def create_tables():
     )
     """)
 
-    # Expenses table (linked to user)
+    # Expense lists (categories)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS expense_lists (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        name TEXT
+    )
+    """)
+
+    # Expenses
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS expenses (
-        user_id INTEGER,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        list_id INTEGER,
         name TEXT,
         amount INTEGER
     )
@@ -35,3 +45,5 @@ def create_tables():
 
     conn.commit()
     conn.close()
+
+
