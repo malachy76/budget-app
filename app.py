@@ -2,7 +2,6 @@ import streamlit as st
 import bcrypt
 from database import create_tables, get_connection
 
-# ---------------- SETUP ----------------
 st.set_page_config(page_title="Budget App", page_icon="💰")
 
 create_tables()
@@ -11,72 +10,64 @@ cursor = conn.cursor()
 
 st.title("💰 Budget App")
 
-# ---------------- SESSION STATE ----------------
+# ---------------- SESSION ----------------
 if "user_id" not in st.session_state:
     st.session_state.user_id = None
 
-# ---------------- AUTH FUNCTIONS ----------------
+# ---------------- AUTH ----------------
 def login(username, password):
-    cursor.execute(
-        "SELECT id, password FROM users WHERE username=?",
-        (username,)
-    )
+    cursor.execute("SELECT id, password FROM users WHERE username=?", (username,))
     user = cursor.fetchone()
-
     if user and bcrypt.checkpw(password.encode(), user[1]):
         st.session_state.user_id = user[0]
         return True
     return False
 
-
 def register(username, password):
-    hashed_password = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
     try:
         cursor.execute(
             "INSERT INTO users (username, password) VALUES (?, ?)",
-            (username, hashed_password)
+            (username, hashed)
         )
         conn.commit()
         return True
     except:
         return False
 
-# ---------------- LOGIN / REGISTER ----------------
+# ---------------- LOGIN UI ----------------
 if st.session_state.user_id is None:
     tab1, tab2 = st.tabs(["Login", "Register"])
 
     with tab1:
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-
+        u = st.text_input("Username")
+        p = st.text_input("Password", type="password")
         if st.button("Login"):
-            if login(username, password):
-                st.success("Logged in successfully")
+            if login(u, p):
                 st.rerun()
             else:
-                st.error("Invalid username or password")
+                st.error("Invalid login")
 
     with tab2:
-        new_username = st.text_input("New Username")
-        new_password = st.text_input("New Password", type="password")
-
+        nu = st.text_input("New Username")
+        np = st.text_input("New Password", type="password")
         if st.button("Register"):
-            if register(new_username, new_password):
-                st.success("Account created. Please login.")
+            if register(nu, np):
+                st.success("Account created. Login now.")
             else:
-                st.error("Username already exists")
+                st.error("Username exists")
 
     st.stop()
+
+user_id = st.session_state.user_id
 
 # ---------------- LOGOUT ----------------
 if st.button("Logout"):
     st.session_state.user_id = None
     st.rerun()
 
-user_id = st.session_state.user_id
-
 # ---------------- INCOME ----------------
-st.subheader("Add Income")
+st.subheader("💵 Income")
 income = st.number_input("Enter income", min_value=0)
 
 if st.button("Save Income"):
@@ -86,44 +77,70 @@ if st.button("Save Income"):
         (user_id, income)
     )
     conn.commit()
-    st.success("Income saved")
 
-cursor.execute(
-    "SELECT amount FROM income WHERE user_id=?",
-    (user_id,)
-)
+cursor.execute("SELECT amount FROM income WHERE user_id=?", (user_id,))
 row = cursor.fetchone()
 saved_income = row[0] if row else 0
 
-# ---------------- EXPENSES ----------------
-st.subheader("Add Expense")
-expense_name = st.text_input("Expense name")
-expense_amount = st.number_input("Expense amount", min_value=0)
+# ---------------- EXPENSE LISTS ----------------
+st.subheader("📂 Expense Lists")
+
+new_list = st.text_input("Create new expense list (e.g. Food, Transport)")
+if st.button("Create List"):
+    if new_list:
+        cursor.execute(
+            "INSERT INTO expense_lists (user_id, name) VALUES (?, ?)",
+            (user_id, new_list)
+        )
+        conn.commit()
+        st.success("List created")
+
+cursor.execute(
+    "SELECT id, name FROM expense_lists WHERE user_id=?",
+    (user_id,)
+)
+lists = cursor.fetchall()
+
+if not lists:
+    st.info("Create an expense list to start adding expenses.")
+    st.stop()
+
+list_dict = {name: list_id for list_id, name in lists}
+selected_list = st.selectbox("Select expense list", list_dict.keys())
+selected_list_id = list_dict[selected_list]
+
+# ---------------- ADD EXPENSE ----------------
+st.subheader("➕ Add Expense")
+ename = st.text_input("Expense name")
+eamount = st.number_input("Amount", min_value=0)
 
 if st.button("Add Expense"):
-    if expense_name and expense_amount > 0:
+    if ename and eamount > 0:
         cursor.execute(
-            "INSERT INTO expenses (user_id, name, amount) VALUES (?, ?, ?)",
-            (user_id, expense_name, expense_amount)
+            "INSERT INTO expenses (list_id, name, amount) VALUES (?, ?, ?)",
+            (selected_list_id, ename, eamount)
         )
         conn.commit()
         st.success("Expense added")
 
+# ---------------- DISPLAY EXPENSES ----------------
+st.subheader(f"📋 Expenses in {selected_list}")
+
 cursor.execute(
-    "SELECT name, amount FROM expenses WHERE user_id=?",
-    (user_id,)
+    "SELECT name, amount FROM expenses WHERE list_id=?",
+    (selected_list_id,)
 )
 expenses = cursor.fetchall()
 
-# ---------------- SUMMARY ----------------
-total_expenses = sum(e[1] for e in expenses)
-balance = saved_income - total_expenses
-
-st.subheader("Summary")
-st.write(f"💵 Income: ₦{saved_income}")
-st.write(f"📉 Expenses: ₦{total_expenses}")
-st.write(f"💰 Balance: ₦{balance}")
-
-st.subheader("Expense List")
+total_expenses = 0
 for name, amount in expenses:
     st.write(f"- {name}: ₦{amount}")
+    total_expenses += amount
+
+balance = saved_income - total_expenses
+
+# ---------------- SUMMARY ----------------
+st.subheader("📊 Summary")
+st.write(f"Income: ₦{saved_income}")
+st.write(f"Expenses (this list): ₦{total_expenses}")
+st.write(f"Balance: ₦{balance}")
