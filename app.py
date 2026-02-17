@@ -144,3 +144,44 @@ st.subheader("📊 Summary")
 st.write(f"Income: ₦{saved_income}")
 st.write(f"Expenses (this list): ₦{total_expenses}")
 st.write(f"Balance: ₦{balance}")
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+st.subheader("📊 Expense Analytics")
+
+# Fetch all expenses for this user
+cursor.execute("""
+SELECT el.name, e.amount
+FROM expenses e
+JOIN expense_lists el ON e.list_id = el.id
+WHERE el.user_id = ?
+""", (user_id,))
+
+data = cursor.fetchall()
+
+if data:
+    df = pd.DataFrame(data, columns=["Category", "Amount"])
+
+    # Pie chart
+    st.write("### Where your money goes")
+    fig1, ax1 = plt.subplots()
+    df.groupby("Category")["Amount"].sum().plot(
+        kind="pie",
+        autopct="%1.1f%%",
+        ax=ax1
+    )
+    ax1.set_ylabel("")
+    st.pyplot(fig1)
+
+    # Bar chart
+    st.write("### Expenses per category")
+    fig2, ax2 = plt.subplots()
+    df.groupby("Category")["Amount"].sum().plot(
+        kind="bar",
+        ax=ax2
+    )
+    ax2.set_ylabel("Amount (₦)")
+    st.pyplot(fig2)
+else:
+    st.info("No expense data available for charts yet.")
