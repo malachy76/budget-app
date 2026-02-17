@@ -1,13 +1,14 @@
-import sqlite3
+  import sqlite3
+
+DB_NAME = "budget_v2.db"
 
 def get_connection():
-    return sqlite3.connect("budget.db", check_same_thread=False)
+    return sqlite3.connect(DB_NAME, check_same_thread=False)
 
 def create_tables():
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Users
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -16,7 +17,6 @@ def create_tables():
     )
     """)
 
-    # Income
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS income (
         user_id INTEGER,
@@ -24,7 +24,6 @@ def create_tables():
     )
     """)
 
-    # Expense lists (categories)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS expense_lists (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,7 +32,6 @@ def create_tables():
     )
     """)
 
-    # Expenses
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS expenses (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,5 +43,3 @@ def create_tables():
 
     conn.commit()
     conn.close()
-
-
