@@ -9,7 +9,7 @@ def create_tables():
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Users table (STRONG PROFILE)
+    # USERS
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -18,24 +18,24 @@ def create_tables():
         email TEXT UNIQUE NOT NULL,
         username TEXT UNIQUE NOT NULL,
         password BLOB NOT NULL,
+        email_verified INTEGER DEFAULT 0,
+        verification_code TEXT,
         created_at TEXT
     )
     """)
 
+    # KYC TABLE
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS income (
+    CREATE TABLE IF NOT EXISTS kyc (
         user_id INTEGER PRIMARY KEY,
-        amount INTEGER
+        bvn TEXT,
+        nin TEXT,
+        status TEXT DEFAULT 'pending',
+        FOREIGN KEY(user_id) REFERENCES users(id)
     )
     """)
 
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS savings (
-        user_id INTEGER PRIMARY KEY,
-        goal INTEGER
-    )
-    """)
-
+    # EXPENSES
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS expenses (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
