@@ -1,11 +1,10 @@
 import streamlit as st
 import bcrypt
-import pandas as pd
-import matplotlib.pyplot as plt
+import random
 from datetime import datetime
 from database import get_connection, create_tables
 
-st.set_page_config(page_title="Simple Budget App", page_icon="💰", layout="centered")
+st.set_page_config("Simple Budget App", "💰", layout="centered")
 
 create_tables()
 conn = get_connection()
@@ -17,97 +16,134 @@ st.title("💰 Simple Budget App")
 if "user_id" not in st.session_state:
     st.session_state.user_id = None
 
-# ---------------- AUTH FUNCTIONS ----------------
-def login(username, password):
-    cursor.execute(
-        "SELECT id, password FROM users WHERE username=?",
-        (username,)
-    )
-    user = cursor.fetchone()
-    if user and bcrypt.checkpw(password.encode(), user[1]):
-        st.session_state.user_id = user[0]
-        return True
-    return False
+# ---------------- HELPERS ----------------
+def generate_code():
+    return str(random.randint(100000, 999999))
 
-
-def register(surname, other_names, email, username, password):
+def register_user(surname, other_names, email, username, password):
+    code = generate_code()
     hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+
     try:
         cursor.execute("""
             INSERT INTO users 
-            (surname, other_names, email, username, password, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (surname, other_names, email, username, password, verification_code, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
-            surname,
-            other_names,
-            email,
-            username,
-            hashed,
-            datetime.now().strftime("%Y-%m-%d")
+            surname, other_names, email, username,
+            hashed, code, datetime.now().strftime("%Y-%m-%d")
         ))
         conn.commit()
-        return True
-    except Exception as e:
-        return False
+        return code
+    except:
+        return None
 
-# ---------------- LOGIN / REGISTER ----------------
+def login_user(username, password):
+    cursor.execute("""
+        SELECT id, password, email_verified
+        FROM users WHERE username=?
+    """, (username,))
+    user = cursor.fetchone()
+
+    if user and bcrypt.checkpw(password.encode(), user[1]):
+        if user[2] == 0:
+            st.warning("Please verify your email first")
+            return None
+        return user[0]
+    return None
+
+# ---------------- AUTH ----------------
 if st.session_state.user_id is None:
-    tab1, tab2 = st.tabs(["🔐 Login", "📝 Register"])
+    tabs = st.tabs(["🔐 Login", "📝 Register", "📧 Verify Email"])
 
-    # -------- LOGIN --------
-    with tab1:
-        username = st.text_input("Username", key="login_user")
-        password = st.text_input("Password", type="password", key="login_pass")
-
-        if st.button("Login", key="login_btn"):
-            if login(username, password):
-                st.success("Login successful")
+    # LOGIN
+    with tabs[0]:
+        u = st.text_input("Username")
+        p = st.text_input("Password", type="password")
+        if st.button("Login"):
+            user_id = login_user(u, p)
+            if user_id:
+                st.session_state.user_id = user_id
                 st.rerun()
             else:
-                st.error("Invalid username or password")
+                st.error("Login failed")
 
-    # -------- REGISTER --------
-    with tab2:
-        st.subheader("Create a secure account")
-
+    # REGISTER
+    with tabs[1]:
+        st.subheader("Create Account")
         surname = st.text_input("Surname")
-        other_names = st.text_input("Other names")
-        email = st.text_input("Email address")
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        confirm = st.text_input("Confirm password", type="password")
+        other = st.text_input("Other names")
+        email = st.text_input("Email")
+        user = st.text_input("Username")
+        pwd = st.text_input("Password", type="password")
 
-        if st.button("Create Account", key="register_btn"):
-            if not all([surname, other_names, email, username, password]):
-                st.error("All fields are required")
-            elif password != confirm:
-                st.error("Passwords do not match")
-            elif len(password) < 6:
-                st.error("Password must be at least 6 characters")
+        if st.button("Register"):
+            if len(pwd) < 6:
+                st.error("Password too short")
             else:
-                if register(surname, other_names, email, username, password):
-                    st.success("Account created. Please login.")
+                code = register_user(surname, other, email, user, pwd)
+                if code:
+                    st.success("Account created")
+                    st.info(f"Verification code (demo): {code}")
                 else:
-                    st.error("Username or email already exists")
+                    st.error("User already exists")
+
+    # VERIFY EMAIL
+    with tabs[2]:
+        email = st.text_input("Email used to register")
+        code = st.text_input("Verification code")
+
+        if st.button("Verify"):
+            cursor.execute("""
+                SELECT id FROM users
+                WHERE email=? AND verification_code=?
+            """, (email, code))
+            user = cursor.fetchone()
+
+            if user:
+                cursor.execute("""
+                    UPDATE users
+                    SET email_verified=1, verification_code=NULL
+                    WHERE id=?
+                """, (user[0],))
+                conn.commit()
+                st.success("Email verified successfully")
+            else:
+                st.error("Invalid code")
 
     st.stop()
 
+# ---------------- DASHBOARD ----------------
 user_id = st.session_state.user_id
 
-# ---------------- FETCH USER PROFILE ----------------
 cursor.execute("""
-SELECT surname, other_names, email 
-FROM users WHERE id=?
+SELECT surname, other_names FROM users WHERE id=?
 """, (user_id,))
-profile = cursor.fetchone()
+name = cursor.fetchone()
 
-st.success(f"Welcome {profile[0]} {profile[1]}")
-st.caption(f"📧 {profile[2]}")
+st.success(f"Welcome {name[0]} {name[1]}")
+
+# ---------------- KYC SECTION ----------------
+st.subheader("🆔 KYC Verification")
+
+cursor.execute("SELECT * FROM kyc WHERE user_id=?", (user_id,))
+kyc = cursor.fetchone()
+
+if not kyc:
+    bvn = st.text_input("BVN (11 digits)")
+    nin = st.text_input("NIN")
+
+    if st.button("Submit KYC"):
+        cursor.execute("""
+            INSERT INTO kyc (user_id, bvn, nin)
+            VALUES (?, ?, ?)
+        """, (user_id, bvn, nin))
+        conn.commit()
+        st.success("KYC submitted (pending verification)")
+else:
+    st.info(f"KYC Status: {kyc[3]}")
 
 # ---------------- LOGOUT ----------------
 if st.button("Logout", key="logout_btn"):
     st.session_state.user_id = None
     st.rerun()
-
-# ---------------- CONTINUE APP ----------------
-st.info("Your budget features continue below 👇")
