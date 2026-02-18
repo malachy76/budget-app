@@ -41,12 +41,13 @@ def create_tables():
     )
     """)
 
-    # EXPENSES
+    # EXPENSES (WITH CATEGORY)
     c.execute("""
     CREATE TABLE IF NOT EXISTS expenses (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
         name TEXT,
+        category TEXT,
         amount REAL,
         date TEXT
     )
