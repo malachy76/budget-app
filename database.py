@@ -1,6 +1,6 @@
 import sqlite3
 
-DB_NAME = "budget_v4.db"
+DB_NAME = "budget_v5.db"
 
 def get_conn():
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -27,6 +27,16 @@ def create_tables():
     CREATE TABLE IF NOT EXISTS verification (
         user_id INTEGER,
         code TEXT
+    )
+    """)
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS expenses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        name TEXT,
+        amount REAL,
+        date TEXT
     )
     """)
 
