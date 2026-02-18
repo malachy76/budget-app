@@ -1,7 +1,6 @@
 import sqlite3
-from datetime import datetime
 
-DB_NAME = "budget_v3.db"
+DB_NAME = "budget_v4.db"
 
 def get_conn():
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
@@ -25,38 +24,9 @@ def create_tables():
     """)
 
     c.execute("""
-    CREATE TABLE IF NOT EXISTS otp (
+    CREATE TABLE IF NOT EXISTS verification (
         user_id INTEGER,
-        code TEXT,
-        created_at TEXT
-    )
-    """)
-
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS banks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        bank_name TEXT
-    )
-    """)
-
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS transactions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        bank_id INTEGER,
-        remark TEXT,
-        amount REAL,
-        date TEXT
-    )
-    """)
-
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS expenses (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        name TEXT,
-        amount REAL,
-        date TEXT
+        code TEXT
     )
     """)
 
