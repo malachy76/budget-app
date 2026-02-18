@@ -1,11 +1,9 @@
 import sqlite3
 
-DB_NAME = "budget_v5.db"
+DB_NAME = "budget_simple.db"
 
 def get_conn():
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    return sqlite3.connect(DB_NAME, check_same_thread=False)
 
 def create_tables():
     conn = get_conn()
@@ -18,15 +16,7 @@ def create_tables():
         other_names TEXT,
         email TEXT UNIQUE,
         username TEXT UNIQUE,
-        password BLOB,
-        verified INTEGER DEFAULT 0
-    )
-    """)
-
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS verification (
-        user_id INTEGER,
-        code TEXT
+        password BLOB
     )
     """)
 
