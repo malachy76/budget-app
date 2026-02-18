@@ -1,166 +1,121 @@
 import streamlit as st
 import bcrypt
 import random
-import pandas as pd
-from datetime import datetime
 from database import create_tables, get_conn
 
-st.set_page_config(page_title="💰 Budget App", layout="centered")
+st.set_page_config("💰 Budget App")
 create_tables()
+
+conn = get_conn()
+c = conn.cursor()
+
+# ---------- SESSION ----------
+if "page" not in st.session_state:
+    st.session_state.page = "login"
+
+if "user_id" not in st.session_state:
+    st.session_state.user_id = None
 
 # ---------- HELPERS ----------
 def hash_pw(p): return bcrypt.hashpw(p.encode(), bcrypt.gensalt())
 def check_pw(p, h): return bcrypt.checkpw(p.encode(), h)
 
-def send_email_stub(email, msg):
-    st.info(f"📧 Email sent to {email}: {msg}")
+def send_email_stub(email, code):
+    st.info(f"📧 Verification code sent to {email}: {code}")
 
-def send_sms_stub(phone, otp):
-    st.info(f"📱 SMS OTP (SIMULATED): {otp}")
+# ---------- LOGIN ----------
+if st.session_state.page == "login":
+    st.title("🔐 Login")
 
-# ---------- SESSION ----------
-if "user" not in st.session_state:
-    st.session_state.user = None
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
 
-menu = st.sidebar.radio(
-    "Menu",
-    ["Login", "Register", "Resend Verification", "Reset Password"]
-    if not st.session_state.user
-    else ["Bank", "Expenses", "Monthly Statement", "Logout"]
-)
+    if st.button("Login"):
+        c.execute("SELECT id, password, verified FROM users WHERE username=?", (username,))
+        user = c.fetchone()
 
-conn = get_conn()
-c = conn.cursor()
+        if user and check_pw(password, user[1]):
+            if user[2] == 0:
+                st.error("Account not verified")
+            else:
+                st.session_state.user_id = user[0]
+                st.success("Login successful")
+        else:
+            st.error("Invalid login details")
+
+    st.markdown(
+        "<small><a href='#' onclick=\"window.location.reload()\">Forgot password?</a></small>",
+        unsafe_allow_html=True
+    )
+
+    if st.button("Create account"):
+        st.session_state.page = "register"
+        st.rerun()
 
 # ---------- REGISTER ----------
-if menu == "Register":
-    st.header("📝 Register")
+elif st.session_state.page == "register":
+    st.title("📝 Register")
 
-    surname = st.text_input("Surname", key="r1")
-    other = st.text_input("Other Names", key="r2")
-    email = st.text_input("Email", key="r3")
-    username = st.text_input("Username", key="r4")
-    password = st.text_input("Password", type="password", key="r5")
+    surname = st.text_input("Surname")
+    other = st.text_input("Other Names")
+    email = st.text_input("Email")
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
 
-    if st.button("Create Account", key="r6"):
-        hashed = hash_pw(password)
+    if st.button("Create Account"):
         try:
+            hashed = hash_pw(password)
             c.execute("""
             INSERT INTO users (surname, other_names, email, username, password)
             VALUES (?, ?, ?, ?, ?)
             """, (surname, other, email, username, hashed))
             conn.commit()
 
-            otp = str(random.randint(100000, 999999))
-            c.execute("INSERT INTO otp VALUES (?, ?, ?)",
-                      (c.lastrowid, otp, datetime.now().isoformat()))
+            code = str(random.randint(100000, 999999))
+            c.execute("INSERT INTO verification VALUES (?, ?)", (c.lastrowid, code))
             conn.commit()
 
-            send_email_stub(email, f"Your verification code is {otp}")
-            st.success("Account created. Verify your email.")
+            send_email_stub(email, code)
+            st.success("Account created. Enter verification code below.")
+
+            st.session_state.verify_user = c.lastrowid
+
         except:
             st.error("User already exists")
 
-# ---------- LOGIN ----------
-elif menu == "Login":
-    st.header("🔐 Login")
+    # ---------- VERIFY ----------
+    if "verify_user" in st.session_state:
+        st.subheader("📩 Verify Email")
 
-    u = st.text_input("Username", key="l1")
-    p = st.text_input("Password", type="password", key="l2")
+        code_input = st.text_input("Enter verification code")
 
-    if st.button("Login", key="l3"):
-        c.execute("SELECT id, password, verified FROM users WHERE username=?", (u,))
-        user = c.fetchone()
+        if st.button("Verify"):
+            c.execute("""
+            SELECT code FROM verification WHERE user_id=?
+            """, (st.session_state.verify_user,))
+            real_code = c.fetchone()
 
-        if user and check_pw(p, user[1]):
-            if user[2] == 0:
-                st.error("Email not verified")
-            else:
-                st.session_state.user = user[0]
-                st.success("Logged in")
+            if real_code and code_input == real_code[0]:
+                c.execute("UPDATE users SET verified=1 WHERE id=?", (st.session_state.verify_user,))
+                c.execute("DELETE FROM verification WHERE user_id=?", (st.session_state.verify_user,))
+                conn.commit()
+
+                st.success("Email verified. You can now login.")
+                del st.session_state.verify_user
+                st.session_state.page = "login"
                 st.rerun()
-        else:
-            st.error("Login failed")
+            else:
+                st.error("Invalid verification code")
 
-# ---------- RESEND ----------
-elif menu == "Resend Verification":
-    st.header("🔁 Resend Verification")
-    email = st.text_input("Email", key="rv1")
-
-    if st.button("Resend", key="rv2"):
-        c.execute("SELECT id FROM users WHERE email=?", (email,))
-        user = c.fetchone()
-        if user:
-            otp = str(random.randint(100000, 999999))
-            c.execute("INSERT INTO otp VALUES (?, ?, ?)",
-                      (user[0], otp, datetime.now().isoformat()))
+        st.caption("Didn’t get a code?")
+        if st.button("Resend verification code"):
+            new_code = str(random.randint(100000, 999999))
+            c.execute("UPDATE verification SET code=? WHERE user_id=?",
+                      (new_code, st.session_state.verify_user))
             conn.commit()
-            send_email_stub(email, otp)
-            st.success("Verification sent")
+            send_email_stub(email, new_code)
 
-# ---------- RESET ----------
-elif menu == "Reset Password":
-    st.header("🔑 Reset Password")
-    email = st.text_input("Email", key="rp1")
-
-    if st.button("Send Reset", key="rp2"):
-        send_email_stub(email, "Password reset link (SIMULATED)")
-        st.success("Reset email sent")
-
-# ---------- BANK ----------
-elif menu == "Bank":
-    st.header("🏦 Bank Accounts")
-
-    bank = st.text_input("Bank Name", key="b1")
-    if st.button("Add Bank", key="b2"):
-        c.execute("INSERT INTO banks VALUES (NULL, ?, ?)",
-                  (st.session_state.user, bank))
-        conn.commit()
-        st.success("Bank added")
-
-    st.subheader("➕ Add Transaction")
-    remark = st.text_input("Transaction Remark", key="b3")
-    amount = st.number_input("Amount", key="b4")
-
-    c.execute("SELECT id FROM banks WHERE user_id=?", (st.session_state.user,))
-    banks = c.fetchall()
-
-    if banks and st.button("Save Transaction", key="b5"):
-        c.execute("""
-        INSERT INTO transactions VALUES (NULL, ?, ?, ?, ?)
-        """, (banks[0][0], remark, amount, datetime.now().date()))
-        conn.commit()
-        st.success("Transaction saved → Expenses auto-created")
-
-        c.execute("""
-        INSERT INTO expenses VALUES (NULL, ?, ?, ?, ?)
-        """, (st.session_state.user, remark, amount, datetime.now().date()))
-        conn.commit()
-
-# ---------- EXPENSES ----------
-elif menu == "Expenses":
-    st.header("📉 Expenses")
-
-    c.execute("SELECT name, amount, date FROM expenses WHERE user_id=?",
-              (st.session_state.user,))
-    df = pd.DataFrame(c.fetchall(), columns=["Name", "Amount", "Date"])
-    st.dataframe(df)
-
-# ---------- STATEMENT ----------
-elif menu == "Monthly Statement":
-    st.header("📊 Monthly Statement")
-
-    c.execute("""
-    SELECT amount, date FROM expenses WHERE user_id=?
-    """, (st.session_state.user,))
-    df = pd.DataFrame(c.fetchall(), columns=["Amount", "Date"])
-
-    if not df.empty:
-        df["Date"] = pd.to_datetime(df["Date"])
-        monthly = df.groupby(df["Date"].dt.to_period("M")).sum()
-        st.bar_chart(monthly)
-
-# ---------- LOGOUT ----------
-elif menu == "Logout":
-    st.session_state.user = None
-    st.rerun()
+# ---------- RESET PASSWORD ----------
+elif st.session_state.page == "reset":
+    st.title("🔑 Reset Password")
+    st.info("Password reset coming next (email-based)")
