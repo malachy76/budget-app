@@ -52,7 +52,7 @@ def create_tables():
     )
     """)
 
-    # EXPENSES (LINKED TO BANKS)
+    # EXPENSES (AUTO-LINKED TO BANKS)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS expenses (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
