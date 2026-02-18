@@ -22,6 +22,21 @@ if "user_id" not in st.session_state:
 def hash_pw(p): return bcrypt.hashpw(p.encode(), bcrypt.gensalt())
 def check_pw(p, h): return bcrypt.checkpw(p.encode(), h)
 
+def naira(amount):
+    return f"₦{amount:,.2f}"
+
+CATEGORIES = [
+    "Food",
+    "Transport",
+    "Rent",
+    "Utilities",
+    "Data / Airtime",
+    "Shopping",
+    "Health",
+    "Entertainment",
+    "Others"
+]
+
 # ---------------- LOGIN ----------------
 def login_page():
     st.title("🔐 Login")
@@ -38,7 +53,7 @@ def login_page():
             st.session_state.page = "dashboard"
             st.rerun()
         else:
-            st.error("Invalid login")
+            st.error("Invalid login details")
 
     st.caption("No account?")
     if st.button("Create account"):
@@ -63,11 +78,11 @@ def register_page():
             """, (surname, other, email, username, hash_pw(password)))
             conn.commit()
 
-            st.success("Account created. Login now.")
+            st.success("Account created. Please login.")
             st.session_state.page = "login"
             st.rerun()
         except:
-            st.error("Username or email exists")
+            st.error("Username or email already exists")
 
     if st.button("Back to login"):
         st.session_state.page = "login"
@@ -84,23 +99,30 @@ def dashboard():
     # -------- EXPENSES --------
     with tab1:
         name = st.text_input("Expense name")
-        amount = st.number_input("Amount", min_value=0.0)
+        category = st.selectbox("Category", CATEGORIES)
+        amount = st.number_input("Amount (₦)", min_value=0.0)
 
         if st.button("Add Expense"):
-            c.execute("""
-            INSERT INTO expenses VALUES (NULL, ?, ?, ?, ?)
-            """, (st.session_state.user_id, name, amount, date.today()))
-            conn.commit()
-            st.success("Expense added")
+            if name and amount > 0:
+                c.execute("""
+                INSERT INTO expenses
+                VALUES (NULL, ?, ?, ?, ?, ?)
+                """, (st.session_state.user_id, name, category, amount, date.today()))
+                conn.commit()
+                st.success("Expense added")
 
         c.execute("""
-        SELECT name, amount, date FROM expenses
+        SELECT name, category, amount, date
+        FROM expenses
         WHERE user_id=?
         ORDER BY date DESC
         """, (st.session_state.user_id,))
-        df = pd.DataFrame(c.fetchall(), columns=["Name", "Amount", "Date"])
-        if not df.empty:
-            st.dataframe(df)
+        rows = c.fetchall()
+
+        if rows:
+            df = pd.DataFrame(rows, columns=["Name", "Category", "Amount", "Date"])
+            df["Amount"] = df["Amount"].apply(naira)
+            st.dataframe(df, use_container_width=True)
 
     # -------- BANKS --------
     with tab2:
@@ -120,7 +142,8 @@ def dashboard():
             selected = st.selectbox("Select bank", list(bank_map.keys()))
 
             remark = st.text_input("Transaction remark")
-            amount = st.number_input("Transaction amount", min_value=0.0)
+            amount = st.number_input("Transaction amount (₦)", min_value=0.0)
+            category = st.selectbox("Transaction category", CATEGORIES)
 
             if st.button("Save transaction"):
                 bank_id = bank_map[selected]
@@ -131,8 +154,8 @@ def dashboard():
 
                 # AUTO EXPENSE
                 c.execute("""
-                INSERT INTO expenses VALUES (NULL, ?, ?, ?, ?)
-                """, (st.session_state.user_id, remark, amount, date.today()))
+                INSERT INTO expenses VALUES (NULL, ?, ?, ?, ?, ?)
+                """, (st.session_state.user_id, remark, category, amount, date.today()))
                 conn.commit()
 
                 st.success("Transaction saved & expense created")
@@ -140,7 +163,7 @@ def dashboard():
     # -------- GOALS --------
     with tab3:
         title = st.text_input("Goal title")
-        target = st.number_input("Target amount", min_value=0.0)
+        target = st.number_input("Target amount (₦)", min_value=0.0)
 
         if st.button("Create Goal"):
             c.execute("""
@@ -160,21 +183,26 @@ def dashboard():
         for g in goals:
             remaining = g[1] - spent
             if remaining <= 0:
-                st.error(f"⚠️ Goal '{g[0]}' exceeded!")
+                st.error(f"⚠️ {g[0]} exceeded!")
             else:
-                st.info(f"{g[0]} → ₦{remaining:.2f} left")
+                st.info(f"{g[0]} → {naira(remaining)} remaining")
 
     # -------- REPORTS --------
     with tab4:
         c.execute("""
-        SELECT amount, date FROM expenses WHERE user_id=?
+        SELECT category, amount, date FROM expenses WHERE user_id=?
         """, (st.session_state.user_id,))
-        df = pd.DataFrame(c.fetchall(), columns=["Amount", "Date"])
+        df = pd.DataFrame(c.fetchall(), columns=["Category", "Amount", "Date"])
 
         if not df.empty:
             df["Date"] = pd.to_datetime(df["Date"])
-            monthly = df.groupby(df["Date"].dt.to_period("M")).sum()
+            monthly = df.groupby(df["Date"].dt.to_period("M"))["Amount"].sum()
+            st.subheader("Monthly Spending")
             st.bar_chart(monthly)
+
+            st.subheader("Spending by Category")
+            cat = df.groupby("Category")["Amount"].sum()
+            st.bar_chart(cat)
 
     if st.button("Logout"):
         st.session_state.user_id = None
