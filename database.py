@@ -9,27 +9,30 @@ def create_tables():
     conn = get_connection()
     cursor = conn.cursor()
 
+    # Users table (STRONG PROFILE)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE,
-        password BLOB
+        surname TEXT NOT NULL,
+        other_names TEXT NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        username TEXT UNIQUE NOT NULL,
+        password BLOB NOT NULL,
+        created_at TEXT
     )
     """)
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS income (
         user_id INTEGER PRIMARY KEY,
-        amount INTEGER,
-        FOREIGN KEY(user_id) REFERENCES users(id)
+        amount INTEGER
     )
     """)
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS savings (
         user_id INTEGER PRIMARY KEY,
-        goal INTEGER,
-        FOREIGN KEY(user_id) REFERENCES users(id)
+        goal INTEGER
     )
     """)
 
@@ -38,10 +41,8 @@ def create_tables():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
         name TEXT,
-        category TEXT,
         amount INTEGER,
-        created_at TEXT,
-        FOREIGN KEY(user_id) REFERENCES users(id)
+        created_at TEXT
     )
     """)
 
