@@ -1,218 +1,224 @@
 import streamlit as st
 import bcrypt
+import random
+import smtplib
 import pandas as pd
-from datetime import date
-from database import create_tables, get_conn
+from email.message import EmailMessage
+from datetime import datetime
+from database import get_connection, create_tables
 
-# ---------------- SETUP ----------------
-st.set_page_config(page_title="💰 Budget App", layout="centered")
+# ---------------- CONFIG ----------------
+st.set_page_config("💰 Budget App", page_icon="💰", layout="centered")
+
 create_tables()
-
-conn = get_conn()
-c = conn.cursor()
+conn = get_connection()
+cursor = conn.cursor()
 
 # ---------------- SESSION ----------------
-if "page" not in st.session_state:
-    st.session_state.page = "login"
-
 if "user_id" not in st.session_state:
     st.session_state.user_id = None
 
 # ---------------- HELPERS ----------------
-def hash_pw(p): return bcrypt.hashpw(p.encode(), bcrypt.gensalt())
-def check_pw(p, h): return bcrypt.checkpw(p.encode(), h)
+def generate_code():
+    return str(random.randint(100000, 999999))
 
-def naira(amount):
-    return f"₦{amount:,.2f}"
+def send_verification_email(email, code):
+    msg = EmailMessage()
+    msg["Subject"] = "Verify Your Budget App Account"
+    msg["From"] = st.secrets["EMAIL_ADDRESS"]
+    msg["To"] = email
+    msg.set_content(f"Your verification code is: {code}")
 
-CATEGORIES = [
-    "Food",
-    "Transport",
-    "Rent",
-    "Utilities",
-    "Data / Airtime",
-    "Shopping",
-    "Health",
-    "Entertainment",
-    "Others"
-]
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+        smtp.login(
+            st.secrets["EMAIL_ADDRESS"],
+            st.secrets["EMAIL_PASSWORD"]
+        )
+        smtp.send_message(msg)
 
-# ---------------- LOGIN ----------------
-def login_page():
-    st.title("🔐 Login")
+def register_user(surname, other, email, username, password):
+    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+    code = generate_code()
 
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
+    try:
+        cursor.execute("""
+        INSERT INTO users
+        (surname, other_names, email, username, password, verification_code, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            surname, other, email, username,
+            hashed, code, datetime.now().strftime("%Y-%m-%d")
+        ))
+        conn.commit()
+        return code
+    except:
+        return None
 
-    if st.button("Login"):
-        c.execute("SELECT id, password FROM users WHERE username=?", (username,))
-        user = c.fetchone()
+def login_user(username, password):
+    cursor.execute("""
+    SELECT id, password, email_verified
+    FROM users WHERE username=?
+    """, (username,))
+    user = cursor.fetchone()
 
-        if user and check_pw(password, user[1]):
-            st.session_state.user_id = user[0]
-            st.session_state.page = "dashboard"
-            st.rerun()
-        else:
-            st.error("Invalid login details")
+    if user and bcrypt.checkpw(password.encode(), user[1]):
+        if user[2] == 0:
+            st.warning("Verify your email first")
+            return None
+        return user[0]
+    return None
 
-    st.caption("No account?")
-    if st.button("Create account"):
-        st.session_state.page = "register"
-        st.rerun()
+# ---------------- UI ----------------
+st.title("💰 Simple Budget App")
 
-# ---------------- REGISTER ----------------
-def register_page():
-    st.title("📝 Register")
+# ================= AUTH =================
+if st.session_state.user_id is None:
+    tabs = st.tabs(["🔐 Login", "📝 Register", "📧 Verify Email"])
 
-    surname = st.text_input("Surname")
-    other = st.text_input("Other Names")
-    email = st.text_input("Email")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
+    # LOGIN
+    with tabs[0]:
+        login_username = st.text_input("Username", key="login_username")
+        login_password = st.text_input("Password", type="password", key="login_password")
 
-    if st.button("Create Account"):
-        try:
-            c.execute("""
-            INSERT INTO users (surname, other_names, email, username, password)
-            VALUES (?, ?, ?, ?, ?)
-            """, (surname, other, email, username, hash_pw(password)))
-            conn.commit()
-
-            st.success("Account created. Please login.")
-            st.session_state.page = "login"
-            st.rerun()
-        except:
-            st.error("Username or email already exists")
-
-    if st.button("Back to login"):
-        st.session_state.page = "login"
-        st.rerun()
-
-# ---------------- DASHBOARD ----------------
-def dashboard():
-    st.title("💰 Budget Dashboard")
-
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "➕ Expenses", "🏦 Banks", "🎯 Goals", "📊 Reports"
-    ])
-
-    # -------- EXPENSES --------
-    with tab1:
-        name = st.text_input("Expense name")
-        category = st.selectbox("Category", CATEGORIES)
-        amount = st.number_input("Amount (₦)", min_value=0.0)
-
-        if st.button("Add Expense"):
-            if name and amount > 0:
-                c.execute("""
-                INSERT INTO expenses
-                VALUES (NULL, ?, ?, ?, ?, ?)
-                """, (st.session_state.user_id, name, category, amount, date.today()))
-                conn.commit()
-                st.success("Expense added")
-
-        c.execute("""
-        SELECT name, category, amount, date
-        FROM expenses
-        WHERE user_id=?
-        ORDER BY date DESC
-        """, (st.session_state.user_id,))
-        rows = c.fetchall()
-
-        if rows:
-            df = pd.DataFrame(rows, columns=["Name", "Category", "Amount", "Date"])
-            df["Amount"] = df["Amount"].apply(naira)
-            st.dataframe(df, use_container_width=True)
-
-    # -------- BANKS --------
-    with tab2:
-        bank = st.text_input("Bank name")
-        if st.button("Add Bank"):
-            c.execute("INSERT INTO banks VALUES (NULL, ?, ?)",
-                      (st.session_state.user_id, bank))
-            conn.commit()
-            st.success("Bank added")
-
-        c.execute("SELECT id, bank_name FROM banks WHERE user_id=?",
-                  (st.session_state.user_id,))
-        banks = c.fetchall()
-
-        if banks:
-            bank_map = {b[1]: b[0] for b in banks}
-            selected = st.selectbox("Select bank", list(bank_map.keys()))
-
-            remark = st.text_input("Transaction remark")
-            amount = st.number_input("Transaction amount (₦)", min_value=0.0)
-            category = st.selectbox("Transaction category", CATEGORIES)
-
-            if st.button("Save transaction"):
-                bank_id = bank_map[selected]
-                c.execute("""
-                INSERT INTO transactions VALUES (NULL, ?, ?, ?, ?)
-                """, (bank_id, remark, amount, date.today()))
-                conn.commit()
-
-                # AUTO EXPENSE
-                c.execute("""
-                INSERT INTO expenses VALUES (NULL, ?, ?, ?, ?, ?)
-                """, (st.session_state.user_id, remark, category, amount, date.today()))
-                conn.commit()
-
-                st.success("Transaction saved & expense created")
-
-    # -------- GOALS --------
-    with tab3:
-        title = st.text_input("Goal title")
-        target = st.number_input("Target amount (₦)", min_value=0.0)
-
-        if st.button("Create Goal"):
-            c.execute("""
-            INSERT INTO goals VALUES (NULL, ?, ?, ?)
-            """, (st.session_state.user_id, title, target))
-            conn.commit()
-            st.success("Goal added")
-
-        c.execute("SELECT title, target FROM goals WHERE user_id=?",
-                  (st.session_state.user_id,))
-        goals = c.fetchall()
-
-        c.execute("SELECT SUM(amount) FROM expenses WHERE user_id=?",
-                  (st.session_state.user_id,))
-        spent = c.fetchone()[0] or 0
-
-        for g in goals:
-            remaining = g[1] - spent
-            if remaining <= 0:
-                st.error(f"⚠️ {g[0]} exceeded!")
+        if st.button("Login", key="login_btn"):
+            user_id = login_user(login_username, login_password)
+            if user_id:
+                st.session_state.user_id = user_id
+                st.rerun()
             else:
-                st.info(f"{g[0]} → {naira(remaining)} remaining")
+                st.error("Login failed")
 
-    # -------- REPORTS --------
-    with tab4:
-        c.execute("""
-        SELECT category, amount, date FROM expenses WHERE user_id=?
-        """, (st.session_state.user_id,))
-        df = pd.DataFrame(c.fetchall(), columns=["Category", "Amount", "Date"])
+    # REGISTER
+    with tabs[1]:
+        reg_surname = st.text_input("Surname", key="reg_surname")
+        reg_other = st.text_input("Other Names", key="reg_other")
+        reg_email = st.text_input("Email", key="reg_email")
+        reg_username = st.text_input("Username", key="reg_username")
+        reg_password = st.text_input("Password", type="password", key="reg_password")
 
-        if not df.empty:
-            df["Date"] = pd.to_datetime(df["Date"])
-            monthly = df.groupby(df["Date"].dt.to_period("M"))["Amount"].sum()
-            st.subheader("Monthly Spending")
-            st.bar_chart(monthly)
+        if st.button("Register", key="register_btn"):
+            if not all([reg_surname, reg_other, reg_email, reg_username, reg_password]):
+                st.error("All fields required")
+            else:
+                code = register_user(
+                    reg_surname, reg_other, reg_email,
+                    reg_username, reg_password
+                )
+                if code:
+                    send_verification_email(reg_email, code)
+                    st.success("Account created. Check email to verify.")
+                else:
+                    st.error("Username or email exists")
 
-            st.subheader("Spending by Category")
-            cat = df.groupby("Category")["Amount"].sum()
-            st.bar_chart(cat)
+    # VERIFY EMAIL
+    with tabs[2]:
+        verify_email = st.text_input("Registered Email", key="verify_email")
+        verify_code = st.text_input("Verification Code", key="verify_code")
 
-    if st.button("Logout"):
-        st.session_state.user_id = None
-        st.session_state.page = "login"
-        st.rerun()
+        if st.button("Verify Email", key="verify_btn"):
+            cursor.execute("""
+            SELECT id FROM users
+            WHERE email=? AND verification_code=?
+            """, (verify_email, verify_code))
+            user = cursor.fetchone()
 
-# ---------------- ROUTER ----------------
-if st.session_state.page == "login":
-    login_page()
-elif st.session_state.page == "register":
-    register_page()
-elif st.session_state.page == "dashboard":
-    dashboard()
+            if user:
+                cursor.execute("""
+                UPDATE users
+                SET email_verified=1, verification_code=NULL
+                WHERE id=?
+                """, (user[0],))
+                conn.commit()
+                st.success("Email verified")
+            else:
+                st.error("Invalid code")
+
+    st.stop()
+
+# ================= DASHBOARD =================
+user_id = st.session_state.user_id
+
+cursor.execute("SELECT surname, other_names FROM users WHERE id=?", (user_id,))
+user = cursor.fetchone()
+st.success(f"Welcome {user[0]} {user[1]} 👋")
+
+# ---------------- ADD BANK ----------------
+st.subheader("🏦 Add Bank Account")
+
+bank_name = st.text_input("Bank Name", key="bank_name")
+account_name = st.text_input("Account Name", key="acct_name")
+account_number = st.text_input("Account Number (last 4 digits)", key="acct_num")
+opening_balance = st.number_input("Opening Balance (₦)", min_value=0, key="open_bal")
+
+if st.button("Add Bank", key="add_bank_btn"):
+    if bank_name and account_name and account_number:
+        cursor.execute("""
+        INSERT INTO banks (user_id, bank_name, account_name, account_number, balance)
+        VALUES (?, ?, ?, ?, ?)
+        """, (
+            user_id, bank_name, account_name,
+            account_number[-4:], opening_balance
+        ))
+        conn.commit()
+        st.success("Bank added")
+
+# ---------------- ADD EXPENSE (AUTO DEBIT) ----------------
+st.subheader("➕ Add Expense (Auto Bank Debit)")
+
+expense_name = st.text_input("Expense Name", key="exp_name")
+expense_amount = st.number_input("Amount (₦)", min_value=1, key="exp_amt")
+
+cursor.execute("""
+SELECT id, bank_name, account_number, balance
+FROM banks WHERE user_id=?
+""", (user_id,))
+banks = cursor.fetchall()
+
+if banks:
+    bank_map = {
+        f"{b[1]} (****{b[2]}) – ₦{b[3]:,}": b[0]
+        for b in banks
+    }
+
+    selected_bank = st.selectbox(
+        "Pay From Bank",
+        list(bank_map.keys()),
+        key="bank_select"
+    )
+
+    if st.button("Add Expense", key="add_expense_btn"):
+        bank_id = bank_map[selected_bank]
+
+        cursor.execute("""
+        INSERT INTO expenses
+        (user_id, bank_id, name, amount, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """, (
+            user_id, bank_id, expense_name,
+            expense_amount, datetime.now().strftime("%Y-%m-%d")
+        ))
+
+        cursor.execute("""
+        UPDATE banks SET balance = balance - ?
+        WHERE id=?
+        """, (expense_amount, bank_id))
+
+        cursor.execute("""
+        INSERT INTO transactions
+        (bank_id, type, amount, description, created_at)
+        VALUES (?, 'debit', ?, ?, ?)
+        """, (
+            bank_id, expense_amount,
+            f"Expense: {expense_name}",
+            datetime.now().strftime("%Y-%m-%d")
+        ))
+
+        conn.commit()
+        st.success("Expense added & bank debited")
+else:
+    st.info("Add a bank account first")
+
+# ---------------- LOGOUT ----------------
+if st.button("Logout", key="logout_btn"):
+    st.session_state.user_id = None
+    st.rerun()
