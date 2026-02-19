@@ -421,6 +421,39 @@ if banks:
 else:
     st.info("Add a bank account first")
 
+# ---------- NEW: EXPENSE SUMMARY (LIST & CHARTS) ----------
+st.subheader("📋 Expense Summary")
+
+# Fetch all expenses for the user with bank names
+cursor.execute("""
+SELECT e.created_at, e.name, e.amount, b.bank_name, b.account_number
+FROM expenses e
+JOIN banks b ON e.bank_id = b.id
+WHERE e.user_id = ?
+ORDER BY e.created_at DESC
+""", (user_id,))
+expenses_data = cursor.fetchall()
+
+if expenses_data:
+    df_expenses = pd.DataFrame(expenses_data, columns=["Date", "Expense Name", "Amount (₦)", "Bank", "Account"])
+    # Display as table
+    st.dataframe(df_expenses, use_container_width=True)
+
+    # Bar chart of total amount per expense name
+    st.caption("💰 Total spent per expense category (by name):")
+    expense_summary = df_expenses.groupby("Expense Name")["Amount (₦)"].sum().reset_index()
+    expense_summary = expense_summary.sort_values("Amount (₦)", ascending=False)
+    st.bar_chart(expense_summary.set_index("Expense Name"))
+
+    # Line chart of daily expenses
+    st.caption("📅 Daily expenses:")
+    df_expenses_daily = df_expenses.copy()
+    df_expenses_daily["Date"] = pd.to_datetime(df_expenses_daily["Date"])
+    daily_expenses = df_expenses_daily.groupby(df_expenses_daily["Date"].dt.date)["Amount (₦)"].sum()
+    st.line_chart(daily_expenses)
+else:
+    st.info("No expenses recorded yet.")
+
 # ---------- ADD INCOME ----------
 st.subheader("💰 Add Income (Credit to Bank)")
 income_source = st.text_input("Income Source (e.g., Salary, Gift)", key="income_source")
