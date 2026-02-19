@@ -1,65 +1,68 @@
 import sqlite3
 
-DB_NAME = "budget_final.db"
+DB_NAME = "budget_app.db"
 
-def get_conn():
-    return sqlite3.connect(DB_NAME, check_same_thread=False)
+def get_connection():
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
 
 def create_tables():
-    conn = get_conn()
-    c = conn.cursor()
+    conn = get_connection()
+    cursor = conn.cursor()
 
     # USERS
-    c.execute("""
+    cursor.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        surname TEXT,
-        other_names TEXT,
-        email TEXT UNIQUE,
-        username TEXT UNIQUE,
-        password BLOB
+        surname TEXT NOT NULL,
+        other_names TEXT NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        username TEXT UNIQUE NOT NULL,
+        password BLOB NOT NULL,
+        email_verified INTEGER DEFAULT 0,
+        verification_code TEXT,
+        created_at TEXT
     )
     """)
 
-    # BANKS
-    c.execute("""
+    # BANK ACCOUNTS
+    cursor.execute("""
     CREATE TABLE IF NOT EXISTS banks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        bank_name TEXT
+        user_id INTEGER NOT NULL,
+        bank_name TEXT NOT NULL,
+        account_name TEXT NOT NULL,
+        account_number TEXT NOT NULL,
+        balance INTEGER DEFAULT 0,
+        FOREIGN KEY(user_id) REFERENCES users(id)
     )
     """)
 
-    # TRANSACTIONS
-    c.execute("""
+    # BANK TRANSACTIONS
+    cursor.execute("""
     CREATE TABLE IF NOT EXISTS transactions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        bank_id INTEGER,
-        remark TEXT,
-        amount REAL,
-        date TEXT
+        bank_id INTEGER NOT NULL,
+        type TEXT CHECK(type IN ('credit','debit')),
+        amount INTEGER NOT NULL,
+        description TEXT,
+        created_at TEXT,
+        FOREIGN KEY(bank_id) REFERENCES banks(id)
     )
     """)
 
-    # EXPENSES (WITH CATEGORY)
-    c.execute("""
+    # EXPENSES (AUTO-LINKED TO BANKS)
+    cursor.execute("""
     CREATE TABLE IF NOT EXISTS expenses (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        name TEXT,
-        category TEXT,
-        amount REAL,
-        date TEXT
-    )
-    """)
-
-    # SAVINGS GOALS
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS goals (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        title TEXT,
-        target REAL
+        user_id INTEGER NOT NULL,
+        bank_id INTEGER,
+        name TEXT NOT NULL,
+        amount INTEGER NOT NULL,
+        created_at TEXT,
+        FOREIGN KEY(user_id) REFERENCES users(id),
+        FOREIGN KEY(bank_id) REFERENCES banks(id)
     )
     """)
 
