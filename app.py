@@ -165,13 +165,8 @@ def register_user(surname, other, email, username, password):
     except Exception:
         return None
 
-# ------------------- LOGIN (WITH CLEAR FEEDBACK) -------------------
+# ------------------- LOGIN -------------------
 def login_user(username, password):
-    """
-    Returns:
-        - user_id (int) on success
-        - None on failure (error message is shown via st.error/warning inside the function)
-    """
     cursor.execute("SELECT id, password, email_verified FROM users WHERE username=?", (username,))
     user = cursor.fetchone()
     if not user:
@@ -320,6 +315,48 @@ user_id = st.session_state.user_id
 cursor.execute("SELECT surname, other_names FROM users WHERE id=?", (user_id,))
 user = cursor.fetchone()
 st.success(f"Welcome {user[0]} {user[1]} 👋")
+
+# ========== NEW DASHBOARD SUMMARY CARDS ==========
+# Compute metrics for summary
+# 1. Total Balance
+cursor.execute("SELECT SUM(balance) FROM banks WHERE user_id=?", (user_id,))
+total_balance = cursor.fetchone()[0] or 0
+
+# 2. Total Expenses This Month
+current_month = datetime.now().strftime("%Y-%m")
+cursor.execute("""
+    SELECT SUM(t.amount)
+    FROM transactions t
+    JOIN banks b ON t.bank_id = b.id
+    WHERE b.user_id = ? AND t.type = 'debit' AND strftime('%Y-%m', t.created_at) = ?
+""", (user_id, current_month))
+expenses_this_month = cursor.fetchone()[0] or 0
+
+# 3. Number of Bank Accounts
+cursor.execute("SELECT COUNT(*) FROM banks WHERE user_id=?", (user_id,))
+num_banks = cursor.fetchone()[0] or 0
+
+# 4. Savings Progress (net savings overall)
+cursor.execute("""
+    SELECT SUM(CASE WHEN type='credit' THEN amount ELSE -amount END)
+    FROM transactions t
+    JOIN banks b ON t.bank_id = b.id
+    WHERE b.user_id = ?
+""", (user_id,))
+net_savings = cursor.fetchone()[0] or 0
+
+# Display metrics in four columns
+col1, col2, col3, col4 = st.columns(4)
+with col1:
+    st.metric("💰 Total Balance", f"₦{total_balance:,.0f}")
+with col2:
+    st.metric("📉 Expenses This Month", f"₦{expenses_this_month:,.0f}")
+with col3:
+    st.metric("🏦 Bank Accounts", num_banks)
+with col4:
+    st.metric("🎯 Net Savings", f"₦{net_savings:,.0f}")
+
+st.divider()  # Optional separator
 
 # ---------- CHANGE PASSWORD ----------
 with st.expander("🔐 Change Password"):
