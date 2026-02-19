@@ -398,6 +398,30 @@ cursor.execute("SELECT surname, other_names FROM users WHERE id=?", (user_id,))
 user = cursor.fetchone()
 st.success(f"Welcome {user[0]} {user[1]} 👋")
 
+# ---------- MOBILE OPTIMIZATION CSS ----------
+st.markdown("""
+<style>
+    /* Better touch targets */
+    .stButton button {
+        min-height: 48px;
+        font-size: 16px;
+    }
+    
+    /* Responsive columns on small screens */
+    @media (max-width: 640px) {
+        div[data-testid="column"] {
+            width: 100% !important;
+            margin-bottom: 1rem;
+        }
+    }
+    
+    /* Optional: hide Streamlit branding for a cleaner look */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+</style>
+""", unsafe_allow_html=True)
+
 # ---------- DASHBOARD SUMMARY CARDS ----------
 cursor.execute("SELECT SUM(balance) FROM banks WHERE user_id=?", (user_id,))
 total_balance = cursor.fetchone()[0] or 0
