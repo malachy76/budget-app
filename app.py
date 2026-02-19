@@ -1,6 +1,7 @@
 import streamlit as st
 import bcrypt
 import random
+import re
 import smtplib
 import pandas as pd
 from email.message import EmailMessage
@@ -10,24 +11,44 @@ from database import get_connection, create_tables
 # ---------------- CONFIG ----------------
 st.set_page_config("💰 Budget App", page_icon="💰", layout="centered")
 
-# Create all tables (including password_resets if missing)
-create_tables()
-conn = get_connection()
-cursor = conn.cursor()
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS password_resets (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    token TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    FOREIGN KEY(user_id) REFERENCES users(id)
-)
-""")
-conn.commit()
-conn.close()
+# ---------- SCHEMA UPGRADE (adds missing columns/tables) ----------
+def upgrade_schema():
+    conn = get_connection()
+    cursor = conn.cursor()
 
-# Reopen connection for the app
+    # Add min_balance_alert to banks if not exists
+    cursor.execute("PRAGMA table_info(banks)")
+    columns = [col[1] for col in cursor.fetchall()]
+    if "min_balance_alert" not in columns:
+        cursor.execute("ALTER TABLE banks ADD COLUMN min_balance_alert INTEGER DEFAULT 0")
+
+    # Add monthly_spending_limit to users if not exists
+    cursor.execute("PRAGMA table_info(users)")
+    columns = [col[1] for col in cursor.fetchall()]
+    if "monthly_spending_limit" not in columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN monthly_spending_limit INTEGER")
+
+    # Create goals table if not exists
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS goals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        target_amount INTEGER NOT NULL,
+        current_amount INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'active' CHECK(status IN ('active','completed')),
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+# ---------------- INIT ----------------
+create_tables()                # original tables from database.py
+upgrade_schema()                # add new columns/tables
+
 conn = get_connection()
 cursor = conn.cursor()
 
@@ -40,6 +61,21 @@ if "show_reset_form" not in st.session_state:
     st.session_state.show_reset_form = False
 if "reset_email" not in st.session_state:
     st.session_state.reset_email = ""
+
+# ---------------- PASSWORD STRENGTH CHECK ----------------
+def is_strong_password(password):
+    """Return (bool, message)"""
+    if len(password) < 8:
+        return False, "Password must be at least 8 characters long."
+    if not re.search(r"[A-Z]", password):
+        return False, "Password must contain at least one uppercase letter."
+    if not re.search(r"[a-z]", password):
+        return False, "Password must contain at least one lowercase letter."
+    if not re.search(r"\d", password):
+        return False, "Password must contain at least one digit."
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", password):
+        return False, "Password must contain at least one special character (!@#$%^&* etc.)."
+    return True, "Strong password."
 
 # ---------------- HELPER FUNCTIONS ----------------
 def generate_code():
@@ -107,6 +143,11 @@ def reset_password(email, token, new_password):
     if not reset_record:
         return False, "Invalid or expired token."
 
+    # Check password strength
+    strong, msg = is_strong_password(new_password)
+    if not strong:
+        return False, msg
+
     hashed = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt())
     cursor.execute("UPDATE users SET password=? WHERE id=?", (hashed, user_id))
     cursor.execute("DELETE FROM password_resets WHERE user_id=?", (user_id,))
@@ -123,6 +164,10 @@ def change_password(user_id, current_password, new_password):
     stored_hash = result[0]
     if not bcrypt.checkpw(current_password.encode(), stored_hash):
         return False, "Current password is incorrect."
+
+    strong, msg = is_strong_password(new_password)
+    if not strong:
+        return False, msg
 
     hashed = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt())
     cursor.execute("UPDATE users SET password=? WHERE id=?", (hashed, user_id))
@@ -149,6 +194,11 @@ def resend_verification(email):
 
 # ------------------- REGISTER -------------------
 def register_user(surname, other, email, username, password):
+    # Check password strength
+    strong, msg = is_strong_password(password)
+    if not strong:
+        return None, msg
+
     hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
     code = generate_code()
     try:
@@ -161,9 +211,9 @@ def register_user(surname, other, email, username, password):
             hashed, code, datetime.now().strftime("%Y-%m-%d")
         ))
         conn.commit()
-        return code
-    except Exception:
-        return None
+        return code, "Success"
+    except Exception as e:
+        return None, "Username or email already exists."
 
 # ------------------- LOGIN -------------------
 def login_user(username, password):
@@ -183,6 +233,37 @@ def login_user(username, password):
         return None
 
     return user_id
+
+# ------------------- ALERTS -------------------
+def check_alerts(user_id):
+    """Return list of warning messages based on current data."""
+    warnings = []
+
+    # 1. Bank balance below min_balance_alert
+    cursor.execute("SELECT bank_name, balance, min_balance_alert FROM banks WHERE user_id=?", (user_id,))
+    banks = cursor.fetchall()
+    for bank in banks:
+        name, balance, alert = bank
+        if alert and balance < alert:
+            warnings.append(f"⚠️ Bank '{name}' balance (₦{balance:,.0f}) is below your alert threshold (₦{alert:,.0f}).")
+
+    # 2. Monthly spending vs limit
+    cursor.execute("SELECT monthly_spending_limit FROM users WHERE id=?", (user_id,))
+    limit_row = cursor.fetchone()
+    if limit_row and limit_row[0]:
+        limit = limit_row[0]
+        current_month = datetime.now().strftime("%Y-%m")
+        cursor.execute("""
+            SELECT SUM(t.amount)
+            FROM transactions t
+            JOIN banks b ON t.bank_id = b.id
+            WHERE b.user_id=? AND t.type='debit' AND strftime('%Y-%m', t.created_at)=?
+        """, (user_id, current_month))
+        spent = cursor.fetchone()[0] or 0
+        if spent > limit:
+            warnings.append(f"⚠️ You have spent ₦{spent:,.0f} this month, exceeding your limit of ₦{limit:,.0f}.")
+
+    return warnings
 
 # ---------------- UI ----------------
 st.title("💰 Simple Budget App")
@@ -258,20 +339,21 @@ if st.session_state.user_id is None:
         reg_email = st.text_input("Email", key="reg_email")
         reg_username = st.text_input("Username", key="reg_username")
         reg_password = st.text_input("Password", type="password", key="reg_password")
+        st.caption("Password must be at least 8 characters, include uppercase, lowercase, digit, and special character.")
 
         if st.button("Register", key="register_btn"):
             if not all([reg_surname, reg_other, reg_email, reg_username, reg_password]):
                 st.error("All fields required")
             else:
-                code = register_user(reg_surname, reg_other, reg_email, reg_username, reg_password)
+                code, msg = register_user(reg_surname, reg_other, reg_email, reg_username, reg_password)
                 if code:
-                    success, msg = send_verification_email(reg_email, code)
+                    success, email_msg = send_verification_email(reg_email, code)
                     if success:
                         st.success("Account created. Check email to verify.")
                     else:
-                        st.error(f"Account created but email failed: {msg}")
+                        st.error(f"Account created but email failed: {email_msg}")
                 else:
-                    st.error("Username or email already exists.")
+                    st.error(msg)
 
     # ---------- VERIFY EMAIL TAB (with resend) ----------
     with tabs[2]:
@@ -316,13 +398,10 @@ cursor.execute("SELECT surname, other_names FROM users WHERE id=?", (user_id,))
 user = cursor.fetchone()
 st.success(f"Welcome {user[0]} {user[1]} 👋")
 
-# ========== NEW DASHBOARD SUMMARY CARDS ==========
-# Compute metrics for summary
-# 1. Total Balance
+# ---------- DASHBOARD SUMMARY CARDS ----------
 cursor.execute("SELECT SUM(balance) FROM banks WHERE user_id=?", (user_id,))
 total_balance = cursor.fetchone()[0] or 0
 
-# 2. Total Expenses This Month
 current_month = datetime.now().strftime("%Y-%m")
 cursor.execute("""
     SELECT SUM(t.amount)
@@ -332,11 +411,9 @@ cursor.execute("""
 """, (user_id, current_month))
 expenses_this_month = cursor.fetchone()[0] or 0
 
-# 3. Number of Bank Accounts
 cursor.execute("SELECT COUNT(*) FROM banks WHERE user_id=?", (user_id,))
 num_banks = cursor.fetchone()[0] or 0
 
-# 4. Savings Progress (net savings overall)
 cursor.execute("""
     SELECT SUM(CASE WHEN type='credit' THEN amount ELSE -amount END)
     FROM transactions t
@@ -345,7 +422,6 @@ cursor.execute("""
 """, (user_id,))
 net_savings = cursor.fetchone()[0] or 0
 
-# Display metrics in four columns
 col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.metric("💰 Total Balance", f"₦{total_balance:,.0f}")
@@ -356,7 +432,14 @@ with col3:
 with col4:
     st.metric("🎯 Net Savings", f"₦{net_savings:,.0f}")
 
-st.divider()  # Optional separator
+st.divider()
+
+# ---------- ALERTS ----------
+warnings = check_alerts(user_id)
+if warnings:
+    with st.expander("⚠️ Alerts", expanded=True):
+        for w in warnings:
+            st.warning(w)
 
 # ---------- CHANGE PASSWORD ----------
 with st.expander("🔐 Change Password"):
@@ -376,18 +459,19 @@ with st.expander("🔐 Change Password"):
         else:
             st.warning("All fields required.")
 
-# ---------- ADD BANK ----------
+# ---------- ADD BANK (with min balance alert) ----------
 st.subheader("🏦 Add Bank Account")
 bank_name = st.text_input("Bank Name", key="bank_name")
 account_name = st.text_input("Account Name", key="acct_name")
 account_number = st.text_input("Account Number (last 4 digits)", key="acct_num")
 opening_balance = st.number_input("Opening Balance (₦)", min_value=0, key="open_bal")
+min_alert = st.number_input("Alert me if balance falls below (₦)", min_value=0, value=0, key="min_alert")
 if st.button("Add Bank", key="add_bank_btn"):
     if bank_name and account_name and account_number:
         cursor.execute("""
-        INSERT INTO banks (user_id, bank_name, account_name, account_number, balance)
-        VALUES (?, ?, ?, ?, ?)
-        """, (user_id, bank_name, account_name, account_number[-4:], opening_balance))
+        INSERT INTO banks (user_id, bank_name, account_name, account_number, balance, min_balance_alert)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (user_id, bank_name, account_name, account_number[-4:], opening_balance, min_alert))
         conn.commit()
         st.success("Bank added")
     else:
@@ -418,6 +502,7 @@ if banks:
             """, (bank_id, expense_amount, f"Expense: {expense_name}", datetime.now().strftime("%Y-%m-%d")))
             conn.commit()
             st.success("Expense added & bank debited")
+            st.rerun()   # to refresh alerts
         else:
             st.warning("Please enter a name and amount.")
 else:
@@ -471,6 +556,111 @@ if banks_for_income:
             st.warning("Please enter a source and amount.")
 else:
     st.info("You need at least one bank account to add income.")
+
+# ---------- SAVINGS GOALS ----------
+st.subheader("🎯 Savings Goals")
+
+# Display existing goals
+cursor.execute("""
+    SELECT id, name, target_amount, current_amount, status
+    FROM goals
+    WHERE user_id=?
+    ORDER BY status, created_at DESC
+""", (user_id,))
+goals = cursor.fetchall()
+
+if goals:
+    for goal in goals:
+        goal_id, name, target, current, status = goal
+        progress = (current / target) * 100 if target > 0 else 0
+        with st.container():
+            col1, col2, col3 = st.columns([3,1,1])
+            with col1:
+                st.markdown(f"**{name}**")
+                st.progress(min(progress/100, 1.0), text=f"₦{current:,.0f} / ₦{target:,.0f} ({progress:.1f}%)")
+            with col2:
+                st.markdown(f"Status: **{status}**")
+            with col3:
+                if status == "active":
+                    if st.button("Add Money", key=f"add_goal_{goal_id}"):
+                        st.session_state.selected_goal = goal_id
+                        st.session_state.show_goal_contribution = True
+        st.divider()
+else:
+    st.info("No savings goals yet. Create one below.")
+
+# Create new goal form
+with st.expander("➕ Create New Goal"):
+    goal_name = st.text_input("Goal Name", key="goal_name")
+    goal_target = st.number_input("Target Amount (₦)", min_value=1, key="goal_target")
+    if st.button("Create Goal", key="create_goal_btn"):
+        if goal_name and goal_target > 0:
+            cursor.execute("""
+                INSERT INTO goals (user_id, name, target_amount, created_at)
+                VALUES (?, ?, ?, ?)
+            """, (user_id, goal_name, goal_target, datetime.now().strftime("%Y-%m-%d")))
+            conn.commit()
+            st.success("Goal created!")
+            st.rerun()
+        else:
+            st.warning("Please enter a name and target.")
+
+# Contribution form (shown when Add Money clicked)
+if st.session_state.get("show_goal_contribution") and st.session_state.get("selected_goal"):
+    goal_id = st.session_state.selected_goal
+    # Fetch goal details
+    cursor.execute("SELECT name, target_amount, current_amount FROM goals WHERE id=?", (goal_id,))
+    g = cursor.fetchone()
+    if g:
+        g_name, g_target, g_current = g
+        st.write(f"**Add money to '{g_name}'**")
+        # Get user's banks
+        cursor.execute("SELECT id, bank_name, balance FROM banks WHERE user_id=?", (user_id,))
+        bank_list = cursor.fetchall()
+        if bank_list:
+            bank_options = {f"{b[1]} (₦{b[2]:,})": b[0] for b in bank_list}
+            selected_bank = st.selectbox("From Bank", list(bank_options.keys()), key="goal_bank")
+            contrib_amount = st.number_input("Amount to add (₦)", min_value=1, key="goal_amount")
+            if st.button("Confirm Contribution", key="confirm_goal_contrib"):
+                bank_id = bank_options[selected_bank]
+                # Check bank balance
+                cursor.execute("SELECT balance FROM banks WHERE id=?", (bank_id,))
+                bank_balance = cursor.fetchone()[0]
+                if contrib_amount > bank_balance:
+                    st.error("Insufficient funds in selected bank.")
+                else:
+                    # Deduct from bank, add to goal
+                    cursor.execute("UPDATE banks SET balance = balance - ? WHERE id=?", (contrib_amount, bank_id))
+                    new_current = g_current + contrib_amount
+                    new_status = "completed" if new_current >= g_target else "active"
+                    cursor.execute("""
+                        UPDATE goals
+                        SET current_amount = ?, status = ?
+                        WHERE id = ?
+                    """, (new_current, new_status, goal_id))
+                    # Record transaction (optional - we can record as a transfer, but for simplicity we skip)
+                    conn.commit()
+                    st.success(f"Added ₦{contrib_amount:,.0f} to goal.")
+                    st.session_state.show_goal_contribution = False
+                    st.rerun()
+        else:
+            st.warning("You need a bank account to transfer from.")
+    else:
+        st.session_state.show_goal_contribution = False
+
+# ---------- ALERT SETTINGS ----------
+with st.expander("🔔 Alert Settings"):
+    # Monthly spending limit
+    cursor.execute("SELECT monthly_spending_limit FROM users WHERE id=?", (user_id,))
+    current_limit = cursor.fetchone()[0]
+    new_limit = st.number_input("Monthly Spending Limit (₦) – 0 = no limit", min_value=0, value=current_limit or 0, key="monthly_limit")
+    if st.button("Update Spending Limit", key="update_limit_btn"):
+        cursor.execute("UPDATE users SET monthly_spending_limit = ? WHERE id=?", (new_limit, user_id))
+        conn.commit()
+        st.success("Monthly limit updated.")
+        st.rerun()
+
+    # Note: per‑bank alerts are set when adding/editing bank. Editing not yet implemented.
 
 # ---------- INCOME VS EXPENSES CHART ----------
 st.subheader("📊 Income vs Expenses Over Time")
