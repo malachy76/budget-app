@@ -838,9 +838,187 @@ if rows:
     st.bar_chart(df_pivot[["Income", "Expenses"]])
 else:
     st.info("No transactions in this period.")
+# ===============================
+# TRANSACTION MANAGEMENT SECTION
+# ===============================
+
+st.divider()
+st.subheader("💳 Transaction Management")
+
+conn = get_connection()
+cursor = conn.cursor()
+
+# Get user banks
+cursor.execute("SELECT id, bank_name FROM banks WHERE user_id = ?", (st.session_state.user["id"],))
+user_banks = cursor.fetchall()
+
+if user_banks:
+
+    bank_dict = {f"{b[1]} (ID:{b[0]})": b[0] for b in user_banks}
+
+    selected_bank_label = st.selectbox("Select Bank", list(bank_dict.keys()))
+    selected_bank_id = bank_dict[selected_bank_label]
+
+    # Show Transactions
+    cursor.execute("""
+        SELECT id, type, amount, description, created_at
+        FROM transactions
+        WHERE bank_id = ?
+        ORDER BY id DESC
+    """, (selected_bank_id,))
+    
+    transactions = cursor.fetchall()
+
+    if transactions:
+        st.write("### 📜 Transactions")
+
+        for t in transactions:
+            t_id, t_type, t_amount, t_desc, t_date = t
+            
+            col1, col2, col3, col4 = st.columns([3,1,1,1])
+            
+            with col1:
+                st.write(f"**{t_type.upper()}** - ₦{t_amount} | {t_desc} | {t_date}")
+
+            # EDIT
+            with col2:
+                if st.button("✏️ Edit", key=f"edit_tx_{t_id}"):
+                    st.session_state.edit_tx_id = t_id
+
+            # DELETE
+            with col3:
+                if st.button("🗑 Delete", key=f"delete_tx_{t_id}"):
+
+                    # Reverse balance first
+                    cursor.execute("SELECT type, amount FROM transactions WHERE id = ?", (t_id,))
+                    old = cursor.fetchone()
+
+                    if old:
+                        old_type, old_amount = old
+
+                        if old_type == "credit":
+                            cursor.execute("UPDATE banks SET balance = balance - ? WHERE id = ?", (old_amount, selected_bank_id))
+                        else:
+                            cursor.execute("UPDATE banks SET balance = balance + ? WHERE id = ?", (old_amount, selected_bank_id))
+
+                    cursor.execute("DELETE FROM transactions WHERE id = ?", (t_id,))
+                    conn.commit()
+                    st.success("Transaction deleted successfully")
+                    st.rerun()
+
+        # EDIT FORM
+        if "edit_tx_id" in st.session_state:
+
+            st.write("### ✏️ Edit Transaction")
+
+            cursor.execute("""
+                SELECT type, amount, description
+                FROM transactions
+                WHERE id = ?
+            """, (st.session_state.edit_tx_id,))
+            
+            old_data = cursor.fetchone()
+
+            if old_data:
+                old_type, old_amount, old_desc = old_data
+
+                new_type = st.selectbox("Type", ["credit", "debit"], index=0 if old_type=="credit" else 1)
+                new_amount = st.number_input("Amount", value=old_amount)
+                new_desc = st.text_input("Description", value=old_desc)
+
+                if st.button("Update Transaction"):
+
+                    # Reverse old balance
+                    if old_type == "credit":
+                        cursor.execute("UPDATE banks SET balance = balance - ? WHERE id = ?", (old_amount, selected_bank_id))
+                    else:
+                        cursor.execute("UPDATE banks SET balance = balance + ? WHERE id = ?", (old_amount, selected_bank_id))
+
+                    # Apply new balance
+                    if new_type == "credit":
+                        cursor.execute("UPDATE banks SET balance = balance + ? WHERE id = ?", (new_amount, selected_bank_id))
+                    else:
+                        cursor.execute("UPDATE banks SET balance = balance - ? WHERE id = ?", (new_amount, selected_bank_id))
+
+                    cursor.execute("""
+                        UPDATE transactions
+                        SET type = ?, amount = ?, description = ?
+                        WHERE id = ?
+                    """, (new_type, new_amount, new_desc, st.session_state.edit_tx_id))
+
+                    conn.commit()
+                    del st.session_state.edit_tx_id
+                    st.success("Transaction updated successfully")
+                    st.rerun()
+
+    else:
+        st.info("No transactions found for this bank.")
+
+else:
+    st.warning("You have no bank accounts yet.")
+
+
+# ===============================
+# TRANSFER BETWEEN BANKS
+# ===============================
+
+st.divider()
+st.subheader("🔁 Transfer Between Banks")
+
+if len(user_banks) >= 2:
+
+    bank_labels = list(bank_dict.keys())
+
+    from_bank_label = st.selectbox("From Bank", bank_labels, key="from_bank")
+    to_bank_label = st.selectbox("To Bank", bank_labels, key="to_bank")
+
+    transfer_amount = st.number_input("Transfer Amount", min_value=1)
+
+    if st.button("Transfer Money"):
+
+        if from_bank_label == to_bank_label:
+            st.error("Cannot transfer to same bank.")
+        else:
+            from_id = bank_dict[from_bank_label]
+            to_id = bank_dict[to_bank_label]
+
+            # Check balance
+            cursor.execute("SELECT balance FROM banks WHERE id = ?", (from_id,))
+            from_balance = cursor.fetchone()[0]
+
+            if from_balance < transfer_amount:
+                st.error("Insufficient balance.")
+            else:
+                # Deduct from source
+                cursor.execute("UPDATE banks SET balance = balance - ? WHERE id = ?", (transfer_amount, from_id))
+
+                # Add to destination
+                cursor.execute("UPDATE banks SET balance = balance + ? WHERE id = ?", (transfer_amount, to_id))
+
+                # Record transactions
+                from datetime import datetime
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                cursor.execute("""
+                    INSERT INTO transactions (bank_id, type, amount, description, created_at)
+                    VALUES (?, 'debit', ?, 'Transfer to another bank', ?)
+                """, (from_id, transfer_amount, now))
+
+                cursor.execute("""
+                    INSERT INTO transactions (bank_id, type, amount, description, created_at)
+                    VALUES (?, 'credit', ?, 'Transfer from another bank', ?)
+                """, (to_id, transfer_amount, now))
+
+                conn.commit()
+                st.success("Transfer successful!")
+                st.rerun()
+
+else:
+    st.info("You need at least two banks to make a transfer.")
 
 # ---------- LOGOUT ----------
 if st.button("Logout", key="logout_btn"):
     st.session_state.user_id = None
     st.rerun()
+
 
