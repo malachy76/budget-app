@@ -145,26 +145,28 @@ def login_user(username, password):
 if not st.session_state.user_id:
     st.title("💰 Simple Budget App")
 
-    login_username = st.text_input("Username")
-    login_password = st.text_input("Password", type="password")
+    # LOGIN
+    login_username = st.text_input("Username", key="login_username")
+    login_password = st.text_input("Password", type="password", key="login_password")
 
-    if st.button("Login"):
+    if st.button("Login", key="login_btn"):
         if login_user(login_username, login_password):
             st.success("Logged in")
-            st.experimental_rerun()
+            st.rerun()
         else:
             st.error("Invalid credentials")
 
     st.divider()
 
+    # REGISTER
     st.subheader("Register")
-    s = st.text_input("Surname")
-    o = st.text_input("Other Names")
-    e = st.text_input("Email")
-    u = st.text_input("Username")
-    p = st.text_input("Password", type="password")
+    s = st.text_input("Surname", key="reg_surname")
+    o = st.text_input("Other Names", key="reg_other")
+    e = st.text_input("Email", key="reg_email")
+    u = st.text_input("Username", key="reg_username")
+    p = st.text_input("Password", type="password", key="reg_password")
 
-    if st.button("Register"):
+    if st.button("Register", key="register_btn"):
         code, msg = register_user(s, o, e, u, p)
         if code:
             st.success("Account created")
@@ -296,3 +298,4 @@ if st.session_state.edit_exp_id:
 if st.button("Logout"):
     st.session_state.user_id = None
     st.experimental_rerun()
+
