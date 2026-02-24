@@ -853,7 +853,7 @@ conn = get_connection()
 cursor = conn.cursor()
 
 # Get user banks
-cursor.execute("SELECT id, bank_name FROM banks WHERE user_id = ?", (st.session_state.user["id"],))
+cursor.execute("SELECT id, bank_name FROM banks WHERE user_id = ?", (st.session_state.user_id,))
 user_banks = cursor.fetchall()
 
 if user_banks:
@@ -1024,6 +1024,7 @@ else:
 if st.button("Logout", key="logout_btn"):
     st.session_state.user_id = None
     st.rerun()
+
 
 
 
