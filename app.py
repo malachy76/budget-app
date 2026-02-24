@@ -1,58 +1,21 @@
 import streamlit as st
+import sqlite3
 import bcrypt
-import random
-import re
-import smtplib
 import pandas as pd
-from email.message import EmailMessage
 from datetime import datetime, timedelta
-from database import get_connection, create_tables
 
-# ---------------- CONFIG ----------------
-st.set_page_config("💰 Budget App", page_icon="💰", layout="centered")
+# ---------------- DATABASE CONNECTION ----------------
+DB_NAME = "budget_app.db"
 
-# ---------- SCHEMA UPGRADE (adds missing columns/tables) ----------
-def upgrade_schema():
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    # Add min_balance_alert to banks if not exists
-    cursor.execute("PRAGMA table_info(banks)")
-    columns = [col[1] for col in cursor.fetchall()]
-    if "min_balance_alert" not in columns:
-        cursor.execute("ALTER TABLE banks ADD COLUMN min_balance_alert INTEGER DEFAULT 0")
-
-    # Add monthly_spending_limit to users if not exists
-    cursor.execute("PRAGMA table_info(users)")
-    columns = [col[1] for col in cursor.fetchall()]
-    if "monthly_spending_limit" not in columns:
-        cursor.execute("ALTER TABLE users ADD COLUMN monthly_spending_limit INTEGER")
-
-    # Create goals table if not exists
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS goals (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        name TEXT NOT NULL,
-        target_amount INTEGER NOT NULL,
-        current_amount INTEGER DEFAULT 0,
-        status TEXT DEFAULT 'active' CHECK(status IN ('active','completed')),
-        created_at TEXT NOT NULL,
-        FOREIGN KEY(user_id) REFERENCES users(id)
-    )
-    """)
-
-    conn.commit()
-    conn.close()
-
-# ---------------- INIT ----------------
-create_tables()                # original tables from database.py
-upgrade_schema()                # add new columns/tables
+def get_connection():
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
 
 conn = get_connection()
 cursor = conn.cursor()
 
-# ---------------- SESSION ----------------
+# ---------------- SESSION STATE ----------------
 if "user_id" not in st.session_state:
     st.session_state.user_id = None
 if "show_forgot_password" not in st.session_state:
@@ -61,506 +24,191 @@ if "show_reset_form" not in st.session_state:
     st.session_state.show_reset_form = False
 if "reset_email" not in st.session_state:
     st.session_state.reset_email = ""
+if "edit_exp_id" not in st.session_state:
+    st.session_state.edit_exp_id = None
+if "edit_bank_id" not in st.session_state:
+    st.session_state.edit_bank_id = None
+if "selected_goal" not in st.session_state:
+    st.session_state.selected_goal = None
+if "show_goal_contribution" not in st.session_state:
+    st.session_state.show_goal_contribution = False
+if "transfer_from_bank" not in st.session_state:
+    st.session_state.transfer_from_bank = None
+if "transfer_to_bank" not in st.session_state:
+    st.session_state.transfer_to_bank = None
 
-# ---------------- PASSWORD STRENGTH CHECK ----------------
-def is_strong_password(password):
-    """Return (bool, message)"""
-    if len(password) < 8:
-        return False, "Password must be at least 8 characters long."
-    if not re.search(r"[A-Z]", password):
-        return False, "Password must contain at least one uppercase letter."
-    if not re.search(r"[a-z]", password):
-        return False, "Password must contain at least one lowercase letter."
-    if not re.search(r"\d", password):
-        return False, "Password must contain at least one digit."
-    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", password):
-        return False, "Password must contain at least one special character (!@#$%^&* etc.)."
-    return True, "Strong password."
+# ---------------- UTILITY FUNCTIONS ----------------
+def hash_password(password):
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt())
 
-# ---------------- HELPER FUNCTIONS ----------------
-def generate_code():
-    return str(random.randint(100000, 999999))
+def check_password(password, hashed):
+    return bcrypt.checkpw(password.encode(), hashed)
 
-def send_email(recipient, subject, body):
+# Placeholder functions for user management (replace with your implementations)
+def login_user(username, password):
+    cursor.execute("SELECT id, password FROM users WHERE username=?", (username,))
+    row = cursor.fetchone()
+    if row and check_password(password, row[1]):
+        return row[0]
+    return None
+
+def register_user(surname, other_names, email, username, password):
     try:
-        msg = EmailMessage()
-        msg["Subject"] = subject
-        msg["From"] = st.secrets["EMAIL_ADDRESS"]
-        msg["To"] = recipient
-        msg.set_content(body)
-
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-            smtp.login(st.secrets["EMAIL_ADDRESS"], st.secrets["EMAIL_PASSWORD"])
-            smtp.send_message(msg)
-        return True, "Email sent successfully!"
+        hashed = hash_password(password)
+        cursor.execute("""
+            INSERT INTO users (surname, other_names, email, username, password, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (surname, other_names, email, username, hashed, datetime.now().strftime("%Y-%m-%d")))
+        conn.commit()
+        return True, "Registered successfully"
     except Exception as e:
         return False, str(e)
 
-def send_verification_email(email, code):
-    return send_email(email, "Verify Your Budget App Account", f"Your verification code is: {code}")
-
-def send_reset_email(email, code):
-    return send_email(email, "Password Reset Request",
-                      f"Your password reset code is: {code}\n\nThis code will expire in 1 hour.")
-
-# ------------------- PASSWORD RESET -------------------
-def request_password_reset(email):
-    cursor.execute("SELECT id FROM users WHERE email=?", (email,))
-    user = cursor.fetchone()
-    if not user:
-        return False, "Email not found."
-
-    user_id = user[0]
-    token = generate_code()
-    created_at = datetime.now().isoformat()
-    expires_at = (datetime.now() + timedelta(hours=1)).isoformat()
-
-    cursor.execute("DELETE FROM password_resets WHERE user_id=?", (user_id,))
-    cursor.execute("""
-        INSERT INTO password_resets (user_id, token, created_at, expires_at)
-        VALUES (?, ?, ?, ?)
-    """, (user_id, token, created_at, expires_at))
-    conn.commit()
-
-    success, message = send_reset_email(email, token)
-    if success:
-        return True, "Reset code sent to your email."
-    else:
-        return False, f"Failed to send email: {message}"
-
-def reset_password(email, token, new_password):
-    cursor.execute("SELECT id FROM users WHERE email=?", (email,))
-    user = cursor.fetchone()
-    if not user:
-        return False, "Email not found."
-
-    user_id = user[0]
-    cursor.execute("""
-        SELECT id FROM password_resets
-        WHERE user_id=? AND token=? AND expires_at > ?
-    """, (user_id, token, datetime.now().isoformat()))
-    reset_record = cursor.fetchone()
-    if not reset_record:
-        return False, "Invalid or expired token."
-
-    # Check password strength
-    strong, msg = is_strong_password(new_password)
-    if not strong:
-        return False, msg
-
-    hashed = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt())
-    cursor.execute("UPDATE users SET password=? WHERE id=?", (hashed, user_id))
-    cursor.execute("DELETE FROM password_resets WHERE user_id=?", (user_id,))
-    conn.commit()
-    return True, "Password reset successfully. You can now log in."
-
-# ------------------- CHANGE PASSWORD -------------------
-def change_password(user_id, current_password, new_password):
-    cursor.execute("SELECT password FROM users WHERE id=?", (user_id,))
-    result = cursor.fetchone()
-    if not result:
-        return False, "User not found."
-
-    stored_hash = result[0]
-    if not bcrypt.checkpw(current_password.encode(), stored_hash):
-        return False, "Current password is incorrect."
-
-    strong, msg = is_strong_password(new_password)
-    if not strong:
-        return False, msg
-
-    hashed = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt())
-    cursor.execute("UPDATE users SET password=? WHERE id=?", (hashed, user_id))
-    conn.commit()
-    return True, "Password changed successfully."
-
-# ------------------- RESEND VERIFICATION -------------------
-def resend_verification(email):
-    cursor.execute("SELECT id, email_verified FROM users WHERE email=?", (email,))
-    user = cursor.fetchone()
-    if not user:
-        return False, "Email not found."
-    if user[1] == 1:
-        return False, "Email already verified."
-
-    new_code = generate_code()
-    cursor.execute("UPDATE users SET verification_code=? WHERE email=?", (new_code, email))
-    conn.commit()
-    success, message = send_verification_email(email, new_code)
-    if success:
-        return True, "New verification code sent."
-    else:
-        return False, f"Failed to send email: {message}"
-
-# ------------------- REGISTER -------------------
-def register_user(surname, other, email, username, password):
-    # Check password strength
-    strong, msg = is_strong_password(password)
-    if not strong:
-        return None, msg
-
-    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
-    code = generate_code()
-    try:
-        cursor.execute("""
-        INSERT INTO users
-        (surname, other_names, email, username, password, verification_code, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            surname, other, email, username,
-            hashed, code, datetime.now().strftime("%Y-%m-%d")
-        ))
-        conn.commit()
-        return code, "Success"
-    except Exception as e:
-        return None, "Username or email already exists."
-
-# ------------------- LOGIN -------------------
-def login_user(username, password):
-    cursor.execute("SELECT id, password, email_verified FROM users WHERE username=?", (username,))
-    user = cursor.fetchone()
-    if not user:
-        st.error("❌ Username not found.")
-        return None
-
-    user_id, stored_hash, email_verified = user
-    if not bcrypt.checkpw(password.encode(), stored_hash):
-        st.error("❌ Incorrect password.")
-        return None
-
-    if email_verified == 0:
-        st.warning("⚠️ Please verify your email first. Check your inbox or request a new code.")
-        return None
-
-    return user_id
-
-# ------------------- ALERTS -------------------
-def check_alerts(user_id):
-    """Return list of warning messages based on current data."""
-    warnings = []
-
-    # 1. Bank balance below min_balance_alert
-    cursor.execute("SELECT bank_name, balance, min_balance_alert FROM banks WHERE user_id=?", (user_id,))
-    banks = cursor.fetchall()
-    for bank in banks:
-        name, balance, alert = bank
-        if alert and balance < alert:
-            warnings.append(f"⚠️ Bank '{name}' balance (₦{balance:,.0f}) is below your alert threshold (₦{alert:,.0f}).")
-
-    # 2. Monthly spending vs limit
-    cursor.execute("SELECT monthly_spending_limit FROM users WHERE id=?", (user_id,))
-    limit_row = cursor.fetchone()
-    if limit_row and limit_row[0]:
-        limit = limit_row[0]
-        current_month = datetime.now().strftime("%Y-%m")
-        cursor.execute("""
-            SELECT SUM(t.amount)
-            FROM transactions t
-            JOIN banks b ON t.bank_id = b.id
-            WHERE b.user_id=? AND t.type='debit' AND strftime('%Y-%m', t.created_at)=?
-        """, (user_id, current_month))
-        spent = cursor.fetchone()[0] or 0
-        if spent > limit:
-            warnings.append(f"⚠️ You have spent ₦{spent:,.0f} this month, exceeding your limit of ₦{limit:,.0f}.")
-
-    return warnings
-
 # ---------------- UI ----------------
+st.set_page_config("💰 Budget App", layout="wide")
+
 st.title("💰 Simple Budget App")
 
 # ================= AUTH =================
 if st.session_state.user_id is None:
-    tabs = st.tabs(["🔐 Login", "📝 Register", "📧 Verify Email"])
-
-    # ---------- LOGIN TAB ----------
+    tabs = st.tabs(["🔐 Login", "📝 Register"])
+    # ---------- LOGIN ----------
     with tabs[0]:
         login_username = st.text_input("Username", key="login_username")
         login_password = st.text_input("Password", type="password", key="login_password")
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            if st.button("Login", key="login_btn"):
-                user_id = login_user(login_username, login_password)
-                if user_id:
-                    st.session_state.user_id = user_id
-                    st.rerun()
-        with col2:
-            if st.button("Forgot Password?", key="forgot_btn"):
-                st.session_state.show_forgot_password = True
-
-        # Forgot password overlay
-        if st.session_state.show_forgot_password:
-            with st.expander("Reset Password", expanded=True):
-                email_input = st.text_input("Enter your email", key="reset_email_input")
-                if st.button("Send Reset Code", key="send_reset_btn"):
-                    if email_input:
-                        success, msg = request_password_reset(email_input)
-                        if success:
-                            st.success(msg)
-                            st.session_state.show_forgot_password = False
-                            st.session_state.show_reset_form = True
-                            st.session_state.reset_email = email_input
-                        else:
-                            st.error(msg)
-                    else:
-                        st.warning("Please enter your email.")
-                if st.button("Cancel", key="cancel_reset_btn"):
-                    st.session_state.show_forgot_password = False
-                    st.rerun()
-
-        # Show reset code form if requested
-        if st.session_state.show_reset_form:
-            with st.expander("Enter Reset Code", expanded=True):
-                reset_code = st.text_input("Reset code", key="reset_code")
-                new_pass = st.text_input("New password", type="password", key="new_pass")
-                confirm_pass = st.text_input("Confirm new password", type="password", key="confirm_pass")
-                if st.button("Reset Password", key="do_reset_btn"):
-                    if reset_code and new_pass and confirm_pass:
-                        if new_pass == confirm_pass:
-                            success, msg = reset_password(st.session_state.reset_email, reset_code, new_pass)
-                            if success:
-                                st.success(msg)
-                                st.session_state.show_reset_form = False
-                                st.session_state.reset_email = ""
-                            else:
-                                st.error(msg)
-                        else:
-                            st.error("Passwords do not match.")
-                    else:
-                        st.warning("All fields required.")
-                if st.button("Cancel Reset", key="cancel_reset_form"):
-                    st.session_state.show_reset_form = False
-                    st.session_state.reset_email = ""
-                    st.rerun()
-
-    # ---------- REGISTER TAB ----------
+        if st.button("Login"):
+            user_id = login_user(login_username, login_password)
+            if user_id:
+                st.session_state.user_id = user_id
+                st.experimental_rerun()
+            else:
+                st.error("Invalid credentials")
+    # ---------- REGISTER ----------
     with tabs[1]:
         reg_surname = st.text_input("Surname", key="reg_surname")
         reg_other = st.text_input("Other Names", key="reg_other")
         reg_email = st.text_input("Email", key="reg_email")
         reg_username = st.text_input("Username", key="reg_username")
         reg_password = st.text_input("Password", type="password", key="reg_password")
-        st.caption("Password must be at least 8 characters, include uppercase, lowercase, digit, and special character.")
-
-        if st.button("Register", key="register_btn"):
-            if not all([reg_surname, reg_other, reg_email, reg_username, reg_password]):
-                st.error("All fields required")
+        if st.button("Register"):
+            success, msg = register_user(reg_surname, reg_other, reg_email, reg_username, reg_password)
+            if success:
+                st.success(msg)
             else:
-                code, msg = register_user(reg_surname, reg_other, reg_email, reg_username, reg_password)
-                if code:
-                    success, email_msg = send_verification_email(reg_email, code)
-                    if success:
-                        st.success("Account created. Check email to verify.")
-                    else:
-                        st.error(f"Account created but email failed: {email_msg}")
-                else:
-                    st.error(msg)
+                st.error(msg)
+    st.stop()
 
-    # ---------- VERIFY EMAIL TAB (with resend) ----------
-    with tabs[2]:
-        verify_email = st.text_input("Registered Email", key="verify_email")
-        verify_code = st.text_input("Verification Code", key="verify_code")
-
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            if st.button("Verify Email", key="verify_btn"):
-                cursor.execute("""
-                SELECT id FROM users
-                WHERE email=? AND verification_code=?
-                """, (verify_email, verify_code))
-                user = cursor.fetchone()
-                if user:
-                    cursor.execute("""
-                    UPDATE users
-                    SET email_verified=1, verification_code=NULL
-                    WHERE id=?
-                    """, (user[0],))
-                    conn.commit()
-                    st.success("✅ Email verified. You can now log in.")
-                else:
-                    st.error("Invalid email or code.")
-        with col2:
-            if st.button("Resend Code", key="resend_btn"):
-                if verify_email:
-                    success, msg = resend_verification(verify_email)
-                    if success:
-                        st.success(msg)
-                    else:
-                        st.error(msg)
-                else:
-                    st.warning("Enter your email first.")
-
-    st.stop()  # Stop here if not logged in
-
-# ================= DASHBOARD (Logged In) =================
 user_id = st.session_state.user_id
 
-cursor.execute("SELECT surname, other_names FROM users WHERE id=?", (user_id,))
+# ---------------- DASHBOARD ----------------
+st.header("🏠 Dashboard")
+
+# Fetch user
+cursor.execute("SELECT surname, other_names, email FROM users WHERE id=?", (user_id,))
 user = cursor.fetchone()
 st.success(f"Welcome {user[0]} {user[1]} 👋")
 
-# ---------- MOBILE OPTIMIZATION CSS ----------
-st.markdown("""
-<style>
-    /* Better touch targets */
-    .stButton button {
-        min-height: 48px;
-        font-size: 16px;
-    }
-    
-    /* Responsive columns on small screens */
-    @media (max-width: 640px) {
-        div[data-testid="column"] {
-            width: 100% !important;
-            margin-bottom: 1rem;
-        }
-    }
-    
-    /* Optional: hide Streamlit branding for a cleaner look */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-</style>
-""", unsafe_allow_html=True)
-
-# ---------- DASHBOARD SUMMARY CARDS ----------
+# ---------------- DASHBOARD CARDS ----------------
+col1, col2, col3, col4 = st.columns(4)
 cursor.execute("SELECT SUM(balance) FROM banks WHERE user_id=?", (user_id,))
 total_balance = cursor.fetchone()[0] or 0
+col1.metric("💰 Total Balance", f"₦{total_balance:,.0f}")
 
 current_month = datetime.now().strftime("%Y-%m")
 cursor.execute("""
     SELECT SUM(t.amount)
     FROM transactions t
-    JOIN banks b ON t.bank_id = b.id
-    WHERE b.user_id = ? AND t.type = 'debit' AND strftime('%Y-%m', t.created_at) = ?
+    JOIN banks b ON t.bank_id=b.id
+    WHERE b.user_id=? AND t.type='debit' AND strftime('%Y-%m', t.created_at)=?
 """, (user_id, current_month))
 expenses_this_month = cursor.fetchone()[0] or 0
+col2.metric("📉 Expenses This Month", f"₦{expenses_this_month:,.0f}")
 
 cursor.execute("SELECT COUNT(*) FROM banks WHERE user_id=?", (user_id,))
 num_banks = cursor.fetchone()[0] or 0
+col3.metric("🏦 Bank Accounts", num_banks)
 
 cursor.execute("""
     SELECT SUM(CASE WHEN type='credit' THEN amount ELSE -amount END)
     FROM transactions t
-    JOIN banks b ON t.bank_id = b.id
-    WHERE b.user_id = ?
+    JOIN banks b ON t.bank_id=b.id
+    WHERE b.user_id=?
 """, (user_id,))
 net_savings = cursor.fetchone()[0] or 0
-
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    st.metric("💰 Total Balance", f"₦{total_balance:,.0f}")
-with col2:
-    st.metric("📉 Expenses This Month", f"₦{expenses_this_month:,.0f}")
-with col3:
-    st.metric("🏦 Bank Accounts", num_banks)
-with col4:
-    st.metric("🎯 Net Savings", f"₦{net_savings:,.0f}")
+col4.metric("🎯 Net Savings", f"₦{net_savings:,.0f}")
 
 st.divider()
 
-# ---------- ALERTS ----------
-warnings = check_alerts(user_id)
-if warnings:
-    with st.expander("⚠️ Alerts", expanded=True):
-        for w in warnings:
-            st.warning(w)
+# ---------------- BANK MANAGEMENT ----------------
+st.subheader("🏦 Your Banks")
+cursor.execute("SELECT id, bank_name, account_name, account_number, balance FROM banks WHERE user_id=?", (user_id,))
+banks = cursor.fetchall()
+for b in banks:
+    bank_id, bank_name, acc_name, acc_num, balance = b
+    col1, col2, col3 = st.columns([4,1,1])
+    with col1:
+        st.write(f"**{bank_name}** (****{acc_num}) — ₦{balance:,.0f}")
+    with col2:
+        if st.button("✏️", key=f"edit_bank_{bank_id}"):
+            st.session_state.edit_bank_id = bank_id
+    with col3:
+        if st.button("🗑", key=f"delete_bank_{bank_id}"):
+            cursor.execute("DELETE FROM banks WHERE id=?", (bank_id,))
+            conn.commit()
+            st.success("Bank deleted")
+            st.experimental_rerun()
 
-# ---------- CHANGE PASSWORD ----------
-with st.expander("🔐 Change Password"):
-    current_pw = st.text_input("Current Password", type="password", key="current_pw")
-    new_pw = st.text_input("New Password", type="password", key="new_pw")
-    confirm_pw = st.text_input("Confirm New Password", type="password", key="confirm_pw")
-    if st.button("Update Password", key="change_pw_btn"):
-        if current_pw and new_pw and confirm_pw:
-            if new_pw == confirm_pw:
-                success, msg = change_password(user_id, current_pw, new_pw)
-                if success:
-                    st.success(msg)
-                else:
-                    st.error(msg)
-            else:
-                st.error("New passwords do not match.")
-        else:
-            st.warning("All fields required.")
-
-# ---------- ADD BANK (with min balance alert) ----------
-st.subheader("🏦 Add Bank Account")
-bank_name = st.text_input("Bank Name", key="bank_name")
-account_name = st.text_input("Account Name", key="acct_name")
-account_number = st.text_input("Account Number (last 4 digits)", key="acct_num")
-opening_balance = st.number_input("Opening Balance (₦)", min_value=0, key="open_bal")
-min_alert = st.number_input("Alert me if balance falls below (₦)", min_value=0, value=0, key="min_alert")
-if st.button("Add Bank", key="add_bank_btn"):
-    if bank_name and account_name and account_number:
-        cursor.execute("""
-        INSERT INTO banks (user_id, bank_name, account_name, account_number, balance, min_balance_alert)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """, (user_id, bank_name, account_name, account_number[-4:], opening_balance, min_alert))
+# Edit bank form
+if st.session_state.edit_bank_id:
+    cursor.execute("SELECT bank_name, account_name, account_number FROM banks WHERE id=?", (st.session_state.edit_bank_id,))
+    bank = cursor.fetchone()
+    new_name = st.text_input("Bank Name", value=bank[0])
+    new_acc_name = st.text_input("Account Name", value=bank[1])
+    new_acc_num = st.text_input("Account Number", value=bank[2])
+    if st.button("Update Bank"):
+        cursor.execute("UPDATE banks SET bank_name=?, account_name=?, account_number=? WHERE id=?",
+                       (new_name, new_acc_name, new_acc_num, st.session_state.edit_bank_id))
         conn.commit()
-        st.success("Bank added")
-    else:
-        st.warning("Please fill all fields.")
+        st.success("Bank updated")
+        st.session_state.edit_bank_id = None
+        st.experimental_rerun()
 
-# ---------- MANAGE BANKS ----------
-st.subheader("🏦 Manage Bank Accounts")
-
-cursor.execute("""
-    SELECT id, bank_name, account_name, account_number, balance
-    FROM banks
-    WHERE user_id=?
-""", (user_id,))
-banks_manage = cursor.fetchall()
-
-if banks_manage:
-    for bank in banks_manage:
-        bank_id, name, acc_name, acc_num, balance = bank
-
-        col1, col2, col3 = st.columns([4,1,1])
-
-        with col1:
-            st.markdown(f"**{name}** (****{acc_num}) — ₦{balance:,.0f}")
-
-        with col2:
-            if st.button("✏️", key=f"edit_bank_{bank_id}"):
-                st.session_state.edit_bank_id = bank_id
-
-        with col3:
-            if st.button("🗑", key=f"delete_bank_{bank_id}"):
-                cursor.execute("DELETE FROM banks WHERE id=?", (bank_id,))
+# ---------------- BANK TO BANK TRANSFER ----------------
+st.subheader("💸 Transfer Between Banks")
+cursor.execute("SELECT id, bank_name, account_number, balance FROM banks WHERE user_id=?", (user_id,))
+banks_list = cursor.fetchall()
+if banks_list and len(banks_list) > 1:
+    bank_options = {f"{b[1]} (****{b[2]}) — ₦{b[3]:,.0f}": b[0] for b in banks_list}
+    from_bank_name = st.selectbox("From Bank", list(bank_options.keys()), key="from_bank_select")
+    to_bank_name = st.selectbox("To Bank", list(bank_options.keys()), key="to_bank_select")
+    transfer_amount = st.number_input("Amount (₦)", min_value=1, key="transfer_amt")
+    if st.button("Transfer"):
+        from_id = bank_options[from_bank_name]
+        to_id = bank_options[to_bank_name]
+        if from_id == to_id:
+            st.warning("Cannot transfer to the same bank.")
+        else:
+            # Check balance
+            cursor.execute("SELECT balance FROM banks WHERE id=?", (from_id,))
+            from_balance = cursor.fetchone()[0]
+            if transfer_amount > from_balance:
+                st.error("Insufficient funds.")
+            else:
+                # Deduct and add
+                cursor.execute("UPDATE banks SET balance = balance - ? WHERE id=?", (transfer_amount, from_id))
+                cursor.execute("UPDATE banks SET balance = balance + ? WHERE id=?", (transfer_amount, to_id))
+                # Record transactions
+                cursor.execute("INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (?, 'debit', ?, ?, ?)",
+                               (from_id, transfer_amount, f"Transfer to bank {to_id}", datetime.now().strftime("%Y-%m-%d")))
+                cursor.execute("INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (?, 'credit', ?, ?, ?)",
+                               (to_id, transfer_amount, f"Transfer from bank {from_id}", datetime.now().strftime("%Y-%m-%d")))
                 conn.commit()
-                st.success("Bank deleted.")
-                st.rerun()
-
-    # -------- EDIT BANK --------
-    if st.session_state.get("edit_bank_id"):
-        edit_id = st.session_state.edit_bank_id
-
-        cursor.execute("""
-            SELECT bank_name, account_name, account_number
-            FROM banks WHERE id=?
-        """, (edit_id,))
-        bank = cursor.fetchone()
-
-        if bank:
-            old_name, old_acc_name, old_acc_num = bank
-
-            st.markdown("### ✏️ Edit Bank")
-            new_name = st.text_input("Bank Name", value=old_name)
-            new_acc_name = st.text_input("Account Name", value=old_acc_name)
-            new_acc_num = st.text_input("Account Number", value=old_acc_num)
-
-            if st.button("Update Bank"):
-                cursor.execute("""
-                    UPDATE banks
-                    SET bank_name=?, account_name=?, account_number=?
-                    WHERE id=?
-                """, (new_name, new_acc_name, new_acc_num, edit_id))
-                conn.commit()
-                st.success("Bank updated.")
-                st.session_state.edit_bank_id = None
-                st.rerun()
+                st.success("Transfer successful")
 else:
-    st.info("No bank accounts yet.")
+    st.info("You need at least 2 bank accounts to transfer between them.")
+
+# ---------------- EXPENSES / INCOME ----------------
+# (You can paste your existing expense & income code here. It will work safely.)
 
 # ---------- ADD EXPENSE ----------
 st.subheader("➕ Add Expense (Auto Bank Debit)")
@@ -962,69 +610,23 @@ else:
     st.warning("You have no bank accounts yet.")
 
 
-# ===============================
-# TRANSFER BETWEEN BANKS
-# ===============================
+# ---------------- ADMIN PANEL ----------------
+st.subheader("🛠 Admin Control (Users & Banks)")
+if user[2] == "budgetingsmart00@gmail.com":  # replace this with your admin check
+    st.markdown("### Users")
+    cursor.execute("SELECT id, surname, other_names, username, email FROM users")
+    all_users = cursor.fetchall()
+    st.table(all_users)
+    st.markdown("### All Banks")
+    cursor.execute("SELECT id, user_id, bank_name, balance FROM banks")
+    all_banks = cursor.fetchall()
+    st.table(all_banks)
+    st.markdown("### All Transactions")
+    cursor.execute("SELECT id, bank_id, type, amount, description, created_at FROM transactions ORDER BY created_at DESC")
+    all_tx = cursor.fetchall()
+    st.table(all_tx)
 
-st.divider()
-st.subheader("🔁 Transfer Between Banks")
-
-if len(user_banks) >= 2:
-
-    bank_labels = list(bank_dict.keys())
-
-    from_bank_label = st.selectbox("From Bank", bank_labels, key="from_bank")
-    to_bank_label = st.selectbox("To Bank", bank_labels, key="to_bank")
-
-    transfer_amount = st.number_input("Transfer Amount", min_value=1)
-
-    if st.button("Transfer Money"):
-
-        if from_bank_label == to_bank_label:
-            st.error("Cannot transfer to same bank.")
-        else:
-            from_id = bank_dict[from_bank_label]
-            to_id = bank_dict[to_bank_label]
-
-            # Check balance
-            cursor.execute("SELECT balance FROM banks WHERE id = ?", (from_id,))
-            from_balance = cursor.fetchone()[0]
-
-            if from_balance < transfer_amount:
-                st.error("Insufficient balance.")
-            else:
-                # Deduct from source
-                cursor.execute("UPDATE banks SET balance = balance - ? WHERE id = ?", (transfer_amount, from_id))
-
-                # Add to destination
-                cursor.execute("UPDATE banks SET balance = balance + ? WHERE id = ?", (transfer_amount, to_id))
-
-                # Record transactions
-                from datetime import datetime
-                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-                cursor.execute("""
-                    INSERT INTO transactions (bank_id, type, amount, description, created_at)
-                    VALUES (?, 'debit', ?, 'Transfer to another bank', ?)
-                """, (from_id, transfer_amount, now))
-
-                cursor.execute("""
-                    INSERT INTO transactions (bank_id, type, amount, description, created_at)
-                    VALUES (?, 'credit', ?, 'Transfer from another bank', ?)
-                """, (to_id, transfer_amount, now))
-
-                conn.commit()
-                st.success("Transfer successful!")
-                st.rerun()
-
-else:
-    st.info("You need at least two banks to make a transfer.")
-
-# ---------- LOGOUT ----------
-if st.button("Logout", key="logout_btn"):
+# ---------------- LOGOUT ----------------
+if st.button("Logout"):
     st.session_state.user_id = None
-    st.rerun()
-
-
-
-
+    st.experimental_rerun()
