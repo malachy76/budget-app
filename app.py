@@ -501,6 +501,67 @@ if st.button("Add Bank", key="add_bank_btn"):
     else:
         st.warning("Please fill all fields.")
 
+# ---------- MANAGE BANKS ----------
+st.subheader("🏦 Manage Bank Accounts")
+
+cursor.execute("""
+    SELECT id, bank_name, account_name, account_number, balance
+    FROM banks
+    WHERE user_id=?
+""", (user_id,))
+banks_manage = cursor.fetchall()
+
+if banks_manage:
+    for bank in banks_manage:
+        bank_id, name, acc_name, acc_num, balance = bank
+
+        col1, col2, col3 = st.columns([4,1,1])
+
+        with col1:
+            st.markdown(f"**{name}** (****{acc_num}) — ₦{balance:,.0f}")
+
+        with col2:
+            if st.button("✏️", key=f"edit_bank_{bank_id}"):
+                st.session_state.edit_bank_id = bank_id
+
+        with col3:
+            if st.button("🗑", key=f"delete_bank_{bank_id}"):
+                cursor.execute("DELETE FROM banks WHERE id=?", (bank_id,))
+                conn.commit()
+                st.success("Bank deleted.")
+                st.rerun()
+
+    # -------- EDIT BANK --------
+    if st.session_state.get("edit_bank_id"):
+        edit_id = st.session_state.edit_bank_id
+
+        cursor.execute("""
+            SELECT bank_name, account_name, account_number
+            FROM banks WHERE id=?
+        """, (edit_id,))
+        bank = cursor.fetchone()
+
+        if bank:
+            old_name, old_acc_name, old_acc_num = bank
+
+            st.markdown("### ✏️ Edit Bank")
+            new_name = st.text_input("Bank Name", value=old_name)
+            new_acc_name = st.text_input("Account Name", value=old_acc_name)
+            new_acc_num = st.text_input("Account Number", value=old_acc_num)
+
+            if st.button("Update Bank"):
+                cursor.execute("""
+                    UPDATE banks
+                    SET bank_name=?, account_name=?, account_number=?
+                    WHERE id=?
+                """, (new_name, new_acc_name, new_acc_num, edit_id))
+                conn.commit()
+                st.success("Bank updated.")
+                st.session_state.edit_bank_id = None
+                st.rerun()
+else:
+    st.info("No bank accounts yet.")
+
 # ---------- ADD EXPENSE ----------
 st.subheader("➕ Add Expense (Auto Bank Debit)")
 expense_name = st.text_input("Expense Name", key="exp_name")
@@ -532,27 +593,76 @@ if banks:
 else:
     st.info("Add a bank account first")
 
-# ---------- EXPENSE SUMMARY ----------
+# ---------- EXPENSE SUMMARY (EDIT & DELETE SAFE VERSION) ----------
 st.subheader("📋 Expense Summary")
+
 cursor.execute("""
-    SELECT e.created_at, e.name, e.amount, b.bank_name, b.account_number
+    SELECT e.id, e.created_at, e.name, e.amount, e.bank_id,
+           b.bank_name, b.account_number
     FROM expenses e
     JOIN banks b ON e.bank_id = b.id
     WHERE e.user_id = ?
     ORDER BY e.created_at DESC
 """, (user_id,))
 expenses_data = cursor.fetchall()
+
 if expenses_data:
-    df_expenses = pd.DataFrame(expenses_data, columns=["Date", "Expense Name", "Amount (₦)", "Bank", "Account"])
-    st.dataframe(df_expenses, use_container_width=True)
-    st.caption("💰 Total per category:")
-    expense_summary = df_expenses.groupby("Expense Name")["Amount (₦)"].sum().reset_index().sort_values("Amount (₦)", ascending=False)
-    st.bar_chart(expense_summary.set_index("Expense Name"))
-    st.caption("📅 Daily expenses:")
-    df_expenses_daily = df_expenses.copy()
-    df_expenses_daily["Date"] = pd.to_datetime(df_expenses_daily["Date"])
-    daily_expenses = df_expenses_daily.groupby(df_expenses_daily["Date"].dt.date)["Amount (₦)"].sum()
-    st.line_chart(daily_expenses)
+    for exp in expenses_data:
+        exp_id, date, name, amount, bank_id, bank_name, acc_num = exp
+
+        col1, col2, col3, col4, col5, col6 = st.columns([2,2,2,2,1,1])
+        col1.write(date)
+        col2.write(name)
+        col3.write(f"₦{amount:,.0f}")
+        col4.write(f"{bank_name} (****{acc_num})")
+
+        if col5.button("✏️", key=f"edit_exp_{exp_id}"):
+            st.session_state.edit_exp_id = exp_id
+
+        if col6.button("🗑", key=f"delete_exp_{exp_id}"):
+            # Refund bank first
+            cursor.execute("UPDATE banks SET balance = balance + ? WHERE id=?", (amount, bank_id))
+            cursor.execute("DELETE FROM expenses WHERE id=?", (exp_id,))
+            conn.commit()
+            st.success("Expense deleted & bank refunded.")
+            st.rerun()
+
+    # -------- EDIT FORM --------
+    if st.session_state.get("edit_exp_id"):
+        edit_id = st.session_state.edit_exp_id
+
+        cursor.execute("""
+            SELECT name, amount, bank_id
+            FROM expenses WHERE id=?
+        """, (edit_id,))
+        exp = cursor.fetchone()
+
+        if exp:
+            old_name, old_amount, old_bank_id = exp
+
+            st.markdown("### ✏️ Edit Expense")
+            new_name = st.text_input("Expense Name", value=old_name)
+            new_amount = st.number_input("Amount (₦)", min_value=1, value=old_amount)
+
+            if st.button("Update Expense"):
+                difference = new_amount - old_amount
+
+                # Adjust bank balance correctly
+                cursor.execute(
+                    "UPDATE banks SET balance = balance - ? WHERE id=?",
+                    (difference, old_bank_id)
+                )
+
+                cursor.execute("""
+                    UPDATE expenses
+                    SET name=?, amount=?
+                    WHERE id=?
+                """, (new_name, new_amount, edit_id))
+
+                conn.commit()
+                st.success("Expense updated safely.")
+                st.session_state.edit_exp_id = None
+                st.rerun()
 else:
     st.info("No expenses recorded yet.")
 
@@ -598,7 +708,7 @@ if goals:
         goal_id, name, target, current, status = goal
         progress = (current / target) * 100 if target > 0 else 0
         with st.container():
-            col1, col2, col3 = st.columns([3,1,1])
+          col1, col2, col3, col4 = st.columns([3,1,1,1])
             with col1:
                 st.markdown(f"**{name}**")
                 st.progress(min(progress/100, 1.0), text=f"₦{current:,.0f} / ₦{target:,.0f} ({progress:.1f}%)")
@@ -609,6 +719,12 @@ if goals:
                     if st.button("Add Money", key=f"add_goal_{goal_id}"):
                         st.session_state.selected_goal = goal_id
                         st.session_state.show_goal_contribution = True
+            with col4:
+                if st.button("🗑", key=f"delete_goal_{goal_id}"):
+                    cursor.execute("DELETE FROM goals WHERE id=?", (goal_id,))
+                    conn.commit()
+                    st.success("Goal deleted.")
+                    st.rerun()
         st.divider()
 else:
     st.info("No savings goals yet. Create one below.")
@@ -727,3 +843,4 @@ else:
 if st.button("Logout", key="logout_btn"):
     st.session_state.user_id = None
     st.rerun()
+
