@@ -707,24 +707,28 @@ if goals:
     for goal in goals:
         goal_id, name, target, current, status = goal
         progress = (current / target) * 100 if target > 0 else 0
-        with st.container():
-          col1, col2, col3, col4 = st.columns([3,1,1,1])
-            with col1:
-                st.markdown(f"**{name}**")
-                st.progress(min(progress/100, 1.0), text=f"₦{current:,.0f} / ₦{target:,.0f} ({progress:.1f}%)")
-            with col2:
-                st.markdown(f"Status: **{status}**")
-            with col3:
-                if status == "active":
-                    if st.button("Add Money", key=f"add_goal_{goal_id}"):
-                        st.session_state.selected_goal = goal_id
-                        st.session_state.show_goal_contribution = True
-            with col4:
-                if st.button("🗑", key=f"delete_goal_{goal_id}"):
-                    cursor.execute("DELETE FROM goals WHERE id=?", (goal_id,))
-                    conn.commit()
-                    st.success("Goal deleted.")
-                    st.rerun()
+    with st.container():
+        col1, col2, col3, col4 = st.columns([3,1,1,1])
+
+    with col1:
+        st.markdown(f"**{name}**")
+        st.progress(min(progress/100, 1.0), text=f"₦{current:,.0f} / ₦{target:,.0f} ({progress:.1f}%)")
+
+    with col2:
+        st.markdown(f"Status: **{status}**")
+
+    with col3:
+        if status == "active":
+            if st.button("Add Money", key=f"add_goal_{goal_id}"):
+                st.session_state.selected_goal = goal_id
+                st.session_state.show_goal_contribution = True
+
+    with col4:
+        if st.button("🗑", key=f"delete_goal_{goal_id}"):
+            cursor.execute("DELETE FROM goals WHERE id=?", (goal_id,))
+            conn.commit()
+            st.success("Goal deleted.")
+            st.rerun()
         st.divider()
 else:
     st.info("No savings goals yet. Create one below.")
@@ -1020,5 +1024,6 @@ else:
 if st.button("Logout", key="logout_btn"):
     st.session_state.user_id = None
     st.rerun()
+
 
 
