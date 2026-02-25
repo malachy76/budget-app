@@ -291,7 +291,7 @@ if st.session_state.user_id is None:
                 user_id = login_user(login_username, login_password)
                 if user_id:
                     st.success("Logged in!")
-                    st.experimental_rerun()
+                    st.st.rerun()()
                 else:
                     st.error("Invalid credentials or email not verified")
         with col2:
@@ -316,7 +316,7 @@ if st.session_state.user_id is None:
                         st.warning("Enter your email.")
                 if st.button("Cancel", key="cancel_reset_btn"):
                     st.session_state.show_forgot_password = False
-                    st.experimental_rerun()
+                    st.st.rerun()()
 
         # Show reset code form if requested
         if st.session_state.show_reset_form:
@@ -341,7 +341,7 @@ if st.session_state.user_id is None:
                 if st.button("Cancel Reset", key="cancel_reset_form"):
                     st.session_state.show_reset_form = False
                     st.session_state.reset_email = ""
-                    st.experimental_rerun()
+                    st.st.rerun()()
 
     # ---------- REGISTER ----------
     with tabs[1]:
@@ -482,7 +482,7 @@ if st.button("Add Bank", key="add_bank_btn"):
         """, (user_id, bank_name, account_name, account_number[-4:], opening_balance, min_alert))
         conn.commit()
         st.success("Bank added")
-        st.experimental_rerun()
+        st.st.rerun()()
     else:
         st.warning("Please fill all fields.")
 
@@ -505,7 +505,7 @@ if banks_manage:
                 cursor.execute("DELETE FROM banks WHERE id=?", (bank_id,))
                 conn.commit()
                 st.success("Bank deleted.")
-                st.experimental_rerun()
+                st.st.rerun()()
 
     # -------- EDIT BANK --------
     if st.session_state.get("edit_bank_id"):
@@ -526,7 +526,7 @@ if banks_manage:
                 conn.commit()
                 st.success("Bank updated.")
                 st.session_state.edit_bank_id = None
-                st.experimental_rerun()
+                st.st.rerun()()
 else:
     st.info("No bank accounts yet.")
 
@@ -553,7 +553,7 @@ if banks:
             """, (bank_id, expense_amount, f"Expense: {expense_name}", datetime.now().strftime("%Y-%m-%d")))
             conn.commit()
             st.success("Expense added & bank debited")
-            st.experimental_rerun()
+            st.st.rerun()()
         else:
             st.warning("Please enter a name and amount.")
 else:
@@ -583,7 +583,7 @@ if expenses_data:
             cursor.execute("DELETE FROM expenses WHERE id=?", (exp_id,))
             conn.commit()
             st.success("Expense deleted & bank refunded")
-            st.experimental_rerun()
+            st.st.rerun()()
 
     # -------- EDIT EXPENSE --------
     if st.session_state.get("edit_exp_id"):
@@ -602,7 +602,7 @@ if expenses_data:
                 conn.commit()
                 st.success("Expense updated")
                 st.session_state.edit_exp_id = None
-                st.experimental_rerun()
+                st.st.rerun()()
 
 # ---------- ADD INCOME ----------
 st.subheader("💰 Add Income")
@@ -621,7 +621,7 @@ if banks:
             """, (bank_id, income_amount, f"Income: {income_source}", datetime.now().strftime("%Y-%m-%d")))
             conn.commit()
             st.success(f"Income of ₦{income_amount:,} added")
-            st.experimental_rerun()
+            st.st.rerun()()
 else:
     st.info("You need at least one bank account to add income")
 
@@ -655,7 +655,7 @@ if len(banks) >= 2:
                 """, (to_id, transfer_amount, f"Transfer from bank {from_id}", datetime.now().strftime("%Y-%m-%d")))
                 conn.commit()
                 st.success("Transfer completed")
-                st.experimental_rerun()
+                st.st.rerun()()
 else:
     st.info("Add at least two bank accounts to enable transfers")
 
@@ -692,7 +692,7 @@ if goals:
                 cursor.execute("DELETE FROM goals WHERE id=?", (goal_id,))
                 conn.commit()
                 st.success("Goal deleted.")
-                st.experimental_rerun()
+                st.st.rerun()()
         st.divider()
 else:
     st.info("No savings goals yet. Create one below.")
@@ -709,7 +709,7 @@ with st.expander("➕ Create New Goal"):
             """, (user_id, goal_name, goal_target, datetime.now().strftime("%Y-%m-%d")))
             conn.commit()
             st.success("Goal created!")
-            st.experimental_rerun()
+            st.st.rerun()()
         else:
             st.warning("Please enter a name and target.")
 
@@ -745,7 +745,7 @@ if st.session_state.get("show_goal_contribution") and st.session_state.get("sele
                     conn.commit()
                     st.success(f"Added ₦{contrib_amount:,.0f} to goal.")
                     st.session_state.show_goal_contribution = False
-                    st.experimental_rerun()
+                    st.st.rerun()()
         else:
             st.warning("You need a bank account to transfer from.")
     else:
@@ -760,7 +760,7 @@ with st.expander("🔔 Alert Settings"):
         cursor.execute("UPDATE users SET monthly_spending_limit = ? WHERE id=?", (new_limit, user_id))
         conn.commit()
         st.success("Monthly limit updated.")
-        st.experimental_rerun()
+        st.st.rerun()()
 
 # ---------- INCOME VS EXPENSES CHART ----------
 st.subheader("📊 Income vs Expenses Over Time")
@@ -804,7 +804,8 @@ else:
 if st.button("Logout", key="logout_btn"):
     st.session_state.user_id = None
     st.session_state.user_role = None
-    st.experimental_rerun()
+    st.st.rerun()()
+
 
 
 
