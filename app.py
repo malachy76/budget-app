@@ -321,7 +321,7 @@ if st.session_state.user_id is None:
 
         # Show reset code form if requested
         if st.session_state.show_reset_form:
-            with st.expander("Enter Reset Code", expanded=True):
+            with st.expander("Enter Reset Code",  =True):
                 reset_code = st.text_input("Reset code", key="reset_code")
                 new_pass = st.text_input("New password", type="password", key="new_pass")
                 confirm_pass = st.text_input("Confirm new password", type="password", key="confirm_pass")
@@ -801,11 +801,19 @@ if rows:
 else:
     st.info("No transactions in this period.")
 
+# ---------- IMPORT BANK STATEMENT CSV ----------
+st.divider()
+st.subheader("📥 Import Bank Statement (CSV)")
+
+with st.expander("Click here to import your bank CSV safely"):
+    csv_import_page(conn, user_id)
+
 # ---------- LOGOUT ----------
 if st.button("Logout", key="logout_btn"):
     st.session_state.user_id = None
     st.session_state.user_role = None
     st.st.rerun()()
+
 
 
 
