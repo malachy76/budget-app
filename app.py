@@ -154,12 +154,12 @@ def send_verification_email(email, code):
     try:
         msg = EmailMessage()
         msg["Subject"] = "Verify your Budget Smart account"
-        msg["From"] = "your_email@gmail.com"
+        msg["From"] = st.secrets["EMAIL_SENDER"]
         msg["To"] = email
         msg.set_content(f"Your verification code is: {code}")
 
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login("your_email@gmail.com", "APP_PASSWORD")
+            server.login(st.secrets["EMAIL_SENDER"], st.secrets["EMAIL_APP_PASSWORD"])
             server.send_message(msg)
  
         return True, "Email sent"
@@ -805,5 +805,6 @@ if st.button("Logout", key="logout_btn"):
     st.session_state.user_id = None
     st.session_state.user_role = None
     st.experimental_rerun()
+
 
 
