@@ -84,8 +84,31 @@ def csv_import_page(conn, user_id: int):
     cols = _get_table_columns(conn, table)
     cols_lower = [c.lower() for c in cols]
 
-    st.info(f"Detected table: **{table}**")
-    st.write("Detected columns:", cols)
+  st.info(f"Import target: **{table}**")
+
+# Show a cleaner, user-friendly table instead of raw list
+friendly = []
+for c in cols:
+    cl = c.lower()
+    if cl == "id":
+        purpose = "Auto ID (internal)"
+    elif cl == "user_id":
+        purpose = "User owner (internal)"
+    elif cl == "bank_id":
+        purpose = "Linked bank (optional)"
+    elif cl in ["name", "expense_name"]:
+        purpose = "Expense name"
+    elif cl in ["amount", "amt", "value"]:
+        purpose = "Amount spent"
+    elif cl in ["created_at", "date", "expense_date", "transaction_date"]:
+        purpose = "Date"
+    else:
+        purpose = "Other"
+    friendly.append({"Column": c, "Meaning": purpose})
+
+st.markdown("**Detected fields (user-relevant):**")
+user_fields = [x for x in friendly if x["Column"].lower() not in ["id", "user_id", "bank_id"]]
+st.dataframe(pd.DataFrame(user_fields), use_container_width=True, hide_index=True)
 
     file = st.file_uploader("Upload CSV", type=["csv"])
     if not file:
