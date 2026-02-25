@@ -151,20 +151,117 @@ def login_user(username, password):
     return None
 
 def send_verification_email(email, code):
-    # Dummy function for demo
-    return True, "Email sent"
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = "Verify your Budget Smart account"
+        msg["From"] = "your_email@gmail.com"
+        msg["To"] = email
+        msg.set_content(f"Your verification code is: {code}")
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login("your_email@gmail.com", "APP_PASSWORD")
+            server.send_message(msg)
+ 
+        return True, "Email sent"
+    except Exception as e:
+        return False, str(e)
 
 def request_password_reset(email):
-    # Dummy function for demo
-    return True, "Reset code sent"
+    try:
+        code = str(random.randint(100000, 999999))
+        cursor.execute(
+            "UPDATE users SET verification_code=? WHERE email=?",
+            (code, email)
+        )
+        if cursor.rowcount == 0:
+            return False, "Email not found"
+
+        conn.commit()
+        return send_verification_email(email, code)
+    except Exception as e:
+        return False, str(e)
 
 def reset_password(email, code, new_password):
-    # Dummy function for demo
-    return True, "Password reset successful"
+    try:
+        cursor.execute(
+            "SELECT id FROM users WHERE email=? AND verification_code=?",
+            (email, code)
+        )
+        user = cursor.fetchone()
+        if not user:
+            return False, "Invalid reset code"
+
+        hashed_pw = hash_password(new_password)
+        cursor.execute("""
+            UPDATE users
+            SET password=?, verification_code=NULL
+            WHERE email=?
+        """, (hashed_pw, email))
+        conn.commit()
+        return True, "Password reset successful"
+    except Exception as e:
+        return False, str(e)
 
 def resend_verification(email):
-    # Dummy function for demo
-    return True, "Verification code resent"
+    try:
+        code = str(random.randint(100000, 999999))
+        cursor.execute(
+            "UPDATE users SET verification_code=? WHERE email=?",
+            (code, email)
+        )
+        if cursor.rowcount == 0:
+            return False, "Email not found"
+
+        conn.commit()
+        return send_verification_email(email, code)
+    except Exception as e:
+        return False, str(e)
+
+def reset_password(email, code, new_password):
+    try:
+        cursor.execute(
+            "SELECT id FROM users WHERE email=? AND verification_code=?",
+            (email, code)
+        )
+
+        user = cursor.fetchone()
+
+        if not user:
+            return False, "Invalid reset code"
+
+        hashed_pw = hash_password(new_password)
+
+        cursor.execute(
+            "UPDATE users SET password=?, verification_code=NULL WHERE email=?",
+            (hashed_pw, email)
+        )
+
+        conn.commit()
+
+        return True, "Password reset successful"
+
+    except Exception as e:
+        return False, str(e)
+
+
+def resend_verification(email):
+    try:
+        code = str(random.randint(100000, 999999))
+
+        cursor.execute(
+            "UPDATE users SET verification_code=? WHERE email=?",
+            (code, email)
+        )
+
+        if cursor.rowcount == 0:
+            return False, "Email not found"
+
+        conn.commit()
+
+        return send_verification_email(email, code)
+
+    except Exception as e:
+        return False, str(e)
 
 def change_password(user_id, current_pw, new_pw):
     cursor.execute("SELECT password FROM users WHERE id=?", (user_id,))
@@ -708,4 +805,5 @@ if st.button("Logout", key="logout_btn"):
     st.session_state.user_id = None
     st.session_state.user_role = None
     st.experimental_rerun()
+
 
