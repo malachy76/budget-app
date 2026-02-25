@@ -177,7 +177,7 @@ def change_password(user_id, current_pw, new_pw):
         return False, "Current password incorrect"
 
 # ---------------- UI ----------------
-st.set_page_config("Budget Smart", page_icon="💰", layout="wide")
+
 st.title("Budget Right")
 
 # ================= AUTH =================
@@ -708,3 +708,4 @@ if st.button("Logout", key="logout_btn"):
     st.session_state.user_id = None
     st.session_state.user_role = None
     st.experimental_rerun()
+
