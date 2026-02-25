@@ -291,7 +291,7 @@ if st.session_state.user_id is None:
                 user_id = login_user(login_username, login_password)
                 if user_id:
                     st.success("Logged in!")
-                    st.st.rerun()()
+                    st.rerun()()
                 else:
                     st.error("Invalid credentials or email not verified")
         with col2:
@@ -805,6 +805,7 @@ if st.button("Logout", key="logout_btn"):
     st.session_state.user_id = None
     st.session_state.user_role = None
     st.st.rerun()()
+
 
 
 
