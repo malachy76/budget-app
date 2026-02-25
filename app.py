@@ -8,7 +8,7 @@ import smtplib
 from email.message import EmailMessage
 from datetime import datetime, timedelta
 import pandas as pd
-from database import get_connection, create_tables
+
 from csv_import import csv_import_page
 # ---------------- DATABASE ----------------
 DB_NAME = "budgeting_Smsrt.db"
@@ -813,6 +813,7 @@ if st.button("Logout", key="logout_btn"):
     st.session_state.user_id = None
     st.session_state.user_role = None
     st.st.rerun()()
+
 
 
 
