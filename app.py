@@ -317,11 +317,11 @@ if st.session_state.user_id is None:
                         st.warning("Enter your email.")
                 if st.button("Cancel", key="cancel_reset_btn"):
                     st.session_state.show_forgot_password = False
-                    st.st.rerun()()
+                    st.rerun()()
 
         # Show reset code form if requested
         if st.session_state.show_reset_form:
-            with st.expander("Enter Reset Code",  =True):
+            with st.expander("Enter Reset Code", expanded=True):
                 reset_code = st.text_input("Reset code", key="reset_code")
                 new_pass = st.text_input("New password", type="password", key="new_pass")
                 confirm_pass = st.text_input("Confirm new password", type="password", key="confirm_pass")
@@ -813,6 +813,7 @@ if st.button("Logout", key="logout_btn"):
     st.session_state.user_id = None
     st.session_state.user_role = None
     st.st.rerun()()
+
 
 
 
