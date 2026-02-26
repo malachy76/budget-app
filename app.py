@@ -346,6 +346,34 @@ def get_analytics():
     except Exception as e:
         return {}
 
+def notify_admin_new_signup(new_name, new_username, new_email):
+    """Email the admin instantly when a new user signs up."""
+    try:
+        with get_db() as (conn, cursor):
+            cursor.execute("SELECT COUNT(*) FROM users")
+            total_users = cursor.fetchone()[0] or 0
+
+        msg = EmailMessage()
+        msg["Subject"] = f"🆕 New signup on Budget Right — {new_name}"
+        msg["From"] = st.secrets["EMAIL_SENDER"]
+        msg["To"] = st.secrets["ADMIN_EMAIL"]
+        msg.set_content(f"""New user just signed up on Budget Right!
+
+Name:     {new_name}
+Username: {new_username}
+Email:    {new_email}
+Time:     {datetime.now().strftime("%Y-%m-%d %H:%M")}
+
+Total registered users: {total_users}
+
+Log into the admin panel to view all users.
+""")
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(st.secrets["EMAIL_SENDER"], st.secrets["EMAIL_APP_PASSWORD"])
+            server.send_message(msg)
+    except Exception:
+        pass  # Never crash the app if admin notification fails
+
 def send_reengagement_email(email, name):
     """Send a re-engagement nudge email to an inactive user."""
     try:
@@ -620,6 +648,12 @@ if st.session_state.user_id is None:
                         new_row = cursor.fetchone()
                     if new_row:
                         track_signup(new_row[0])
+                    # Notify admin of new signup (silent fail — never blocks the user)
+                    notify_admin_new_signup(
+                        f"{reg_surname} {reg_other}",
+                        reg_username,
+                        reg_email,
+                    )
                     success, email_msg = send_verification_email(reg_email, code)
                     if success:
                         st.success("Account created. Check email to verify.")
