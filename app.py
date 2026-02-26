@@ -727,6 +727,10 @@ with st.sidebar:
     if st.button("🚪 Logout", key="logout_btn"):
         st.session_state.user_id = None
         st.session_state.user_role = None
+        # Clear login fields so they don't carry over stale values
+        for key in ["login_username", "login_password"]:
+            if key in st.session_state:
+                del st.session_state[key]
         st.rerun()
 
 st.success(f"Welcome {user[0]} {user[1]} 👋")
