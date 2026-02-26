@@ -81,8 +81,10 @@ def create_tables():
             name TEXT NOT NULL,
             amount INTEGER NOT NULL,
             created_at TEXT,
+            tx_id INTEGER,
             FOREIGN KEY(user_id) REFERENCES users(id),
-            FOREIGN KEY(bank_id) REFERENCES banks(id)
+            FOREIGN KEY(bank_id) REFERENCES banks(id),
+            FOREIGN KEY(tx_id) REFERENCES transactions(id)
         )
         """)
         cursor.execute("""
@@ -99,6 +101,16 @@ def create_tables():
         """)
 
 create_tables()
+
+def migrate_db():
+    """Safe migrations for existing databases — only runs if column is missing."""
+    with get_db() as (conn, cursor):
+        cursor.execute("PRAGMA table_info(expenses)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "tx_id" not in columns:
+            cursor.execute("ALTER TABLE expenses ADD COLUMN tx_id INTEGER REFERENCES transactions(id)")
+
+migrate_db()
 
 # ---------------- SESSION ----------------
 if "user_id" not in st.session_state:
@@ -503,15 +515,18 @@ elif current_page == "Expenses":
                 bank_id = bank_map[selected_bank]
                 now = datetime.now().strftime("%Y-%m-%d")
                 with get_db() as (conn, cursor):
-                    cursor.execute("""
-                        INSERT INTO expenses (user_id, bank_id, name, amount, created_at)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (user_id, bank_id, expense_name, expense_amount, now))
-                    cursor.execute("UPDATE banks SET balance = balance - ? WHERE id=?", (expense_amount, bank_id))
+                    # Insert transaction FIRST so we can capture its id
                     cursor.execute("""
                         INSERT INTO transactions (bank_id, type, amount, description, created_at)
                         VALUES (?, 'debit', ?, ?, ?)
                     """, (bank_id, expense_amount, f"Expense: {expense_name}", now))
+                    tx_id = cursor.lastrowid
+                    # Insert expense with the tx_id linked
+                    cursor.execute("""
+                        INSERT INTO expenses (user_id, bank_id, name, amount, created_at, tx_id)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (user_id, bank_id, expense_name, expense_amount, now, tx_id))
+                    cursor.execute("UPDATE banks SET balance = balance - ? WHERE id=?", (expense_amount, bank_id))
                 st.success("Expense added & bank debited")
                 st.rerun()
             else:
@@ -524,7 +539,7 @@ elif current_page == "Expenses":
     st.subheader("📋 Expense Summary")
     with get_db() as (conn, cursor):
         cursor.execute("""
-            SELECT e.id, e.created_at, e.name, e.amount, e.bank_id, b.bank_name, b.account_number
+            SELECT e.id, e.created_at, e.name, e.amount, e.bank_id, b.bank_name, b.account_number, e.tx_id
             FROM expenses e JOIN banks b ON e.bank_id = b.id
             WHERE e.user_id = ? ORDER BY e.created_at DESC
         """, (user_id,))
@@ -532,7 +547,7 @@ elif current_page == "Expenses":
 
     if expenses_data:
         for exp in expenses_data:
-            exp_id, date, name, amount, bank_id, bank_name, acc_num = exp
+            exp_id, date, name, amount, bank_id, bank_name, acc_num, tx_id = exp
             col1, col2, col3, col4, col5, col6 = st.columns([2, 2, 2, 2, 1, 1])
             col1.write(date)
             col2.write(name)
@@ -544,16 +559,9 @@ elif current_page == "Expenses":
                 with get_db() as (conn, cursor):
                     # Refund the bank balance
                     cursor.execute("UPDATE banks SET balance = balance + ? WHERE id=?", (amount, bank_id))
-                    # Remove the original debit transaction
-                    cursor.execute("""
-                        DELETE FROM transactions
-                        WHERE bank_id=? AND type='debit' AND amount=?
-                        AND description=? AND rowid = (
-                            SELECT rowid FROM transactions
-                            WHERE bank_id=? AND type='debit' AND amount=? AND description=?
-                            ORDER BY rowid DESC LIMIT 1
-                        )
-                    """, (bank_id, amount, f"Expense: {name}", bank_id, amount, f"Expense: {name}"))
+                    # Delete the linked transaction by its exact id (tx_id)
+                    if tx_id:
+                        cursor.execute("DELETE FROM transactions WHERE id=?", (tx_id,))
                     # Delete the expense record
                     cursor.execute("DELETE FROM expenses WHERE id=?", (exp_id,))
                 st.success("Expense deleted & bank refunded")
@@ -562,10 +570,10 @@ elif current_page == "Expenses":
         if st.session_state.get("edit_exp_id"):
             edit_id = st.session_state.edit_exp_id
             with get_db() as (conn, cursor):
-                cursor.execute("SELECT name, amount, bank_id FROM expenses WHERE id=?", (edit_id,))
+                cursor.execute("SELECT name, amount, bank_id, tx_id FROM expenses WHERE id=?", (edit_id,))
                 exp = cursor.fetchone()
             if exp:
-                old_name, old_amount, old_bank_id = exp
+                old_name, old_amount, old_bank_id, old_tx_id = exp
                 st.markdown("### ✏️ Edit Expense")
                 new_name = st.text_input("Expense Name", value=old_name)
                 new_amount = st.number_input("Amount (₦)", min_value=1, value=old_amount)
@@ -574,18 +582,11 @@ elif current_page == "Expenses":
                     with get_db() as (conn, cursor):
                         # Adjust bank balance by the difference
                         cursor.execute("UPDATE banks SET balance = balance - ? WHERE id=?", (diff, old_bank_id))
-                        # Update the matching debit transaction to reflect new name/amount
-                        cursor.execute("""
-                            UPDATE transactions SET amount=?, description=?
-                            WHERE bank_id=? AND type='debit' AND amount=? AND description=?
-                            AND rowid = (
-                                SELECT rowid FROM transactions
-                                WHERE bank_id=? AND type='debit' AND amount=? AND description=?
-                                ORDER BY rowid DESC LIMIT 1
-                            )
-                        """, (new_amount, f"Expense: {new_name}",
-                              old_bank_id, old_amount, f"Expense: {old_name}",
-                              old_bank_id, old_amount, f"Expense: {old_name}"))
+                        # Update the linked transaction directly by its exact id
+                        if old_tx_id:
+                            cursor.execute("""
+                                UPDATE transactions SET amount=?, description=? WHERE id=?
+                            """, (new_amount, f"Expense: {new_name}", old_tx_id))
                         # Update the expense record
                         cursor.execute("UPDATE expenses SET name=?, amount=? WHERE id=?", (new_name, new_amount, edit_id))
                     st.success("Expense updated")
@@ -633,8 +634,15 @@ elif current_page == "Banks":
             with col3:
                 if st.button("🗑", key=f"delete_bank_{bank_id}"):
                     with get_db() as (conn, cursor):
+                        # 1. Clear the tx_id link on expenses for this bank (so FK is not violated)
+                        cursor.execute("UPDATE expenses SET tx_id=NULL WHERE bank_id=?", (bank_id,))
+                        # 2. Delete all expenses linked to this bank
+                        cursor.execute("DELETE FROM expenses WHERE bank_id=?", (bank_id,))
+                        # 3. Delete all transactions linked to this bank
+                        cursor.execute("DELETE FROM transactions WHERE bank_id=?", (bank_id,))
+                        # 4. Now safely delete the bank
                         cursor.execute("DELETE FROM banks WHERE id=?", (bank_id,))
-                    st.success("Bank deleted.")
+                    st.success("Bank and all its transactions deleted.")
                     st.rerun()
 
         if st.session_state.get("edit_bank_id"):
