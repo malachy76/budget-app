@@ -569,124 +569,122 @@ if st.session_state.user_id is None:
         st.markdown("#### 🚀 Get started — it's free")
         tabs = st.tabs(["🔐 Login", "📝 Register", "📧 Verify Email"])
 
-    with tabs[0]:
-        login_username = st.text_input("Username", key="login_username")
-        login_password = st.text_input("Password", type="password", key="login_password")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Login", key="login_btn"):
-                uid = login_user(login_username, login_password)
-                if uid:
-                    track_login(uid)
-                    st.success("Logged in!")
-                    st.rerun()
-                else:
-                    st.error("Invalid credentials or email not verified")
-        with col2:
-            if st.button("Forgot Password?", key="forgot_btn"):
-                st.session_state.show_forgot_password = True
-
-        if st.session_state.show_forgot_password:
-            with st.expander("Reset Password", expanded=True):
-                email_input = st.text_input("Enter your email", key="reset_email_input")
-                if st.button("Send Reset Code", key="send_reset_btn"):
-                    if email_input:
-                        success, msg = request_password_reset(email_input)
-                        if success:
-                            st.success(msg)
-                            st.session_state.show_forgot_password = False
-                            st.session_state.show_reset_form = True
-                            st.session_state.reset_email = email_input
-                        else:
-                            st.error(msg)
+        with tabs[0]:
+            login_username = st.text_input("Username", key="login_username")
+            login_password = st.text_input("Password", type="password", key="login_password")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("Login", key="login_btn"):
+                    uid = login_user(login_username, login_password)
+                    if uid:
+                        track_login(uid)
+                        st.success("Logged in!")
+                        st.rerun()
                     else:
-                        st.warning("Enter your email.")
-                if st.button("Cancel", key="cancel_reset_btn"):
-                    st.session_state.show_forgot_password = False
-                    st.rerun()
+                        st.error("Invalid credentials or email not verified")
+            with col2:
+                if st.button("Forgot Password?", key="forgot_btn"):
+                    st.session_state.show_forgot_password = True
 
-        if st.session_state.show_reset_form:
-            with st.expander("Enter Reset Code", expanded=True):
-                reset_code = st.text_input("Reset code", key="reset_code")
-                new_pass = st.text_input("New password", type="password", key="new_pass")
-                confirm_pass = st.text_input("Confirm new password", type="password", key="confirm_pass")
-                if st.button("Reset Password", key="do_reset_btn"):
-                    if reset_code and new_pass and confirm_pass:
-                        if new_pass == confirm_pass:
-                            success, msg = reset_password(st.session_state.reset_email, reset_code, new_pass)
+            if st.session_state.show_forgot_password:
+                with st.expander("Reset Password", expanded=True):
+                    email_input = st.text_input("Enter your email", key="reset_email_input")
+                    if st.button("Send Reset Code", key="send_reset_btn"):
+                        if email_input:
+                            success, msg = request_password_reset(email_input)
                             if success:
                                 st.success(msg)
-                                st.session_state.show_reset_form = False
-                                st.session_state.reset_email = ""
+                                st.session_state.show_forgot_password = False
+                                st.session_state.show_reset_form = True
+                                st.session_state.reset_email = email_input
                             else:
                                 st.error(msg)
                         else:
-                            st.error("Passwords do not match.")
-                    else:
-                        st.warning("All fields required.")
-                if st.button("Cancel Reset", key="cancel_reset_form"):
-                    st.session_state.show_reset_form = False
-                    st.session_state.reset_email = ""
-                    st.rerun()
+                            st.warning("Enter your email.")
+                    if st.button("Cancel", key="cancel_reset_btn"):
+                        st.session_state.show_forgot_password = False
+                        st.rerun()
 
-    with tabs[1]:
-        reg_surname = st.text_input("Surname", key="reg_surname")
-        reg_other = st.text_input("Other Names", key="reg_other")
-        reg_email = st.text_input("Email", key="reg_email")
-        reg_username = st.text_input("Username", key="reg_username")
-        reg_password = st.text_input("Password", type="password", key="reg_password")
-        st.caption("Password must be at least 8 characters, include uppercase, lowercase, digit, and special character.")
-        if st.button("Register", key="register_btn"):
-            if not all([reg_surname, reg_other, reg_email, reg_username, reg_password]):
-                st.error("All fields required")
-            else:
-                code, msg = register_user(reg_surname, reg_other, reg_email, reg_username, reg_password)
-                if code:
-                    # Look up the new user_id to record the signup event
-                    with get_db() as (conn, cursor):
-                        cursor.execute("SELECT id FROM users WHERE username=?", (reg_username,))
-                        new_row = cursor.fetchone()
-                    if new_row:
-                        track_signup(new_row[0])
-                    # Notify admin of new signup (silent fail — never blocks the user)
-                    notify_admin_new_signup(
-                        f"{reg_surname} {reg_other}",
-                        reg_username,
-                        reg_email,
-                    )
-                    success, email_msg = send_verification_email(reg_email, code)
-                    if success:
-                        st.success("Account created. Check email to verify.")
-                    else:
-                        st.error(f"Account created but email failed: {email_msg}")
-                else:
-                    st.error(msg)
+            if st.session_state.show_reset_form:
+                with st.expander("Enter Reset Code", expanded=True):
+                    reset_code = st.text_input("Reset code", key="reset_code")
+                    new_pass = st.text_input("New password", type="password", key="new_pass")
+                    confirm_pass = st.text_input("Confirm new password", type="password", key="confirm_pass")
+                    if st.button("Reset Password", key="do_reset_btn"):
+                        if reset_code and new_pass and confirm_pass:
+                            if new_pass == confirm_pass:
+                                success, msg = reset_password(st.session_state.reset_email, reset_code, new_pass)
+                                if success:
+                                    st.success(msg)
+                                    st.session_state.show_reset_form = False
+                                    st.session_state.reset_email = ""
+                                else:
+                                    st.error(msg)
+                            else:
+                                st.error("Passwords do not match.")
+                        else:
+                            st.warning("All fields required.")
+                    if st.button("Cancel Reset", key="cancel_reset_form"):
+                        st.session_state.show_reset_form = False
+                        st.session_state.reset_email = ""
+                        st.rerun()
 
-    with tabs[2]:
-        verify_email = st.text_input("Registered Email", key="verify_email")
-        verify_code = st.text_input("Verification Code", key="verify_code")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Verify Email", key="verify_btn"):
-                with get_db() as (conn, cursor):
-                    cursor.execute("SELECT id FROM users WHERE email=? AND verification_code=?", (verify_email, verify_code))
-                    user = cursor.fetchone()
-                    if user:
-                        cursor.execute("UPDATE users SET email_verified=1, verification_code=NULL WHERE id=?", (user[0],))
-                if user:
-                    st.success("✅ Email verified. You can now log in.")
+        with tabs[1]:
+            reg_surname = st.text_input("Surname", key="reg_surname")
+            reg_other = st.text_input("Other Names", key="reg_other")
+            reg_email = st.text_input("Email", key="reg_email")
+            reg_username = st.text_input("Username", key="reg_username")
+            reg_password = st.text_input("Password", type="password", key="reg_password")
+            st.caption("Password must be at least 8 characters, include uppercase, lowercase, digit, and special character.")
+            if st.button("Register", key="register_btn"):
+                if not all([reg_surname, reg_other, reg_email, reg_username, reg_password]):
+                    st.error("All fields required")
                 else:
-                    st.error("Invalid email or code.")
-        with col2:
-            if st.button("Resend Code", key="resend_btn"):
-                if verify_email:
-                    success, msg = resend_verification(verify_email)
-                    if success:
-                        st.success(msg)
+                    code, msg = register_user(reg_surname, reg_other, reg_email, reg_username, reg_password)
+                    if code:
+                        with get_db() as (conn, cursor):
+                            cursor.execute("SELECT id FROM users WHERE username=?", (reg_username,))
+                            new_row = cursor.fetchone()
+                        if new_row:
+                            track_signup(new_row[0])
+                        notify_admin_new_signup(
+                            f"{reg_surname} {reg_other}",
+                            reg_username,
+                            reg_email,
+                        )
+                        success, email_msg = send_verification_email(reg_email, code)
+                        if success:
+                            st.success("Account created. Check email to verify.")
+                        else:
+                            st.error(f"Account created but email failed: {email_msg}")
                     else:
                         st.error(msg)
-                else:
-                    st.warning("Enter your email first.")
+
+        with tabs[2]:
+            verify_email = st.text_input("Registered Email", key="verify_email")
+            verify_code = st.text_input("Verification Code", key="verify_code")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("Verify Email", key="verify_btn"):
+                    with get_db() as (conn, cursor):
+                        cursor.execute("SELECT id FROM users WHERE email=? AND verification_code=?", (verify_email, verify_code))
+                        user = cursor.fetchone()
+                        if user:
+                            cursor.execute("UPDATE users SET email_verified=1, verification_code=NULL WHERE id=?", (user[0],))
+                    if user:
+                        st.success("✅ Email verified. You can now log in.")
+                    else:
+                        st.error("Invalid email or code.")
+            with col2:
+                if st.button("Resend Code", key="resend_btn"):
+                    if verify_email:
+                        success, msg = resend_verification(verify_email)
+                        if success:
+                            st.success(msg)
+                        else:
+                            st.error(msg)
+                    else:
+                        st.warning("Enter your email first.")
 
     st.stop()
 
@@ -722,7 +720,7 @@ with st.sidebar:
     st.divider()
     st.markdown(
         "🐛 [Report a bug / Suggest a feature]"
-        "(https://forms.gle/sS6FCre6Q2BxCg9h8)",
+        "(https://forms.gle/YOUR_GOOGLE_FORM_ID)",
         unsafe_allow_html=False,
     )
     st.divider()
