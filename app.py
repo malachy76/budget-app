@@ -720,6 +720,12 @@ with st.sidebar:
     current_page = selected.split(" ", 1)[-1]
 
     st.divider()
+    st.markdown(
+        "🐛 [Report a bug / Suggest a feature]"
+        "(https://forms.gle/sS6FCre6Q2BxCg9h8)",
+        unsafe_allow_html=False,
+    )
+    st.divider()
     if st.button("🚪 Logout", key="logout_btn"):
         st.session_state.user_id = None
         st.session_state.user_role = None
