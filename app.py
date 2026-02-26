@@ -99,6 +99,15 @@ def create_tables():
             FOREIGN KEY(user_id) REFERENCES users(id)
         )
         """)
+        # Analytics: one row per login event
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS analytics_logins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            login_date TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        """)
 
 create_tables()
 
@@ -109,6 +118,11 @@ def migrate_db():
         columns = [row[1] for row in cursor.fetchall()]
         if "tx_id" not in columns:
             cursor.execute("ALTER TABLE expenses ADD COLUMN tx_id INTEGER REFERENCES transactions(id)")
+        # Add last_login to users if missing
+        cursor.execute("PRAGMA table_info(users)")
+        user_cols = [row[1] for row in cursor.fetchall()]
+        if "last_login" not in user_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN last_login TEXT")
 
 migrate_db()
 
@@ -223,6 +237,139 @@ def change_password(user_id, current_pw, new_pw):
             return True, "Password updated"
         else:
             return False, "Current password incorrect"
+
+# ---------------- ANALYTICS FUNCTIONS ----------------
+def track_login(user_id):
+    """Record a login event and update last_login timestamp."""
+    try:
+        now = datetime.now().strftime("%Y-%m-%d")
+        with get_db() as (conn, cursor):
+            cursor.execute(
+                "INSERT INTO analytics_logins (user_id, login_date) VALUES (?, ?)",
+                (user_id, now)
+            )
+            cursor.execute(
+                "UPDATE users SET last_login=? WHERE id=?",
+                (now, user_id)
+            )
+    except Exception:
+        pass  # Never crash the app over analytics
+
+def track_signup(user_id):
+    """Record signup as a login event too — counts as day-1 activity."""
+    try:
+        now = datetime.now().strftime("%Y-%m-%d")
+        with get_db() as (conn, cursor):
+            cursor.execute(
+                "INSERT INTO analytics_logins (user_id, login_date) VALUES (?, ?)",
+                (user_id, now)
+            )
+    except Exception:
+        pass
+
+def get_analytics():
+    """Return a dict of all key analytics figures."""
+    try:
+        with get_db() as (conn, cursor):
+            today = datetime.now().strftime("%Y-%m-%d")
+            cutoff_30 = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+            cutoff_7  = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+
+            cursor.execute("SELECT COUNT(*) FROM users WHERE email_verified=1")
+            total_verified = cursor.fetchone()[0] or 0
+
+            cursor.execute("SELECT COUNT(*) FROM users")
+            total_registered = cursor.fetchone()[0] or 0
+
+            cursor.execute(
+                "SELECT COUNT(DISTINCT user_id) FROM analytics_logins WHERE login_date=?",
+                (today,)
+            )
+            dau = cursor.fetchone()[0] or 0  # Daily Active Users
+
+            cursor.execute(
+                "SELECT COUNT(DISTINCT user_id) FROM analytics_logins WHERE login_date >= ?",
+                (cutoff_7,)
+            )
+            wau = cursor.fetchone()[0] or 0  # Weekly Active Users
+
+            cursor.execute(
+                "SELECT COUNT(DISTINCT user_id) FROM analytics_logins WHERE login_date >= ?",
+                (cutoff_30,)
+            )
+            mau = cursor.fetchone()[0] or 0  # Monthly Active Users
+
+            # New signups in last 30 days
+            cursor.execute(
+                "SELECT COUNT(*) FROM users WHERE created_at >= ?",
+                (cutoff_30,)
+            )
+            new_signups_30d = cursor.fetchone()[0] or 0
+
+            # Signups today
+            cursor.execute(
+                "SELECT COUNT(*) FROM users WHERE created_at=?",
+                (today,)
+            )
+            signups_today = cursor.fetchone()[0] or 0
+
+            # Daily logins for last 14 days (for chart)
+            cursor.execute("""
+                SELECT login_date, COUNT(DISTINCT user_id)
+                FROM analytics_logins
+                WHERE login_date >= date('now', '-14 days')
+                GROUP BY login_date ORDER BY login_date
+            """)
+            daily_rows = cursor.fetchall()
+
+            # Inactive users: verified, never logged in OR last_login > 14 days ago
+            cursor.execute("""
+                SELECT id, surname, other_names, email, last_login
+                FROM users
+                WHERE email_verified=1
+                AND (last_login IS NULL OR last_login < ?)
+                ORDER BY last_login ASC
+            """, (cutoff_7,))
+            inactive_users = cursor.fetchall()
+
+        return {
+            "total_registered": total_registered,
+            "total_verified": total_verified,
+            "dau": dau,
+            "wau": wau,
+            "mau": mau,
+            "new_signups_30d": new_signups_30d,
+            "signups_today": signups_today,
+            "daily_rows": daily_rows,
+            "inactive_users": inactive_users,
+        }
+    except Exception as e:
+        return {}
+
+def send_reengagement_email(email, name):
+    """Send a re-engagement nudge email to an inactive user."""
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = "We miss you on Budget Right 💰"
+        msg["From"] = st.secrets["EMAIL_SENDER"]
+        msg["To"] = email
+        msg.set_content(f"""Hi {name},
+
+You haven't logged into Budget Right in a while — your finances miss you! 😊
+
+Log back in to check your balance, track your spending, and stay on top of your savings goals.
+
+👉 Visit the app and pick up where you left off.
+
+Stay financially smart,
+The Budget Right Team
+""")
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(st.secrets["EMAIL_SENDER"], st.secrets["EMAIL_APP_PASSWORD"])
+            server.send_message(msg)
+        return True, "Email sent"
+    except Exception as e:
+        return False, str(e)
 
 # ---------------- UI ----------------
 st.title("Budget Right")
@@ -402,6 +549,7 @@ if st.session_state.user_id is None:
             if st.button("Login", key="login_btn"):
                 uid = login_user(login_username, login_password)
                 if uid:
+                    track_login(uid)
                     st.success("Logged in!")
                     st.rerun()
                 else:
@@ -466,6 +614,12 @@ if st.session_state.user_id is None:
             else:
                 code, msg = register_user(reg_surname, reg_other, reg_email, reg_username, reg_password)
                 if code:
+                    # Look up the new user_id to record the signup event
+                    with get_db() as (conn, cursor):
+                        cursor.execute("SELECT id FROM users WHERE username=?", (reg_username,))
+                        new_row = cursor.fetchone()
+                    if new_row:
+                        track_signup(new_row[0])
                     success, email_msg = send_verification_email(reg_email, code)
                     if success:
                         st.success("Account created. Check email to verify.")
@@ -526,6 +680,7 @@ with st.sidebar:
     ]
     if st.session_state.user_role == "admin":
         pages.insert(0, "🛠 Admin Panel")
+        pages.insert(1, "📈 Analytics")
 
     selected = st.radio("Navigate", pages, key="nav_radio")
     current_page = selected.split(" ", 1)[-1]
@@ -558,6 +713,94 @@ if current_page == "Admin Panel":
             st.write(b)
     with tabs_admin[2]:
         st.info("You can paste your existing Expenses & Income code here for admin view.")
+
+# ================= PAGE: ANALYTICS (admin only) =================
+elif current_page == "Analytics":
+    if st.session_state.user_role != "admin":
+        st.error("Access denied.")
+        st.stop()
+
+    st.markdown("## 📈 Analytics Dashboard")
+    data = get_analytics()
+
+    if not data:
+        st.warning("Could not load analytics data.")
+    else:
+        # — Summary metrics —
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("👥 Total Registered",   data["total_registered"])
+        c2.metric("✅ Verified Users",      data["total_verified"])
+        c3.metric("🟢 Active Today",        data["dau"])
+        c4.metric("📅 Active This Week",    data["wau"])
+        c5.metric("📆 Active This Month",   data["mau"])
+
+        st.divider()
+
+        col_left, col_right = st.columns(2)
+
+        with col_left:
+            st.subheader("📝 Signups")
+            s1, s2 = st.columns(2)
+            s1.metric("Signups Today",      data["signups_today"])
+            s2.metric("Signups (30 days)",  data["new_signups_30d"])
+
+            st.subheader("📊 Daily Active Users — Last 14 Days")
+            if data["daily_rows"]:
+                df_dau = pd.DataFrame(data["daily_rows"], columns=["date", "active_users"])
+                df_dau["date"] = pd.to_datetime(df_dau["date"])
+                df_dau = df_dau.set_index("date")
+                st.bar_chart(df_dau["active_users"])
+            else:
+                st.info("No login data yet.")
+
+        with col_right:
+            st.subheader(f"😴 Inactive Users ({len(data['inactive_users'])} total)")
+            st.caption("Verified accounts with no login in the last 7 days.")
+
+            inactive = data["inactive_users"]
+            if inactive:
+                df_inactive = pd.DataFrame(
+                    inactive,
+                    columns=["id", "Surname", "Other Names", "Email", "Last Login"]
+                )
+                df_inactive["Last Login"] = df_inactive["Last Login"].fillna("Never")
+                st.dataframe(df_inactive[["Surname", "Other Names", "Email", "Last Login"]], use_container_width=True)
+
+                st.divider()
+                st.subheader("📧 Send Re-engagement Email")
+                st.caption("Send a friendly nudge to bring inactive users back.")
+
+                email_options = {
+                    f"{row[1]} {row[2]} ({row[3]})": (row[3], row[1])
+                    for row in inactive
+                }
+                selected_user = st.selectbox(
+                    "Select user to email",
+                    list(email_options.keys()),
+                    key="reeng_select"
+                )
+                if st.button("📨 Send Re-engagement Email", key="reeng_send_btn"):
+                    target_email, target_name = email_options[selected_user]
+                    ok, msg = send_reengagement_email(target_email, target_name)
+                    if ok:
+                        st.success(f"Email sent to {target_email}")
+                    else:
+                        st.error(f"Failed: {msg}")
+
+                st.divider()
+                st.subheader("📨 Bulk Email All Inactive Users")
+                st.caption(f"This will send to all {len(inactive)} inactive verified accounts.")
+                if st.button("🚀 Send to All Inactive", key="reeng_bulk_btn"):
+                    sent, failed = 0, 0
+                    for row in inactive:
+                        ok, _ = send_reengagement_email(row[3], row[1])
+                        if ok:
+                            sent += 1
+                        else:
+                            failed += 1
+                    st.success(f"✅ Sent: {sent}  |  ❌ Failed: {failed}")
+            else:
+                st.success("No inactive users right now — everyone's engaged! 🎉")
 
 # ================= PAGE: DASHBOARD =================
 elif current_page == "Dashboard":
