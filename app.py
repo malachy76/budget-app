@@ -229,7 +229,170 @@ st.title("Budget Right")
 
 # ================= AUTH =================
 if st.session_state.user_id is None:
-    tabs = st.tabs(["🔐 Login", "📝 Register", "📧 Verify Email"])
+
+    # -------- LANDING PAGE --------
+    st.markdown("""
+    <style>
+    .landing-hero {
+        background: linear-gradient(135deg, #1a3c5e 0%, #0e7c5b 100%);
+        border-radius: 16px;
+        padding: 48px 40px 40px 40px;
+        text-align: center;
+        margin-bottom: 8px;
+    }
+    .landing-logo {
+        font-size: 56px;
+        margin-bottom: 4px;
+        display: block;
+    }
+    .landing-title {
+        font-size: 2.6rem;
+        font-weight: 800;
+        color: #ffffff;
+        margin: 0 0 6px 0;
+        letter-spacing: -0.5px;
+    }
+    .landing-tagline {
+        font-size: 1.1rem;
+        color: #a8d8c8;
+        margin: 0 0 28px 0;
+        font-weight: 400;
+    }
+    .landing-desc {
+        font-size: 1.05rem;
+        color: #d4eee6;
+        max-width: 560px;
+        margin: 0 auto;
+        line-height: 1.7;
+    }
+    .feature-card {
+        background: #f0f7f4;
+        border-left: 4px solid #0e7c5b;
+        border-radius: 10px;
+        padding: 18px 20px;
+        height: 100%;
+    }
+    .feature-icon { font-size: 1.8rem; }
+    .feature-title { font-weight: 700; color: #1a3c5e; font-size: 1rem; margin: 6px 0 4px 0; }
+    .feature-text  { color: #4a6070; font-size: 0.92rem; line-height: 1.5; }
+    .demo-card {
+        background: #ffffff;
+        border: 1px solid #d0e8df;
+        border-radius: 14px;
+        padding: 24px;
+        margin-bottom: 4px;
+    }
+    .demo-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px 0;
+        border-bottom: 1px solid #eef5f2;
+        font-size: 0.95rem;
+    }
+    .demo-row:last-child { border-bottom: none; }
+    .demo-credit { color: #0e7c5b; font-weight: 600; }
+    .demo-debit  { color: #c0392b; font-weight: 600; }
+    .demo-label  { color: #2c3e50; }
+    .demo-date   { color: #95a5a6; font-size: 0.82rem; }
+    .badge {
+        display: inline-block;
+        background: #e8f5f0;
+        color: #0e7c5b;
+        border-radius: 20px;
+        padding: 4px 14px;
+        font-size: 0.82rem;
+        font-weight: 600;
+        margin: 4px 4px 0 0;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # — Hero —
+    st.markdown("""
+    <div class="landing-hero">
+      <span class="landing-logo">💰</span>
+      <p class="landing-title">Budget Right</p>
+      <p class="landing-tagline">🔒 Secure budget tracking — built for Nigerians</p>
+      <p class="landing-desc">
+        Track your income, expenses, and savings easily.<br>
+        Know exactly where your money goes — in naira, every day.
+      </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # — Feature cards —
+    fc1, fc2, fc3, fc4 = st.columns(4)
+    features = [
+        ("💳", "Multiple Banks", "Link all your accounts — GTB, Access, Opay and more — in one place."),
+        ("📊", "Live Dashboard", "See your total balance, monthly spend, and net savings at a glance."),
+        ("🎯", "Savings Goals", "Set a target, contribute from any bank, and track your progress."),
+        ("📥", "CSV Import", "Upload your bank statement and have it auto-parsed into your ledger."),
+    ]
+    for col, (icon, title, text) in zip([fc1, fc2, fc3, fc4], features):
+        with col:
+            st.markdown(f"""
+            <div class="feature-card">
+              <div class="feature-icon">{icon}</div>
+              <div class="feature-title">{title}</div>
+              <div class="feature-text">{text}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # — Demo screenshot —
+    demo_col, auth_col = st.columns([1.1, 1], gap="large")
+
+    with demo_col:
+        st.markdown("#### 📱 See it in action")
+        st.markdown("""
+        <div class="demo-card">
+          <div style="font-weight:700;color:#1a3c5e;margin-bottom:12px;font-size:1rem;">
+            💳 My Dashboard &nbsp;·&nbsp;
+            <span style="color:#0e7c5b;">₦ 842,500 total</span>
+          </div>
+          <div class="demo-row">
+            <span class="demo-label">💼 Salary — GTB</span>
+            <span><span class="demo-date">Jun 28 &nbsp;</span><span class="demo-credit">+₦450,000</span></span>
+          </div>
+          <div class="demo-row">
+            <span class="demo-label">🛒 Shoprite groceries</span>
+            <span><span class="demo-date">Jun 29 &nbsp;</span><span class="demo-debit">−₦18,400</span></span>
+          </div>
+          <div class="demo-row">
+            <span class="demo-label">⚡ NEPA / electricity</span>
+            <span><span class="demo-date">Jun 30 &nbsp;</span><span class="demo-debit">−₦12,000</span></span>
+          </div>
+          <div class="demo-row">
+            <span class="demo-label">🚗 Transport (Bolt)</span>
+            <span><span class="demo-date">Jul 01 &nbsp;</span><span class="demo-debit">−₦5,600</span></span>
+          </div>
+          <div class="demo-row">
+            <span class="demo-label">🎯 Emergency Fund goal</span>
+            <span><span class="demo-date">Jul 01 &nbsp;</span><span class="demo-debit">−₦30,000</span></span>
+          </div>
+          <div style="margin-top:16px;padding-top:12px;border-top:1px solid #eef5f2;">
+            <span class="badge">🏦 3 banks linked</span>
+            <span class="badge">📉 ₦66,000 spent</span>
+            <span class="badge">🎯 2 active goals</span>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("""
+        <div style="background:#fffbea;border-left:4px solid #f39c12;border-radius:8px;
+                    padding:12px 16px;margin-top:12px;font-size:0.9rem;color:#7d5a00;">
+          ⚠️ <strong>Spending alert:</strong> You've used 68% of your ₦97,000 monthly budget.
+        </div>
+        """, unsafe_allow_html=True)
+
+    # — Auth tabs in right column —
+    with auth_col:
+        st.markdown("#### 🚀 Get started — it's free")
+        tabs = st.tabs(["🔐 Login", "📝 Register", "📧 Verify Email"])
 
     with tabs[0]:
         login_username = st.text_input("Username", key="login_username")
