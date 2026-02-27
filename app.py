@@ -1,5 +1,149 @@
 import streamlit as st
 st.set_page_config(page_title="Budgeting Smart", page_icon="💰", layout="wide")
+
+# ---------------- MOBILE CSS ----------------
+st.markdown("""
+<style>
+/* ── Viewport & base ── */
+html, body, [data-testid="stAppViewContainer"] {
+    max-width: 100% !important;
+    overflow-x: hidden !important;
+}
+
+/* ── Hide sidebar toggle on very small screens so it doesn't overlap ── */
+@media (max-width: 640px) {
+    /* Shrink the main padding so content uses full width */
+    .main .block-container {
+        padding-left: 0.75rem !important;
+        padding-right: 0.75rem !important;
+        padding-top: 0.75rem !important;
+        max-width: 100% !important;
+    }
+
+    /* Make every st.columns row stack vertically on mobile */
+    [data-testid="stHorizontalBlock"] {
+        flex-wrap: wrap !important;
+    }
+    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+        width: 100% !important;
+        min-width: 100% !important;
+        flex: 1 1 100% !important;
+    }
+
+    /* Title font size */
+    h1 { font-size: 1.5rem !important; }
+    h2 { font-size: 1.25rem !important; }
+    h3 { font-size: 1.1rem !important; }
+
+    /* Metric cards — full width, larger tap targets */
+    [data-testid="stMetric"] {
+        width: 100% !important;
+        padding: 0.6rem 0.75rem !important;
+        background: #f8fffe !important;
+        border-radius: 10px !important;
+        border: 1px solid #d0e8df !important;
+        margin-bottom: 0.5rem !important;
+    }
+
+    /* Buttons — full width, easy to tap */
+    .stButton > button {
+        width: 100% !important;
+        min-height: 2.75rem !important;
+        font-size: 1rem !important;
+        border-radius: 8px !important;
+        margin-bottom: 0.35rem !important;
+    }
+
+    /* Inputs — full width */
+    .stTextInput > div > div > input,
+    .stNumberInput > div > div > input,
+    .stSelectbox > div > div,
+    .stTextArea > div > div > textarea {
+        font-size: 1rem !important;
+        min-height: 2.75rem !important;
+        width: 100% !important;
+        border-radius: 8px !important;
+    }
+
+    /* Tabs — scrollable on narrow screens */
+    [data-testid="stTabs"] > div:first-child {
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+        white-space: nowrap !important;
+    }
+
+    /* Sidebar — narrower on mobile */
+    [data-testid="stSidebar"] {
+        min-width: 200px !important;
+        max-width: 240px !important;
+    }
+    [data-testid="stSidebar"] .stRadio label {
+        font-size: 0.95rem !important;
+        padding: 0.3rem 0 !important;
+    }
+
+    /* Landing page hero — tighter padding on mobile */
+    .landing-hero {
+        padding: 28px 16px 24px 16px !important;
+    }
+    .landing-title { font-size: 1.8rem !important; }
+    .landing-tagline { font-size: 0.95rem !important; }
+    .landing-desc { font-size: 0.92rem !important; }
+
+    /* Feature cards — stack to 2 columns via the columns wrap above */
+    .feature-card { margin-bottom: 0.5rem !important; }
+
+    /* Demo card — readable on small screens */
+    .demo-card { padding: 14px !important; }
+    .demo-row { font-size: 0.85rem !important; }
+
+    /* Expense summary rows — icon buttons stay usable */
+    [data-testid="stHorizontalBlock"] .stButton > button {
+        min-width: 2.5rem !important;
+        padding: 0.4rem !important;
+    }
+
+    /* Progress bars — full width */
+    [data-testid="stProgress"] { width: 100% !important; }
+
+    /* Charts — full width */
+    [data-testid="stArrowVegaLiteChart"],
+    [data-testid="stVegaLiteChart"] {
+        width: 100% !important;
+        overflow-x: auto !important;
+    }
+
+    /* Dataframes — scrollable */
+    [data-testid="stDataFrame"] {
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+    }
+
+    /* Expanders — full width */
+    [data-testid="stExpander"] { width: 100% !important; }
+
+    /* Dividers */
+    hr { margin: 0.75rem 0 !important; }
+}
+
+/* ── Tablet (641–900px): columns can stay but tighten padding ── */
+@media (min-width: 641px) and (max-width: 900px) {
+    .main .block-container {
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+        max-width: 100% !important;
+    }
+    /* Allow 2-column grids but prevent overflow */
+    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+        min-width: 45% !important;
+    }
+    .stButton > button {
+        min-height: 2.5rem !important;
+        font-size: 0.97rem !important;
+    }
+}
+</style>
+""", unsafe_allow_html=True)
 import sqlite3
 import bcrypt
 import random
