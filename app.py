@@ -976,7 +976,7 @@ with st.sidebar:
     st.divider()
     st.markdown(
         "🐛 [Report a bug / Suggest a feature]"
-        "(https://forms.gle/YOUR_GOOGLE_FORM_ID)",
+        "(https://docs.google.com/forms/d/e/1FAIpQLScItsunWL9ApMKHQE6l5EEkaPAtrbKeZ0OechyVUZLDmGbNBw/viewform?usp=dialog)",
         unsafe_allow_html=False,
     )
     st.divider()
@@ -1549,3 +1549,4 @@ elif current_page == "Settings":
                     st.error(msg)
         else:
             st.warning("All fields required.")
+
