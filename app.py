@@ -43,11 +43,26 @@ html, body {
 
     /* ── Metric cards ── */
     div[data-testid="stMetric"] {
-        background: #f4fbf8 !important;
-        border: 1px solid #c8e6da !important;
+        background: #1a3c5e !important;
+        border: 1px solid #0e7c5b !important;
         border-radius: 10px !important;
         padding: 0.65rem 0.8rem !important;
         margin-bottom: 0.4rem !important;
+    }
+    div[data-testid="stMetric"] label,
+    div[data-testid="stMetric"] [data-testid="stMetricLabel"],
+    div[data-testid="stMetric"] [data-testid="stMetricLabel"] p,
+    div[data-testid="stMetric"] [data-testid="stMetricLabel"] div {
+        color: #a8d8c8 !important;
+        font-size: 0.8rem !important;
+        font-weight: 600 !important;
+    }
+    div[data-testid="stMetric"] [data-testid="stMetricValue"],
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] div,
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] p {
+        color: #ffffff !important;
+        font-size: 1.25rem !important;
+        font-weight: 800 !important;
     }
 
     /* ── Buttons: full-width, tall enough to tap ── */
@@ -134,6 +149,51 @@ html, body {
     .stAlert { font-size: 0.9rem !important; }
 }
 
+/* ── Expense cards — all screen sizes ── */
+.exp-card {
+    background: #ffffff;
+    border: 1px solid #d0e8df;
+    border-left: 4px solid #0e7c5b;
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.exp-card-left { flex: 1 1 60%; min-width: 0; }
+.exp-card-right { flex: 0 0 auto; text-align: right; }
+.exp-card-name {
+    font-weight: 700;
+    color: #1a3c5e;
+    font-size: 0.97rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.exp-card-bank {
+    font-size: 0.78rem;
+    color: #7a9aaa;
+    margin-top: 2px;
+}
+.exp-card-date {
+    font-size: 0.75rem;
+    color: #95a5a6;
+    margin-top: 2px;
+}
+.exp-card-amount {
+    font-size: 1.05rem;
+    font-weight: 800;
+    color: #c0392b;
+}
+@media screen and (max-width: 640px) {
+    .exp-card { padding: 10px 11px !important; }
+    .exp-card-name { font-size: 0.92rem !important; }
+    .exp-card-amount { font-size: 1rem !important; }
+}
+
 /* ══════════════════════════════════════════
    TABLET  641 px – 900 px
 ══════════════════════════════════════════ */
@@ -166,6 +226,7 @@ from contextlib import contextmanager
 from email.message import EmailMessage
 from datetime import datetime, timedelta
 import pandas as pd
+import plotly.express as px
 
 from csv_import import csv_import_page
 
@@ -976,7 +1037,7 @@ with st.sidebar:
     st.divider()
     st.markdown(
         "🐛 [Report a bug / Suggest a feature]"
-        "(https://docs.google.com/forms/d/e/1FAIpQLScItsunWL9ApMKHQE6l5EEkaPAtrbKeZ0OechyVUZLDmGbNBw/viewform?usp=dialog)",
+        "(https://forms.gle/YOUR_GOOGLE_FORM_ID)",
         unsafe_allow_html=False,
     )
     st.divider()
@@ -1173,6 +1234,54 @@ elif current_page == "Dashboard":
     else:
         st.info("No transactions in this period.")
 
+    # ── Expense breakdown pie chart ──────────────────────────────────────────
+    st.divider()
+    st.subheader("🥧 Expense Breakdown by Category")
+    with get_db() as (conn, cursor):
+        cursor.execute("""
+            SELECT e.name, SUM(e.amount) as total
+            FROM expenses e
+            WHERE e.user_id = ?
+            GROUP BY e.name
+            ORDER BY total DESC
+        """, (user_id,))
+        pie_rows = cursor.fetchall()
+
+    if pie_rows:
+        df_pie = pd.DataFrame(pie_rows, columns=["Expense", "Amount"])
+        # Group small items into "Others" so the chart stays readable
+        threshold = df_pie["Amount"].sum() * 0.02
+        df_pie_main = df_pie[df_pie["Amount"] >= threshold]
+        df_pie_other = df_pie[df_pie["Amount"] < threshold]
+        if not df_pie_other.empty:
+            others_row = pd.DataFrame([{
+                "Expense": "Others",
+                "Amount": df_pie_other["Amount"].sum()
+            }])
+            df_pie_main = pd.concat([df_pie_main, others_row], ignore_index=True)
+
+        fig_pie_dash = px.pie(
+            df_pie_main,
+            names="Expense",
+            values="Amount",
+            title="All-time Expense Breakdown (₦)",
+            color_discrete_sequence=px.colors.qualitative.Set3,
+            hole=0.35,
+        )
+        fig_pie_dash.update_traces(
+            textposition="inside",
+            textinfo="percent+label",
+            hovertemplate="<b>%{label}</b><br>₦%{value:,.0f}<br>%{percent}<extra></extra>"
+        )
+        fig_pie_dash.update_layout(
+            margin=dict(t=40, b=10, l=10, r=10),
+            legend=dict(orientation="v", x=1.02, y=0.5),
+            showlegend=True,
+        )
+        st.plotly_chart(fig_pie_dash, use_container_width=True)
+    else:
+        st.info("No expenses recorded yet — your pie chart will appear here.")
+
 # ================= PAGE: INCOME =================
 elif current_page == "Income":
     st.markdown("## 💰 Add Income")
@@ -1254,24 +1363,73 @@ elif current_page == "Expenses":
     if expenses_data:
         for exp in expenses_data:
             exp_id, date, name, amount, bank_id, bank_name, acc_num, tx_id = exp
-            col1, col2, col3, col4, col5, col6 = st.columns([2, 2, 2, 2, 1, 1])
-            col1.write(date)
-            col2.write(name)
-            col3.write(f"₦{amount:,.0f}")
-            col4.write(f"{bank_name} (****{acc_num})")
-            if col5.button("✏️", key=f"edit_exp_{exp_id}"):
-                st.session_state.edit_exp_id = exp_id
-            if col6.button("🗑", key=f"delete_exp_{exp_id}"):
-                with get_db() as (conn, cursor):
-                    # Refund the bank balance
-                    cursor.execute("UPDATE banks SET balance = balance + ? WHERE id=?", (amount, bank_id))
-                    # Delete the linked transaction by its exact id (tx_id)
-                    if tx_id:
-                        cursor.execute("DELETE FROM transactions WHERE id=?", (tx_id,))
-                    # Delete the expense record
-                    cursor.execute("DELETE FROM expenses WHERE id=?", (exp_id,))
-                st.success("Expense deleted & bank refunded")
-                st.rerun()
+
+            # Card display + action buttons in one row
+            card_col, btn_col = st.columns([5, 1])
+            with card_col:
+                st.markdown(f"""
+                <div class="exp-card">
+                  <div class="exp-card-left">
+                    <div class="exp-card-name">{name}</div>
+                    <div class="exp-card-bank">🏦 {bank_name} (****{acc_num})</div>
+                    <div class="exp-card-date">📅 {date}</div>
+                  </div>
+                  <div class="exp-card-right">
+                    <div class="exp-card-amount">−₦{amount:,.0f}</div>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+            with btn_col:
+                if st.button("✏️", key=f"edit_exp_{exp_id}", help="Edit"):
+                    st.session_state.edit_exp_id = exp_id
+                if st.button("🗑", key=f"delete_exp_{exp_id}", help="Delete"):
+                    with get_db() as (conn, cursor):
+                        cursor.execute("UPDATE banks SET balance = balance + ? WHERE id=?", (amount, bank_id))
+                        if tx_id:
+                            cursor.execute("DELETE FROM transactions WHERE id=?", (tx_id,))
+                        cursor.execute("DELETE FROM expenses WHERE id=?", (exp_id,))
+                    st.success("Expense deleted & bank refunded")
+                    st.rerun()
+
+        # ── Expense pie chart (Expenses page) ────────────────────────────────
+        st.divider()
+        st.subheader("🥧 Your Expense Breakdown")
+        df_exp_pie = pd.DataFrame(
+            [(e[2], e[3]) for e in expenses_data],
+            columns=["Expense", "Amount"]
+        )
+        df_grouped = df_exp_pie.groupby("Expense", as_index=False)["Amount"].sum()
+        df_grouped = df_grouped.sort_values("Amount", ascending=False)
+
+        threshold = df_grouped["Amount"].sum() * 0.02
+        df_main   = df_grouped[df_grouped["Amount"] >= threshold]
+        df_other  = df_grouped[df_grouped["Amount"] < threshold]
+        if not df_other.empty:
+            df_main = pd.concat([
+                df_main,
+                pd.DataFrame([{"Expense": "Others", "Amount": df_other["Amount"].sum()}])
+            ], ignore_index=True)
+
+        fig_pie_exp = px.pie(
+            df_main,
+            names="Expense",
+            values="Amount",
+            title="Expenses by Name (₦)",
+            color_discrete_sequence=px.colors.qualitative.Pastel,
+            hole=0.35,
+        )
+        fig_pie_exp.update_traces(
+            textposition="inside",
+            textinfo="percent+label",
+            hovertemplate="<b>%{label}</b><br>₦%{value:,.0f}<br>%{percent}<extra></extra>"
+        )
+        fig_pie_exp.update_layout(
+            margin=dict(t=40, b=10, l=10, r=10),
+            legend=dict(orientation="v", x=1.02, y=0.5),
+            showlegend=True,
+        )
+        st.plotly_chart(fig_pie_exp, use_container_width=True)
+        st.divider()
 
         if st.session_state.get("edit_exp_id"):
             edit_id = st.session_state.edit_exp_id
@@ -1549,4 +1707,3 @@ elif current_page == "Settings":
                     st.error(msg)
         else:
             st.warning("All fields required.")
-
