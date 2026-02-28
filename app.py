@@ -4,142 +4,154 @@ st.set_page_config(page_title="Budgeting Smart", page_icon="💰", layout="wide"
 # ---------------- MOBILE CSS ----------------
 st.markdown("""
 <style>
-/* ── Viewport & base ── */
-html, body, [data-testid="stAppViewContainer"] {
-    max-width: 100% !important;
+/* ══════════════════════════════════════════
+   BASE — prevent horizontal overflow on all screens
+══════════════════════════════════════════ */
+html, body {
     overflow-x: hidden !important;
 }
+.main .block-container {
+    max-width: 100% !important;
+}
 
-/* ── Hide sidebar toggle on very small screens so it doesn't overlap ── */
-@media (max-width: 640px) {
-    /* Shrink the main padding so content uses full width */
+/* ══════════════════════════════════════════
+   MOBILE  ≤ 640 px
+══════════════════════════════════════════ */
+@media screen and (max-width: 640px) {
+
+    /* Tighter content padding */
     .main .block-container {
-        padding-left: 0.75rem !important;
-        padding-right: 0.75rem !important;
-        padding-top: 0.75rem !important;
-        max-width: 100% !important;
+        padding: 0.6rem 0.7rem 1rem 0.7rem !important;
     }
 
-    /* Make every st.columns row stack vertically on mobile */
-    [data-testid="stHorizontalBlock"] {
-        flex-wrap: wrap !important;
+    /* Page title */
+    h1 { font-size: 1.4rem !important; line-height: 1.3 !important; }
+    h2 { font-size: 1.2rem !important; }
+    h3 { font-size: 1.05rem !important; }
+
+    /* ── Stack ALL st.columns rows vertically ── */
+    div[data-testid="stHorizontalBlock"] {
+        flex-direction: column !important;
+        gap: 0.4rem !important;
     }
-    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+    div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"],
+    div[data-testid="stHorizontalBlock"] > div[class*="stColumn"] {
         width: 100% !important;
         min-width: 100% !important;
         flex: 1 1 100% !important;
     }
 
-    /* Title font size */
-    h1 { font-size: 1.5rem !important; }
-    h2 { font-size: 1.25rem !important; }
-    h3 { font-size: 1.1rem !important; }
-
-    /* Metric cards — full width, larger tap targets */
-    [data-testid="stMetric"] {
-        width: 100% !important;
-        padding: 0.6rem 0.75rem !important;
-        background: #f8fffe !important;
+    /* ── Metric cards ── */
+    div[data-testid="stMetric"] {
+        background: #f4fbf8 !important;
+        border: 1px solid #c8e6da !important;
         border-radius: 10px !important;
-        border: 1px solid #d0e8df !important;
-        margin-bottom: 0.5rem !important;
+        padding: 0.65rem 0.8rem !important;
+        margin-bottom: 0.4rem !important;
     }
 
-    /* Buttons — full width, easy to tap */
+    /* ── Buttons: full-width, tall enough to tap ── */
     .stButton > button {
         width: 100% !important;
-        min-height: 2.75rem !important;
-        font-size: 1rem !important;
+        min-height: 2.8rem !important;
+        font-size: 0.98rem !important;
         border-radius: 8px !important;
-        margin-bottom: 0.35rem !important;
+        margin-bottom: 0.3rem !important;
     }
 
-    /* Inputs — full width */
-    .stTextInput > div > div > input,
-    .stNumberInput > div > div > input,
-    .stSelectbox > div > div,
-    .stTextArea > div > div > textarea {
+    /* ── Inputs & selects ── */
+    input, textarea,
+    div[data-baseweb="input"] input,
+    div[data-baseweb="textarea"] textarea,
+    div[data-baseweb="select"] {
         font-size: 1rem !important;
-        min-height: 2.75rem !important;
+        min-height: 2.6rem !important;
         width: 100% !important;
-        border-radius: 8px !important;
+        box-sizing: border-box !important;
     }
 
-    /* Tabs — scrollable on narrow screens */
-    [data-testid="stTabs"] > div:first-child {
+    /* ── Tabs: scroll horizontally so nothing is cut off ── */
+    div[data-testid="stTabs"] > div:first-child {
         overflow-x: auto !important;
         -webkit-overflow-scrolling: touch !important;
         white-space: nowrap !important;
+        scrollbar-width: none !important;
+    }
+    div[data-testid="stTabs"] > div:first-child::-webkit-scrollbar {
+        display: none !important;
     }
 
-    /* Sidebar — narrower on mobile */
-    [data-testid="stSidebar"] {
+    /* ── Sidebar: narrower so content area keeps space ── */
+    section[data-testid="stSidebar"] {
         min-width: 200px !important;
-        max-width: 240px !important;
+        max-width: 220px !important;
     }
-    [data-testid="stSidebar"] .stRadio label {
-        font-size: 0.95rem !important;
-        padding: 0.3rem 0 !important;
-    }
-
-    /* Landing page hero — tighter padding on mobile */
-    .landing-hero {
-        padding: 28px 16px 24px 16px !important;
-    }
-    .landing-title { font-size: 1.8rem !important; }
-    .landing-tagline { font-size: 0.95rem !important; }
-    .landing-desc { font-size: 0.92rem !important; }
-
-    /* Feature cards — stack to 2 columns via the columns wrap above */
-    .feature-card { margin-bottom: 0.5rem !important; }
-
-    /* Demo card — readable on small screens */
-    .demo-card { padding: 14px !important; }
-    .demo-row { font-size: 0.85rem !important; }
-
-    /* Expense summary rows — icon buttons stay usable */
-    [data-testid="stHorizontalBlock"] .stButton > button {
-        min-width: 2.5rem !important;
-        padding: 0.4rem !important;
+    section[data-testid="stSidebar"] label {
+        font-size: 0.92rem !important;
     }
 
-    /* Progress bars — full width */
-    [data-testid="stProgress"] { width: 100% !important; }
-
-    /* Charts — full width */
-    [data-testid="stArrowVegaLiteChart"],
-    [data-testid="stVegaLiteChart"] {
-        width: 100% !important;
-        overflow-x: auto !important;
-    }
-
-    /* Dataframes — scrollable */
-    [data-testid="stDataFrame"] {
+    /* ── Charts: scroll rather than overflow ── */
+    div[data-testid="stArrowVegaLiteChart"],
+    div[data-testid="stVegaLiteChart"],
+    .stPlotlyChart {
         overflow-x: auto !important;
         -webkit-overflow-scrolling: touch !important;
     }
 
-    /* Expanders — full width */
-    [data-testid="stExpander"] { width: 100% !important; }
+    /* ── Dataframes / tables ── */
+    div[data-testid="stDataFrame"],
+    div[data-testid="stTable"] {
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+    }
 
-    /* Dividers */
-    hr { margin: 0.75rem 0 !important; }
+    /* ── Expanders ── */
+    details, div[data-testid="stExpander"] {
+        width: 100% !important;
+    }
+
+    /* ── Progress bars ── */
+    div[data-testid="stProgress"] {
+        width: 100% !important;
+    }
+
+    /* ── Landing page hero ── */
+    .landing-hero {
+        padding: 24px 14px 20px 14px !important;
+        border-radius: 12px !important;
+    }
+    .landing-title   { font-size: 1.6rem !important; }
+    .landing-tagline { font-size: 0.9rem !important; }
+    .landing-desc    { font-size: 0.88rem !important; }
+
+    /* ── Demo & feature cards ── */
+    .demo-card  { padding: 12px !important; }
+    .demo-row   { font-size: 0.82rem !important; flex-wrap: wrap !important; }
+    .feature-card { margin-bottom: 0.5rem !important; }
+
+    /* ── Reduce whitespace between elements ── */
+    hr { margin: 0.6rem 0 !important; }
+    .stAlert { font-size: 0.9rem !important; }
 }
 
-/* ── Tablet (641–900px): columns can stay but tighten padding ── */
-@media (min-width: 641px) and (max-width: 900px) {
+/* ══════════════════════════════════════════
+   TABLET  641 px – 900 px
+══════════════════════════════════════════ */
+@media screen and (min-width: 641px) and (max-width: 900px) {
     .main .block-container {
         padding-left: 1rem !important;
         padding-right: 1rem !important;
         max-width: 100% !important;
     }
-    /* Allow 2-column grids but prevent overflow */
-    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
-        min-width: 45% !important;
+    /* Let columns stay side-by-side but prevent squeezing too small */
+    div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"],
+    div[data-testid="stHorizontalBlock"] > div[class*="stColumn"] {
+        min-width: 44% !important;
+        flex-wrap: wrap !important;
     }
     .stButton > button {
         min-height: 2.5rem !important;
-        font-size: 0.97rem !important;
+        font-size: 0.96rem !important;
     }
 }
 </style>
@@ -154,7 +166,6 @@ from contextlib import contextmanager
 from email.message import EmailMessage
 from datetime import datetime, timedelta
 import pandas as pd
-import extra_streamlit_components as stx
 
 from csv_import import csv_import_page
 
@@ -397,51 +408,35 @@ def change_password(user_id, current_pw, new_pw):
         else:
             return False, "Current password incorrect"
 
-# ---------------- COOKIE & TOKEN FUNCTIONS ----------------
-COOKIE_NAME = "br_session_token"
+# ---------------- PERSISTENT SESSION (query_params) ----------------
+# Token stored in URL as ?t=<token>.
+# Survives: refresh, tab close+reopen, browser restart, device reboot.
+# Cleared only on: logout (removes param) or explicit URL edit.
+PARAM_KEY = "t"
 
-@st.cache_resource
-def _get_cookie_controller():
-    """
-    Returns a CookieController (streamlit-cookies-controller).
-    Add to requirements.txt:  streamlit-cookies-controller>=0.0.4
-    Returns None if library is not installed — app still works, just without persistence.
-    """
+def _read_token_from_url() -> str | None:
+    """Pull the session token out of the URL query string."""
     try:
-        from streamlit_cookies_controller import CookieController
-        return CookieController()
+        return st.query_params.get(PARAM_KEY)
     except Exception:
         return None
 
-_cc = _get_cookie_controller()
-
-def get_cookie():
-    """Read the session token from the browser cookie."""
+def _write_token_to_url(token: str):
+    """Embed the session token into the URL query string."""
     try:
-        if _cc:
-            return _cc.get(COOKIE_NAME)
-    except Exception:
-        pass
-    return None
-
-def set_cookie(token: str):
-    """Write the session token into the browser cookie (10-year expiry)."""
-    try:
-        if _cc:
-            _cc.set(COOKIE_NAME, token, max_age=315360000)
+        st.query_params[PARAM_KEY] = token
     except Exception:
         pass
 
-def delete_cookie():
-    """Remove the session token cookie from the browser."""
+def _clear_token_from_url():
+    """Remove the session token from the URL query string."""
     try:
-        if _cc:
-            _cc.remove(COOKIE_NAME)
+        st.query_params.pop(PARAM_KEY, None)
     except Exception:
         pass
 
 def create_session_token(user_id: int) -> str:
-    """Generate a secure random token, persist in DB, return it."""
+    """Generate a secure random token, persist in DB, write to URL."""
     token = secrets.token_urlsafe(48)
     now   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with get_db() as (conn, cursor):
@@ -449,10 +444,11 @@ def create_session_token(user_id: int) -> str:
             "INSERT INTO session_tokens (user_id, token, created_at) VALUES (?, ?, ?)",
             (user_id, token, now)
         )
+    _write_token_to_url(token)
     return token
 
 def validate_session_token(token: str):
-    """Return (user_id, role) if token is valid, else (None, None)."""
+    """Return (user_id, role) if token exists in DB, else (None, None)."""
     if not token:
         return None, None
     try:
@@ -471,7 +467,7 @@ def validate_session_token(token: str):
     return None, None
 
 def revoke_session_token(token: str):
-    """Delete token from DB so it can never be reused."""
+    """Delete token from DB and remove from URL."""
     if not token:
         return
     try:
@@ -479,6 +475,7 @@ def revoke_session_token(token: str):
             cursor.execute("DELETE FROM session_tokens WHERE token = ?", (token,))
     except Exception:
         pass
+    _clear_token_from_url()
 
 # ---------------- ANALYTICS FUNCTIONS ----------------
 def track_login(user_id):
@@ -642,17 +639,21 @@ The Budget Right Team
         return False, str(e)
 
 # ---------------- UI ----------------
-st.title("Budget Right")
-
-# ── Restore session from cookie on every rerun (refresh, new tab, next day) ──
+# ── Restore session from URL token on every rerun ──
+# Runs FIRST before anything renders so the logged-in state is set immediately.
 if st.session_state.user_id is None:
-    _raw = get_cookie()
+    _raw = _read_token_from_url()
     if _raw:
         _uid, _role = validate_session_token(str(_raw))
         if _uid:
             st.session_state.user_id       = _uid
             st.session_state.user_role     = _role
             st.session_state.session_token = str(_raw)
+        else:
+            # Token in URL is invalid/expired — clean it up
+            _clear_token_from_url()
+
+st.title("Budget Right")
 
 # ================= AUTH =================
 if st.session_state.user_id is None:
@@ -830,9 +831,8 @@ if st.session_state.user_id is None:
                     uid = login_user(login_username, login_password)
                     if uid:
                         track_login(uid)
-                        # Create persistent token → store in DB and browser cookie
+                        # Create persistent token → store in DB and URL
                         token = create_session_token(uid)
-                        set_cookie(token)
                         st.session_state.session_token = token
                         st.success("Logged in!")
                         st.rerun()
@@ -981,16 +981,11 @@ with st.sidebar:
     )
     st.divider()
     if st.button("🚪 Logout", key="logout_btn"):
-        # Revoke the DB token so it can never be reused
+        # Revoke DB token and clear from URL — can never be reused
         revoke_session_token(st.session_state.get("session_token"))
-        try:
-            _cookie_mgr.remove(COOKIE_NAME)
-        except Exception:
-            pass
-        st.session_state.user_id      = None
-        st.session_state.user_role    = None
+        st.session_state.user_id       = None
+        st.session_state.user_role     = None
         st.session_state.session_token = None
-        # Clear login fields so they don't carry over stale values
         for key in ["login_username", "login_password"]:
             if key in st.session_state:
                 del st.session_state[key]
