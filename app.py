@@ -148,10 +148,13 @@ import sqlite3
 import bcrypt
 import random
 import smtplib
+import uuid
+import secrets
 from contextlib import contextmanager
 from email.message import EmailMessage
 from datetime import datetime, timedelta
 import pandas as pd
+import extra_streamlit_components as stx
 
 from csv_import import csv_import_page
 
@@ -252,6 +255,16 @@ def create_tables():
             FOREIGN KEY(user_id) REFERENCES users(id)
         )
         """)
+        # Persistent session tokens for cookie-based login
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS session_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            token TEXT UNIQUE NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        """)
 
 create_tables()
 
@@ -275,6 +288,8 @@ if "user_id" not in st.session_state:
     st.session_state.user_id = None
 if "user_role" not in st.session_state:
     st.session_state.user_role = None
+if "session_token" not in st.session_state:
+    st.session_state.session_token = None
 if "show_forgot_password" not in st.session_state:
     st.session_state.show_forgot_password = False
 if "show_reset_form" not in st.session_state:
@@ -381,6 +396,89 @@ def change_password(user_id, current_pw, new_pw):
             return True, "Password updated"
         else:
             return False, "Current password incorrect"
+
+# ---------------- COOKIE & TOKEN FUNCTIONS ----------------
+COOKIE_NAME = "br_session_token"
+
+@st.cache_resource
+def _get_cookie_controller():
+    """
+    Returns a CookieController (streamlit-cookies-controller).
+    Add to requirements.txt:  streamlit-cookies-controller>=0.0.4
+    Returns None if library is not installed — app still works, just without persistence.
+    """
+    try:
+        from streamlit_cookies_controller import CookieController
+        return CookieController()
+    except Exception:
+        return None
+
+_cc = _get_cookie_controller()
+
+def get_cookie():
+    """Read the session token from the browser cookie."""
+    try:
+        if _cc:
+            return _cc.get(COOKIE_NAME)
+    except Exception:
+        pass
+    return None
+
+def set_cookie(token: str):
+    """Write the session token into the browser cookie (10-year expiry)."""
+    try:
+        if _cc:
+            _cc.set(COOKIE_NAME, token, max_age=315360000)
+    except Exception:
+        pass
+
+def delete_cookie():
+    """Remove the session token cookie from the browser."""
+    try:
+        if _cc:
+            _cc.remove(COOKIE_NAME)
+    except Exception:
+        pass
+
+def create_session_token(user_id: int) -> str:
+    """Generate a secure random token, persist in DB, return it."""
+    token = secrets.token_urlsafe(48)
+    now   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as (conn, cursor):
+        cursor.execute(
+            "INSERT INTO session_tokens (user_id, token, created_at) VALUES (?, ?, ?)",
+            (user_id, token, now)
+        )
+    return token
+
+def validate_session_token(token: str):
+    """Return (user_id, role) if token is valid, else (None, None)."""
+    if not token:
+        return None, None
+    try:
+        with get_db() as (conn, cursor):
+            cursor.execute("""
+                SELECT u.id, u.role
+                FROM session_tokens s
+                JOIN users u ON s.user_id = u.id
+                WHERE s.token = ? AND u.email_verified = 1
+            """, (token,))
+            row = cursor.fetchone()
+        if row:
+            return row[0], row[1]
+    except Exception:
+        pass
+    return None, None
+
+def revoke_session_token(token: str):
+    """Delete token from DB so it can never be reused."""
+    if not token:
+        return
+    try:
+        with get_db() as (conn, cursor):
+            cursor.execute("DELETE FROM session_tokens WHERE token = ?", (token,))
+    except Exception:
+        pass
 
 # ---------------- ANALYTICS FUNCTIONS ----------------
 def track_login(user_id):
@@ -545,6 +643,16 @@ The Budget Right Team
 
 # ---------------- UI ----------------
 st.title("Budget Right")
+
+# ── Restore session from cookie on every rerun (refresh, new tab, next day) ──
+if st.session_state.user_id is None:
+    _raw = get_cookie()
+    if _raw:
+        _uid, _role = validate_session_token(str(_raw))
+        if _uid:
+            st.session_state.user_id       = _uid
+            st.session_state.user_role     = _role
+            st.session_state.session_token = str(_raw)
 
 # ================= AUTH =================
 if st.session_state.user_id is None:
@@ -722,6 +830,10 @@ if st.session_state.user_id is None:
                     uid = login_user(login_username, login_password)
                     if uid:
                         track_login(uid)
+                        # Create persistent token → store in DB and browser cookie
+                        token = create_session_token(uid)
+                        set_cookie(token)
+                        st.session_state.session_token = token
                         st.success("Logged in!")
                         st.rerun()
                     else:
@@ -869,8 +981,15 @@ with st.sidebar:
     )
     st.divider()
     if st.button("🚪 Logout", key="logout_btn"):
-        st.session_state.user_id = None
-        st.session_state.user_role = None
+        # Revoke the DB token so it can never be reused
+        revoke_session_token(st.session_state.get("session_token"))
+        try:
+            _cookie_mgr.remove(COOKIE_NAME)
+        except Exception:
+            pass
+        st.session_state.user_id      = None
+        st.session_state.user_role    = None
+        st.session_state.session_token = None
         # Clear login fields so they don't carry over stale values
         for key in ["login_username", "login_password"]:
             if key in st.session_state:
