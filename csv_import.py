@@ -2,106 +2,81 @@
 import re
 import pandas as pd
 import streamlit as st
+from datetime import datetime
 
 
-def _guess_expense_table(conn):
-    cur = conn.cursor()
-    tables = [r[0] for r in cur.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-    ).fetchall()]
-
-    for name in ["expenses", "expense", "transactions", "expense_list", "spending"]:
-        if name in tables:
-            return name
-
-    # fallback: find any table that has amount + description-ish columns
-    for t in tables:
-        try:
-            cols = [r[1].lower() for r in cur.execute(f"PRAGMA table_info({t})").fetchall()]
-            has_amount = any(x in cols for x in ["amount", "amt", "value"])
-            has_desc = any(x in cols for x in ["description", "narration", "remark", "details", "name"])
-            if has_amount and has_desc:
-                return t
-        except Exception:
-            continue
-
-    return None
-
-
-def _get_table_columns(conn, table):
-    cur = conn.cursor()
-    rows = cur.execute(f"PRAGMA table_info({table})").fetchall()
-    return [r[1] for r in rows]
-
+# ── helpers ──────────────────────────────────────────────────────────────────
 
 def _clean_amount(x):
+    """Strip currency symbols / commas, return positive float or None."""
     if pd.isna(x):
         return None
-    s = str(x).replace(",", "")
-    s = re.sub(r"[^0-9.\-]", "", s)
-    if s.strip() == "":
+    s = re.sub(r"[^0-9.\-]", "", str(x).replace(",", ""))
+    if not s or s == "-":
         return None
     try:
-        return float(s)
+        val = float(s)
+        return abs(val) if val != 0 else None   # expenses are always positive
     except Exception:
         return None
 
 
-def _clean_text(x):
-    if pd.isna(x):
-        return ""
-    return str(x).strip()
-
-
 def _clean_date(x):
+    """Parse any date format → 'YYYY-MM-DD' string, or today as fallback."""
     if pd.isna(x):
-        return None
+        return datetime.now().strftime("%Y-%m-%d")
     dt = pd.to_datetime(x, errors="coerce", dayfirst=True)
     if pd.isna(dt):
-        return None
-    return dt.date().isoformat()
+        return datetime.now().strftime("%Y-%m-%d")
+    return dt.strftime("%Y-%m-%d")
 
+
+def _clean_text(x):
+    if pd.isna(x):
+        return "Imported expense"
+    return str(x).strip() or "Imported expense"
+
+
+# ── main page ─────────────────────────────────────────────────────────────────
 
 def csv_import_page(conn, user_id: int):
     st.header("📥 Import Bank Statement (CSV)")
-    st.caption("Upload a CSV statement, map columns, preview, then import safely.")
+    st.caption(
+        "Upload your bank statement CSV, map the columns, pick the bank "
+        "it belongs to, preview — then import. "
+        "Each row becomes an **expense** + a **debit transaction** exactly "
+        "like adding expenses manually."
+    )
 
-    table = _guess_expense_table(conn)
-    if not table:
-        st.error("I couldn't find an expenses-like table (e.g. 'expenses' or 'transactions').")
+    # ── 1. Load user's banks ─────────────────────────────────────────────────
+    cur = conn.cursor()
+    banks = cur.execute(
+        "SELECT id, bank_name, account_number, balance FROM banks WHERE user_id=?",
+        (user_id,)
+    ).fetchall()
+
+    if not banks:
+        st.warning("You have no bank accounts yet. Add one on the Banks page first.")
         return
 
-    cols = _get_table_columns(conn, table)
+    bank_options = {
+        f"{b[1]} (****{b[2]}) — ₦{b[3]:,}": b[0]
+        for b in banks
+    }
+    selected_bank_label = st.selectbox(
+        "Which bank does this statement belong to?",
+        list(bank_options.keys()),
+        key="csv_bank_select"
+    )
+    bank_id = bank_options[selected_bank_label]
 
-    # Clean UI display (no raw list)
-    st.info(f"Import target: **{table}**")
-    friendly = []
-    for c in cols:
-        cl = c.lower()
-        if cl == "id":
-            meaning = "Auto ID (internal)"
-        elif cl == "user_id":
-            meaning = "User owner (internal)"
-        elif cl == "bank_id":
-            meaning = "Linked bank (optional)"
-        elif cl in ["name", "expense_name", "description", "narration", "remark", "details"]:
-            meaning = "Expense name / description"
-        elif cl in ["amount", "amt", "value"]:
-            meaning = "Amount spent"
-        elif cl in ["created_at", "date", "expense_date", "transaction_date"]:
-            meaning = "Date"
-        else:
-            meaning = "Other"
-        friendly.append({"Column": c, "Meaning": meaning})
+    st.divider()
 
-    st.markdown("**Detected fields:**")
-    st.dataframe(pd.DataFrame(friendly), use_container_width=True, hide_index=True)
-
-    file = st.file_uploader("Upload CSV", type=["csv"])
+    # ── 2. File upload ───────────────────────────────────────────────────────
+    file = st.file_uploader("Upload CSV file", type=["csv"], key="csv_file")
     if not file:
         return
 
-    # Read CSV safely
     try:
         df = pd.read_csv(file)
     except UnicodeDecodeError:
@@ -112,88 +87,134 @@ def csv_import_page(conn, user_id: int):
         return
 
     if df.empty:
-        st.warning("CSV is empty.")
+        st.warning("The CSV file is empty.")
         return
 
-    st.subheader("Preview")
-    st.dataframe(df.head(20), use_container_width=True)
+    st.subheader("Preview (first 10 rows)")
+    st.dataframe(df.head(10), use_container_width=True)
 
-    st.subheader("Map columns")
+    # ── 3. Column mapping ────────────────────────────────────────────────────
+    st.subheader("Map your columns")
     csv_cols = list(df.columns)
 
-    def pick(label, keywords):
-        default = None
-        for c in csv_cols:
-            cl = c.lower()
-            if any(k in cl for k in keywords):
-                default = c
-                break
-        idx = 0 if default is None else 1 + csv_cols.index(default)
-        return st.selectbox(label, ["(none)"] + csv_cols, index=idx)
+    def auto_pick(keywords):
+        """Return index of first column whose name contains any keyword."""
+        for i, c in enumerate(csv_cols):
+            if any(k in c.lower() for k in keywords):
+                return i + 1          # +1 because index 0 = "(none)"
+        return 0
 
-    amount_col = pick("Amount column", ["amount", "amt", "value", "debit", "withdraw", "dr"])
-    date_col = pick("Date column (optional)", ["date", "time", "transaction date", "value date", "posted"])
-    desc_col = pick("Description/Remark column", ["description", "narration", "remark", "details", "merchant", "name"])
+    amount_idx = auto_pick(["amount", "amt", "debit", "dr", "withdraw", "value"])
+    date_idx   = auto_pick(["date", "time", "posted", "value date", "txn date"])
+    desc_idx   = auto_pick(["description", "narration", "remark", "details",
+                             "merchant", "particulars", "reference", "memo"])
 
-    # DB column detection
-    cols_lower = [c.lower() for c in cols]
-    db_amount = next((c for c in cols if c.lower() in ["amount", "amt", "value"]), None)
-    db_desc = next((c for c in cols if c.lower() in ["name", "description", "narration", "remark", "details"]), None)
-    db_date = next((c for c in cols if c.lower() in ["created_at", "date", "expense_date", "transaction_date"]), None)
-    db_user = next((c for c in cols if c.lower() in ["user_id", "userid", "owner_id"]), None)
-
-    if not db_amount or not db_user:
-        st.error("Import needs the target table to have at least: user_id and amount.")
-        return
+    amount_col = st.selectbox(
+        "💰 Amount column *",
+        ["(none)"] + csv_cols,
+        index=amount_idx,
+        key="csv_amount_col"
+    )
+    date_col = st.selectbox(
+        "📅 Date column (optional — today used if blank)",
+        ["(none)"] + csv_cols,
+        index=date_idx,
+        key="csv_date_col"
+    )
+    desc_col = st.selectbox(
+        "📝 Description / Narration column *",
+        ["(none)"] + csv_cols,
+        index=desc_idx,
+        key="csv_desc_col"
+    )
 
     if amount_col == "(none)" or desc_col == "(none)":
-        st.warning("Please map at least Amount and Description.")
+        st.info("Please map at least the **Amount** and **Description** columns to continue.")
         return
 
-    # Build working import data
+    # ── 4. Build preview data ────────────────────────────────────────────────
     working = pd.DataFrame()
-    working["amount"] = df[amount_col].apply(_clean_amount)
+    working["amount"]      = df[amount_col].apply(_clean_amount)
     working["description"] = df[desc_col].apply(_clean_text)
-    working["date"] = df[date_col].apply(_clean_date) if (date_col != "(none)" and db_date) else None
+    working["date"]        = (
+        df[date_col].apply(_clean_date)
+        if date_col != "(none)"
+        else datetime.now().strftime("%Y-%m-%d")
+    )
 
-    before = len(working)
-    working = working[working["amount"].notna()]
+    # Drop rows with no valid amount
+    before  = len(working)
+    working = working[working["amount"].notna()].reset_index(drop=True)
     dropped = before - len(working)
 
-    st.write(f"Rows ready: **{len(working)}** (dropped **{dropped}** invalid amounts)")
-    st.dataframe(working.head(20), use_container_width=True)
+    if working.empty:
+        st.error("No rows with a valid amount found. Check your Amount column mapping.")
+        return
 
-    # Prepare insert statement
-    insert_cols = [db_user, db_amount]
-    insert_vals = ["user_id", "amount"]
+    st.divider()
+    st.subheader(f"Ready to import — {len(working)} rows")
+    if dropped:
+        st.caption(f"({dropped} rows skipped — no valid amount)")
 
-    if db_desc:
-        insert_cols.append(db_desc)
-        insert_vals.append("description")
+    st.dataframe(
+        working[["date", "description", "amount"]].rename(columns={
+            "date": "Date", "description": "Description", "amount": "Amount (₦)"
+        }),
+        use_container_width=True
+    )
 
-    if db_date:
-        insert_cols.append(db_date)
-        insert_vals.append("date")
+    total = working["amount"].sum()
+    st.markdown(f"**Total debit: ₦{total:,.2f}**")
 
-    placeholders = ",".join(["?"] * len(insert_cols))
-    sql = f"INSERT INTO {table} ({','.join(insert_cols)}) VALUES ({placeholders})"
+    # ── 5. Bank balance check ────────────────────────────────────────────────
+    current_balance = cur.execute(
+        "SELECT balance FROM banks WHERE id=?", (bank_id,)
+    ).fetchone()[0] or 0
 
-    rows = []
-    for _, r in working.iterrows():
-        row = []
-        for key in insert_vals:
-            if key == "user_id":
-                row.append(int(user_id))
-            else:
-                row.append(r.get(key))
-        rows.append(tuple(row))
+    if total > current_balance:
+        st.warning(
+            f"⚠️ Total import (₦{total:,.0f}) exceeds current bank balance "
+            f"(₦{current_balance:,.0f}). Import will still work but balance "
+            f"will go negative."
+        )
 
-    if st.button("✅ Import into Expenses", use_container_width=True):
+    # ── 6. Import button ─────────────────────────────────────────────────────
+    if st.button("✅ Import All into Expenses", use_container_width=True, key="csv_import_btn"):
+        imported = 0
+        errors   = 0
         try:
-            cur = conn.cursor()
-            cur.executemany(sql, rows)
+            for _, row in working.iterrows():
+                amt  = int(round(row["amount"]))
+                desc = row["description"]
+                date = row["date"]
+
+                # — Insert transaction FIRST (same pattern as manual expense add) —
+                cur.execute("""
+                    INSERT INTO transactions (bank_id, type, amount, description, created_at)
+                    VALUES (?, 'debit', ?, ?, ?)
+                """, (bank_id, amt, f"Expense: {desc}", date))
+                tx_id = cur.lastrowid
+
+                # — Insert expense with tx_id linked —
+                cur.execute("""
+                    INSERT INTO expenses (user_id, bank_id, name, amount, created_at, tx_id)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (user_id, bank_id, desc, amt, date, tx_id))
+
+                # — Debit the bank balance —
+                cur.execute(
+                    "UPDATE banks SET balance = balance - ? WHERE id=?",
+                    (amt, bank_id)
+                )
+                imported += 1
+
             conn.commit()
-            st.success(f"Imported **{len(rows)}** rows into **{table}**.")
+            st.success(f"✅ Imported **{imported}** expenses successfully!")
+            st.caption(
+                "All rows are now visible on the Expenses page and the "
+                "Dashboard charts. Your bank balance has been updated."
+            )
+
         except Exception as e:
-            st.error("Import failed safely (no crash).")
-            st.exception(e)
+            conn.rollback()
+            st.error(f"Import failed — no data was changed. Error: {e}")
