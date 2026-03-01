@@ -706,7 +706,9 @@ The Budget Right Team
 
 # ---------------- UI ----------------
 # ── Restore session from browser cookie on every rerun ──
-# Runs FIRST before anything renders so the logged-in state is set immediately.
+# streamlit-cookies-controller has a known first-render timing issue:
+# on refresh the cookie is not ready on render #1, so we rerun once
+# to give the browser time to send the cookie back, then restore on render #2.
 if st.session_state.user_id is None:
     _raw = _read_cookie()
     if _raw:
@@ -718,6 +720,10 @@ if st.session_state.user_id is None:
         else:
             # Cookie token is invalid/expired — erase it
             _delete_cookie()
+    elif "_cookie_checked" not in st.session_state:
+        # First render — cookie may not have arrived yet. Mark and rerun once.
+        st.session_state["_cookie_checked"] = True
+        st.rerun()
 
 st.title("Budget Right")
 
@@ -1047,14 +1053,14 @@ with st.sidebar:
     )
     st.divider()
     if st.button("🚪 Logout", key="logout_btn"):
-        # Revoke DB token and clear from URL — can never be reused
         revoke_session_token(st.session_state.get("session_token"))
-        st.session_state.user_id       = None
-        st.session_state.user_role     = None
-        st.session_state.session_token = None
-        for key in ["login_username", "login_password"]:
+        for key in ["user_id", "user_role", "session_token",
+                    "login_username", "login_password", "_cookie_checked"]:
             if key in st.session_state:
                 del st.session_state[key]
+        st.session_state.user_id = None
+        st.session_state.user_role = None
+        st.session_state.session_token = None
         st.rerun()
 
 st.success(f"Welcome {user[0]} {user[1]} 👋")
