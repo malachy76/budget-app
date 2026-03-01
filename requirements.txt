@@ -2,3 +2,4 @@ streamlit
 bcrypt
 pandas
 plotly
+streamlit-cookies-controller
