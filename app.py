@@ -469,47 +469,53 @@ def change_password(user_id, current_pw, new_pw):
         else:
             return False, "Current password incorrect"
 
-# ---------------- PERSISTENT SESSION (query_params) ----------------
-# Token stored in URL as ?t=<token>.
+# ---------------- PERSISTENT SESSION (browser cookie) ----------------
+# Uses streamlit-cookies-controller to store a secure token in the browser.
 # Survives: refresh, tab close+reopen, browser restart, device reboot.
-# Cleared only on: logout (removes param) or explicit URL edit.
-PARAM_KEY = "t"
+# Cleared only on: logout button click.
+COOKIE_NAME = "br_auth"
 
-def _read_token_from_url() -> str | None:
-    """Pull the session token out of the URL query string."""
+try:
+    from streamlit_cookies_controller import CookieController
+    _cc = CookieController()
+except Exception:
+    _cc = None
+
+def _read_cookie():
     try:
-        return st.query_params.get(PARAM_KEY)
+        if _cc:
+            val = _cc.get(COOKIE_NAME)
+            return str(val) if val else None
     except Exception:
-        return None
+        pass
+    return None
 
-def _write_token_to_url(token: str):
-    """Embed the session token into the URL query string."""
+def _write_cookie(token):
     try:
-        st.query_params[PARAM_KEY] = token
+        if _cc:
+            _cc.set(COOKIE_NAME, token, max_age=60 * 60 * 24 * 365 * 10)
     except Exception:
         pass
 
-def _clear_token_from_url():
-    """Remove the session token from the URL query string."""
+def _delete_cookie():
     try:
-        st.query_params.pop(PARAM_KEY, None)
+        if _cc:
+            _cc.remove(COOKIE_NAME)
     except Exception:
         pass
 
-def create_session_token(user_id: int) -> str:
-    """Generate a secure random token, persist in DB, write to URL."""
+def create_session_token(user_id):
     token = secrets.token_urlsafe(48)
-    now   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with get_db() as (conn, cursor):
         cursor.execute(
             "INSERT INTO session_tokens (user_id, token, created_at) VALUES (?, ?, ?)",
             (user_id, token, now)
         )
-    _write_token_to_url(token)
+    _write_cookie(token)
     return token
 
-def validate_session_token(token: str):
-    """Return (user_id, role) if token exists in DB, else (None, None)."""
+def validate_session_token(token):
     if not token:
         return None, None
     try:
@@ -527,8 +533,7 @@ def validate_session_token(token: str):
         pass
     return None, None
 
-def revoke_session_token(token: str):
-    """Delete token from DB and remove from URL."""
+def revoke_session_token(token):
     if not token:
         return
     try:
@@ -536,7 +541,7 @@ def revoke_session_token(token: str):
             cursor.execute("DELETE FROM session_tokens WHERE token = ?", (token,))
     except Exception:
         pass
-    _clear_token_from_url()
+    _delete_cookie()
 
 # ---------------- ANALYTICS FUNCTIONS ----------------
 def track_login(user_id):
@@ -700,10 +705,10 @@ The Budget Right Team
         return False, str(e)
 
 # ---------------- UI ----------------
-# ── Restore session from URL token on every rerun ──
+# ── Restore session from browser cookie on every rerun ──
 # Runs FIRST before anything renders so the logged-in state is set immediately.
 if st.session_state.user_id is None:
-    _raw = _read_token_from_url()
+    _raw = _read_cookie()
     if _raw:
         _uid, _role = validate_session_token(str(_raw))
         if _uid:
@@ -711,8 +716,8 @@ if st.session_state.user_id is None:
             st.session_state.user_role     = _role
             st.session_state.session_token = str(_raw)
         else:
-            # Token in URL is invalid/expired — clean it up
-            _clear_token_from_url()
+            # Cookie token is invalid/expired — erase it
+            _delete_cookie()
 
 st.title("Budget Right")
 
@@ -1037,7 +1042,7 @@ with st.sidebar:
     st.divider()
     st.markdown(
         "🐛 [Report a bug / Suggest a feature]"
-        "(https://docs.google.com/forms/d/e/1FAIpQLSccXTBLwx6GhwqpUCt6lrjQ4qzNzNgjs2APheQ-FOryC0wCJA/viewform?usp=publish-editor)",
+        "(https://forms.gle/YOUR_GOOGLE_FORM_ID)",
         unsafe_allow_html=False,
     )
     st.divider()
@@ -1707,5 +1712,3 @@ elif current_page == "Settings":
                     st.error(msg)
         else:
             st.warning("All fields required.")
-
-
