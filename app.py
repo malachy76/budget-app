@@ -1084,7 +1084,7 @@ with st.sidebar:
     st.divider()
     st.markdown(
         "🐛 [Report a bug / Suggest a feature]"
-        "(https://forms.gle/YOUR_GOOGLE_FORM_ID)",
+        "(https://docs.google.com/forms/d/e/1FAIpQLSccXTBLwx6GhwqpUCt6lrjQ4qzNzNgjs2APheQ-FOryC0wCJA/viewform?usp=dialog)",
         unsafe_allow_html=False,
     )
     st.divider()
