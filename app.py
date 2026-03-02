@@ -469,42 +469,74 @@ def change_password(user_id, current_pw, new_pw):
         else:
             return False, "Current password incorrect"
 
-# ---------------- PERSISTENT SESSION (browser cookie) ----------------
-# Uses streamlit-cookies-controller to store a secure token in the browser.
-# Survives: refresh, tab close+reopen, browser restart, device reboot.
+# ---------------- PERSISTENT SESSION (localStorage via JS) ----------------
+# Stores a secure token in the browser's localStorage.
+# localStorage survives: refresh, tab close+reopen, browser restart, device reboot.
 # Cleared only on: logout button click.
-COOKIE_NAME = "br_auth"
+# No external library needed — uses Streamlit's built-in components.v1.html.
+import streamlit.components.v1 as _components
 
-try:
-    from streamlit_cookies_controller import CookieController
-    _cc = CookieController()
-except Exception:
-    _cc = None
+LS_KEY = "br_session_token"   # localStorage key
+QP_KEY = "t"                   # URL query param used to pass token to Streamlit
 
-def _read_cookie():
+def _inject_token_reader():
+    """
+    Inject a JS snippet that reads localStorage and puts the token into
+    the URL as ?t=<token>, then triggers a Streamlit rerun.
+    Only runs when we don't already have a session.
+    """
+    _components.html(f"""
+    <script>
+    (function() {{
+        var token = localStorage.getItem("{LS_KEY}");
+        if (token) {{
+            var url = new URL(window.parent.location.href);
+            if (url.searchParams.get("{QP_KEY}") !== token) {{
+                url.searchParams.set("{QP_KEY}", token);
+                window.parent.history.replaceState(null, "", url.toString());
+                window.parent.location.reload();
+            }}
+        }}
+    }})();
+    </script>
+    """, height=0)
+
+def _save_token_to_storage(token):
+    """Write token to localStorage — runs after successful login."""
+    _components.html(f"""
+    <script>
+    localStorage.setItem("{LS_KEY}", "{token}");
+    </script>
+    """, height=0)
+
+def _clear_token_from_storage():
+    """Erase token from localStorage — runs on logout."""
+    _components.html(f"""
+    <script>
+    localStorage.removeItem("{LS_KEY}");
+    var url = new URL(window.parent.location.href);
+    url.searchParams.delete("{QP_KEY}");
+    window.parent.history.replaceState(null, "", url.toString());
+    </script>
+    """, height=0)
+
+def _read_token_from_qp():
+    """Read the token Streamlit received via URL query param."""
     try:
-        if _cc:
-            val = _cc.get(COOKIE_NAME)
-            return str(val) if val else None
+        val = st.query_params.get(QP_KEY)
+        return str(val) if val else None
     except Exception:
-        pass
-    return None
+        return None
 
-def _write_cookie(token):
+def _clear_qp():
+    """Remove ?t= from URL after session is restored (clean URL)."""
     try:
-        if _cc:
-            _cc.set(COOKIE_NAME, token, max_age=60 * 60 * 24 * 365 * 10)
-    except Exception:
-        pass
-
-def _delete_cookie():
-    try:
-        if _cc:
-            _cc.remove(COOKIE_NAME)
+        st.query_params.pop(QP_KEY, None)
     except Exception:
         pass
 
 def create_session_token(user_id):
+    """Generate token, save in DB, write to localStorage."""
     token = secrets.token_urlsafe(48)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with get_db() as (conn, cursor):
@@ -512,10 +544,11 @@ def create_session_token(user_id):
             "INSERT INTO session_tokens (user_id, token, created_at) VALUES (?, ?, ?)",
             (user_id, token, now)
         )
-    _write_cookie(token)
+    _save_token_to_storage(token)
     return token
 
 def validate_session_token(token):
+    """Return (user_id, role) if token is valid in DB, else (None, None)."""
     if not token:
         return None, None
     try:
@@ -534,6 +567,7 @@ def validate_session_token(token):
     return None, None
 
 def revoke_session_token(token):
+    """Delete token from DB and clear from localStorage."""
     if not token:
         return
     try:
@@ -541,7 +575,7 @@ def revoke_session_token(token):
             cursor.execute("DELETE FROM session_tokens WHERE token = ?", (token,))
     except Exception:
         pass
-    _delete_cookie()
+    _clear_token_from_storage()
 
 # ---------------- ANALYTICS FUNCTIONS ----------------
 def track_login(user_id):
@@ -705,25 +739,27 @@ The Budget Right Team
         return False, str(e)
 
 # ---------------- UI ----------------
-# ── Restore session from browser cookie on every rerun ──
-# streamlit-cookies-controller has a known first-render timing issue:
-# on refresh the cookie is not ready on render #1, so we rerun once
-# to give the browser time to send the cookie back, then restore on render #2.
+# ── Restore session from localStorage on every load ──
+# Flow:
+#  1. If no session: inject JS that reads localStorage → puts token in ?t= → reloads
+#  2. On reload: Streamlit reads ?t= from URL → validates DB → restores session → cleans URL
 if st.session_state.user_id is None:
-    _raw = _read_cookie()
-    if _raw:
-        _uid, _role = validate_session_token(str(_raw))
+    _token_from_url = _read_token_from_qp()
+    if _token_from_url:
+        # Token arrived via URL — validate and restore
+        _uid, _role = validate_session_token(_token_from_url)
         if _uid:
             st.session_state.user_id       = _uid
             st.session_state.user_role     = _role
-            st.session_state.session_token = str(_raw)
+            st.session_state.session_token = _token_from_url
+            _clear_qp()   # clean the URL
         else:
-            # Cookie token is invalid/expired — erase it
-            _delete_cookie()
-    elif "_cookie_checked" not in st.session_state:
-        # First render — cookie may not have arrived yet. Mark and rerun once.
-        st.session_state["_cookie_checked"] = True
-        st.rerun()
+            # Invalid token — wipe it
+            _clear_token_from_storage()
+            _clear_qp()
+    else:
+        # No token in URL yet — inject JS to read localStorage and reload
+        _inject_token_reader()
 
 st.title("Budget Right")
 
@@ -1053,9 +1089,11 @@ with st.sidebar:
     )
     st.divider()
     if st.button("🚪 Logout", key="logout_btn"):
+        # Delete token from DB and clear localStorage in browser
         revoke_session_token(st.session_state.get("session_token"))
+        # Clear all session state
         for key in ["user_id", "user_role", "session_token",
-                    "login_username", "login_password", "_cookie_checked"]:
+                    "login_username", "login_password"]:
             if key in st.session_state:
                 del st.session_state[key]
         st.session_state.user_id = None
