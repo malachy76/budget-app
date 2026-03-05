@@ -1,4 +1,6 @@
 streamlit
+sqlite3
 bcrypt
 pandas
 plotly
+streamlit-cookies-manager
