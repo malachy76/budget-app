@@ -1,6 +1,21 @@
 import streamlit as st
 st.set_page_config(page_title="Budgeting Smart", page_icon="💰", layout="wide")
 
+# ============================================================
+# COOKIE-BASED PERSISTENT LOGIN
+# Install with: pip install streamlit-cookies-manager
+# ============================================================
+from streamlit_cookies_manager import EncryptedCookieManager
+
+cookies = EncryptedCookieManager(
+    prefix="budget_right_",
+    password="BR-Secret-Key-2024-XyZ9!"   # ← change this to something unique & private
+)
+
+# CRITICAL: must be the very first Streamlit call after set_page_config
+if not cookies.ready():
+    st.stop()
+
 # ---------------- MOBILE CSS ----------------
 st.markdown("""
 <style>
@@ -216,6 +231,7 @@ html, body {
 }
 </style>
 """, unsafe_allow_html=True)
+
 import sqlite3
 import bcrypt
 import random
@@ -240,7 +256,6 @@ def get_connection():
 
 @contextmanager
 def get_db():
-    """Open a fresh connection, yield (conn, cursor), commit+close on exit."""
     conn = get_connection()
     cursor = conn.cursor()
     try:
@@ -318,7 +333,6 @@ def create_tables():
             FOREIGN KEY(user_id) REFERENCES users(id)
         )
         """)
-        # Analytics: one row per login event
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS analytics_logins (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -327,7 +341,6 @@ def create_tables():
             FOREIGN KEY(user_id) REFERENCES users(id)
         )
         """)
-        # Persistent session tokens for cookie-based login
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS session_tokens (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -341,13 +354,11 @@ def create_tables():
 create_tables()
 
 def migrate_db():
-    """Safe migrations for existing databases — only runs if column is missing."""
     with get_db() as (conn, cursor):
         cursor.execute("PRAGMA table_info(expenses)")
         columns = [row[1] for row in cursor.fetchall()]
         if "tx_id" not in columns:
             cursor.execute("ALTER TABLE expenses ADD COLUMN tx_id INTEGER REFERENCES transactions(id)")
-        # Add last_login to users if missing
         cursor.execute("PRAGMA table_info(users)")
         user_cols = [row[1] for row in cursor.fetchall()]
         if "last_login" not in user_cols:
@@ -355,7 +366,7 @@ def migrate_db():
 
 migrate_db()
 
-# ---------------- SESSION ----------------
+# ---------------- SESSION STATE INIT ----------------
 if "user_id" not in st.session_state:
     st.session_state.user_id = None
 if "user_role" not in st.session_state:
@@ -469,74 +480,12 @@ def change_password(user_id, current_pw, new_pw):
         else:
             return False, "Current password incorrect"
 
-# ---------------- PERSISTENT SESSION (localStorage via JS) ----------------
-# Stores a secure token in the browser's localStorage.
-# localStorage survives: refresh, tab close+reopen, browser restart, device reboot.
-# Cleared only on: logout button click.
-# No external library needed — uses Streamlit's built-in components.v1.html.
-import streamlit.components.v1 as _components
-
-LS_KEY = "br_session_token"   # localStorage key
-QP_KEY = "t"                   # URL query param used to pass token to Streamlit
-
-def _inject_token_reader():
-    """
-    Inject a JS snippet that reads localStorage and puts the token into
-    the URL as ?t=<token>, then triggers a Streamlit rerun.
-    Only runs when we don't already have a session.
-    """
-    _components.html(f"""
-    <script>
-    (function() {{
-        var token = localStorage.getItem("{LS_KEY}");
-        if (token) {{
-            var url = new URL(window.parent.location.href);
-            if (url.searchParams.get("{QP_KEY}") !== token) {{
-                url.searchParams.set("{QP_KEY}", token);
-                window.parent.history.replaceState(null, "", url.toString());
-                window.parent.location.reload();
-            }}
-        }}
-    }})();
-    </script>
-    """, height=0)
-
-def _save_token_to_storage(token):
-    """Write token to localStorage — runs after successful login."""
-    _components.html(f"""
-    <script>
-    localStorage.setItem("{LS_KEY}", "{token}");
-    </script>
-    """, height=0)
-
-def _clear_token_from_storage():
-    """Erase token from localStorage — runs on logout."""
-    _components.html(f"""
-    <script>
-    localStorage.removeItem("{LS_KEY}");
-    var url = new URL(window.parent.location.href);
-    url.searchParams.delete("{QP_KEY}");
-    window.parent.history.replaceState(null, "", url.toString());
-    </script>
-    """, height=0)
-
-def _read_token_from_qp():
-    """Read the token Streamlit received via URL query param."""
-    try:
-        val = st.query_params.get(QP_KEY)
-        return str(val) if val else None
-    except Exception:
-        return None
-
-def _clear_qp():
-    """Remove ?t= from URL after session is restored (clean URL)."""
-    try:
-        st.query_params.pop(QP_KEY, None)
-    except Exception:
-        pass
+# ============================================================
+# COOKIE SESSION HELPERS
+# ============================================================
 
 def create_session_token(user_id):
-    """Generate token, save in DB, write to localStorage."""
+    """Generate a secure token, save to DB, write to cookie."""
     token = secrets.token_urlsafe(48)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with get_db() as (conn, cursor):
@@ -544,11 +493,13 @@ def create_session_token(user_id):
             "INSERT INTO session_tokens (user_id, token, created_at) VALUES (?, ?, ?)",
             (user_id, token, now)
         )
-    _save_token_to_storage(token)
+    # Write to encrypted cookie
+    cookies["session_token"] = token
+    cookies.save()
     return token
 
 def validate_session_token(token):
-    """Return (user_id, role) if token is valid in DB, else (None, None)."""
+    """Return (user_id, role) if the token is valid, else (None, None)."""
     if not token:
         return None, None
     try:
@@ -567,7 +518,7 @@ def validate_session_token(token):
     return None, None
 
 def revoke_session_token(token):
-    """Delete token from DB and clear from localStorage."""
+    """Delete token from DB and clear cookie."""
     if not token:
         return
     try:
@@ -575,11 +526,29 @@ def revoke_session_token(token):
             cursor.execute("DELETE FROM session_tokens WHERE token = ?", (token,))
     except Exception:
         pass
-    _clear_token_from_storage()
+    # Clear cookie
+    cookies["session_token"] = ""
+    cookies.save()
+
+# ============================================================
+# RESTORE SESSION FROM COOKIE (runs on every page load/refresh)
+# This is synchronous — no JS race condition!
+# ============================================================
+if st.session_state.user_id is None:
+    _cookie_token = cookies.get("session_token", "")
+    if _cookie_token:
+        _uid, _role = validate_session_token(_cookie_token)
+        if _uid:
+            st.session_state.user_id       = _uid
+            st.session_state.user_role     = _role
+            st.session_state.session_token = _cookie_token
+        else:
+            # Token invalid/expired — clear cookie
+            cookies["session_token"] = ""
+            cookies.save()
 
 # ---------------- ANALYTICS FUNCTIONS ----------------
 def track_login(user_id):
-    """Record a login event and update last_login timestamp."""
     try:
         now = datetime.now().strftime("%Y-%m-%d")
         with get_db() as (conn, cursor):
@@ -592,10 +561,9 @@ def track_login(user_id):
                 (now, user_id)
             )
     except Exception:
-        pass  # Never crash the app over analytics
+        pass
 
 def track_signup(user_id):
-    """Record signup as a login event too — counts as day-1 activity."""
     try:
         now = datetime.now().strftime("%Y-%m-%d")
         with get_db() as (conn, cursor):
@@ -607,7 +575,6 @@ def track_signup(user_id):
         pass
 
 def get_analytics():
-    """Return a dict of all key analytics figures."""
     try:
         with get_db() as (conn, cursor):
             today = datetime.now().strftime("%Y-%m-%d")
@@ -624,35 +591,32 @@ def get_analytics():
                 "SELECT COUNT(DISTINCT user_id) FROM analytics_logins WHERE login_date=?",
                 (today,)
             )
-            dau = cursor.fetchone()[0] or 0  # Daily Active Users
+            dau = cursor.fetchone()[0] or 0
 
             cursor.execute(
                 "SELECT COUNT(DISTINCT user_id) FROM analytics_logins WHERE login_date >= ?",
                 (cutoff_7,)
             )
-            wau = cursor.fetchone()[0] or 0  # Weekly Active Users
+            wau = cursor.fetchone()[0] or 0
 
             cursor.execute(
                 "SELECT COUNT(DISTINCT user_id) FROM analytics_logins WHERE login_date >= ?",
                 (cutoff_30,)
             )
-            mau = cursor.fetchone()[0] or 0  # Monthly Active Users
+            mau = cursor.fetchone()[0] or 0
 
-            # New signups in last 30 days
             cursor.execute(
                 "SELECT COUNT(*) FROM users WHERE created_at >= ?",
                 (cutoff_30,)
             )
             new_signups_30d = cursor.fetchone()[0] or 0
 
-            # Signups today
             cursor.execute(
                 "SELECT COUNT(*) FROM users WHERE created_at=?",
                 (today,)
             )
             signups_today = cursor.fetchone()[0] or 0
 
-            # Daily logins for last 14 days (for chart)
             cursor.execute("""
                 SELECT login_date, COUNT(DISTINCT user_id)
                 FROM analytics_logins
@@ -661,7 +625,6 @@ def get_analytics():
             """)
             daily_rows = cursor.fetchall()
 
-            # Inactive users: verified, never logged in OR last_login > 14 days ago
             cursor.execute("""
                 SELECT id, surname, other_names, email, last_login
                 FROM users
@@ -686,7 +649,6 @@ def get_analytics():
         return {}
 
 def notify_admin_new_signup(new_name, new_username, new_email):
-    """Email the admin instantly when a new user signs up."""
     try:
         with get_db() as (conn, cursor):
             cursor.execute("SELECT COUNT(*) FROM users")
@@ -711,10 +673,9 @@ Log into the admin panel to view all users.
             server.login(st.secrets["EMAIL_SENDER"], st.secrets["EMAIL_APP_PASSWORD"])
             server.send_message(msg)
     except Exception:
-        pass  # Never crash the app if admin notification fails
+        pass
 
 def send_reengagement_email(email, name):
-    """Send a re-engagement nudge email to an inactive user."""
     try:
         msg = EmailMessage()
         msg["Subject"] = "We miss you on Budget Right 💰"
@@ -739,34 +700,11 @@ The Budget Right Team
         return False, str(e)
 
 # ---------------- UI ----------------
-# ── Restore session from localStorage on every load ──
-# Flow:
-#  1. If no session: inject JS that reads localStorage → puts token in ?t= → reloads
-#  2. On reload: Streamlit reads ?t= from URL → validates DB → restores session → cleans URL
-if st.session_state.user_id is None:
-    _token_from_url = _read_token_from_qp()
-    if _token_from_url:
-        # Token arrived via URL — validate and restore
-        _uid, _role = validate_session_token(_token_from_url)
-        if _uid:
-            st.session_state.user_id       = _uid
-            st.session_state.user_role     = _role
-            st.session_state.session_token = _token_from_url
-            _clear_qp()   # clean the URL
-        else:
-            # Invalid token — wipe it
-            _clear_token_from_storage()
-            _clear_qp()
-    else:
-        # No token in URL yet — inject JS to read localStorage and reload
-        _inject_token_reader()
-
 st.title("Budget Right")
 
 # ================= AUTH =================
 if st.session_state.user_id is None:
 
-    # -------- LANDING PAGE --------
     st.markdown("""
     <style>
     .landing-hero {
@@ -776,75 +714,25 @@ if st.session_state.user_id is None:
         text-align: center;
         margin-bottom: 8px;
     }
-    .landing-logo {
-        font-size: 56px;
-        margin-bottom: 4px;
-        display: block;
-    }
-    .landing-title {
-        font-size: 2.6rem;
-        font-weight: 800;
-        color: #ffffff;
-        margin: 0 0 6px 0;
-        letter-spacing: -0.5px;
-    }
-    .landing-tagline {
-        font-size: 1.1rem;
-        color: #a8d8c8;
-        margin: 0 0 28px 0;
-        font-weight: 400;
-    }
-    .landing-desc {
-        font-size: 1.05rem;
-        color: #d4eee6;
-        max-width: 560px;
-        margin: 0 auto;
-        line-height: 1.7;
-    }
-    .feature-card {
-        background: #f0f7f4;
-        border-left: 4px solid #0e7c5b;
-        border-radius: 10px;
-        padding: 18px 20px;
-        height: 100%;
-    }
+    .landing-logo { font-size: 56px; margin-bottom: 4px; display: block; }
+    .landing-title { font-size: 2.6rem; font-weight: 800; color: #ffffff; margin: 0 0 6px 0; letter-spacing: -0.5px; }
+    .landing-tagline { font-size: 1.1rem; color: #a8d8c8; margin: 0 0 28px 0; font-weight: 400; }
+    .landing-desc { font-size: 1.05rem; color: #d4eee6; max-width: 560px; margin: 0 auto; line-height: 1.7; }
+    .feature-card { background: #f0f7f4; border-left: 4px solid #0e7c5b; border-radius: 10px; padding: 18px 20px; height: 100%; }
     .feature-icon { font-size: 1.8rem; }
     .feature-title { font-weight: 700; color: #1a3c5e; font-size: 1rem; margin: 6px 0 4px 0; }
     .feature-text  { color: #4a6070; font-size: 0.92rem; line-height: 1.5; }
-    .demo-card {
-        background: #ffffff;
-        border: 1px solid #d0e8df;
-        border-radius: 14px;
-        padding: 24px;
-        margin-bottom: 4px;
-    }
-    .demo-row {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 10px 0;
-        border-bottom: 1px solid #eef5f2;
-        font-size: 0.95rem;
-    }
+    .demo-card { background: #ffffff; border: 1px solid #d0e8df; border-radius: 14px; padding: 24px; margin-bottom: 4px; }
+    .demo-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #eef5f2; font-size: 0.95rem; }
     .demo-row:last-child { border-bottom: none; }
     .demo-credit { color: #0e7c5b; font-weight: 600; }
     .demo-debit  { color: #c0392b; font-weight: 600; }
     .demo-label  { color: #2c3e50; }
     .demo-date   { color: #95a5a6; font-size: 0.82rem; }
-    .badge {
-        display: inline-block;
-        background: #e8f5f0;
-        color: #0e7c5b;
-        border-radius: 20px;
-        padding: 4px 14px;
-        font-size: 0.82rem;
-        font-weight: 600;
-        margin: 4px 4px 0 0;
-    }
+    .badge { display: inline-block; background: #e8f5f0; color: #0e7c5b; border-radius: 20px; padding: 4px 14px; font-size: 0.82rem; font-weight: 600; margin: 4px 4px 0 0; }
     </style>
     """, unsafe_allow_html=True)
 
-    # — Hero —
     st.markdown("""
     <div class="landing-hero">
       <span class="landing-logo">💰</span>
@@ -859,7 +747,6 @@ if st.session_state.user_id is None:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # — Feature cards —
     fc1, fc2, fc3, fc4 = st.columns(4)
     features = [
         ("💳", "Multiple Banks", "Link all your accounts — GTB, Access, Opay and more — in one place."),
@@ -879,7 +766,6 @@ if st.session_state.user_id is None:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # — Demo screenshot —
     demo_col, auth_col = st.columns([1.1, 1], gap="large")
 
     with demo_col:
@@ -925,7 +811,6 @@ if st.session_state.user_id is None:
         </div>
         """, unsafe_allow_html=True)
 
-    # — Auth tabs in right column —
     with auth_col:
         st.markdown("#### 🚀 Get started — it's free")
         tabs = st.tabs(["🔐 Login", "📝 Register", "📧 Verify Email"])
@@ -939,7 +824,7 @@ if st.session_state.user_id is None:
                     uid = login_user(login_username, login_password)
                     if uid:
                         track_login(uid)
-                        # Create persistent token → store in DB and URL
+                        # ── Create token and save to cookie ──
                         token = create_session_token(uid)
                         st.session_state.session_token = token
                         st.success("Logged in!")
@@ -1089,13 +974,8 @@ with st.sidebar:
     )
     st.divider()
     if st.button("🚪 Logout", key="logout_btn"):
-        # Delete token from DB and clear localStorage in browser
+        # Revoke token from DB and clear cookie
         revoke_session_token(st.session_state.get("session_token"))
-        # Clear all session state
-        for key in ["user_id", "user_role", "session_token",
-                    "login_username", "login_password"]:
-            if key in st.session_state:
-                del st.session_state[key]
         st.session_state.user_id = None
         st.session_state.user_role = None
         st.session_state.session_token = None
@@ -1124,7 +1004,7 @@ if current_page == "Admin Panel":
     with tabs_admin[2]:
         st.info("You can paste your existing Expenses & Income code here for admin view.")
 
-# ================= PAGE: ANALYTICS (admin only) =================
+# ================= PAGE: ANALYTICS =================
 elif current_page == "Analytics":
     if st.session_state.user_role != "admin":
         st.error("Access denied.")
@@ -1136,7 +1016,6 @@ elif current_page == "Analytics":
     if not data:
         st.warning("Could not load analytics data.")
     else:
-        # — Summary metrics —
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("👥 Total Registered",   data["total_registered"])
         c2.metric("✅ Verified Users",      data["total_verified"])
@@ -1178,17 +1057,11 @@ elif current_page == "Analytics":
 
                 st.divider()
                 st.subheader("📧 Send Re-engagement Email")
-                st.caption("Send a friendly nudge to bring inactive users back.")
-
                 email_options = {
                     f"{row[1]} {row[2]} ({row[3]})": (row[3], row[1])
                     for row in inactive
                 }
-                selected_user = st.selectbox(
-                    "Select user to email",
-                    list(email_options.keys()),
-                    key="reeng_select"
-                )
+                selected_user = st.selectbox("Select user to email", list(email_options.keys()), key="reeng_select")
                 if st.button("📨 Send Re-engagement Email", key="reeng_send_btn"):
                     target_email, target_name = email_options[selected_user]
                     ok, msg = send_reengagement_email(target_email, target_name)
@@ -1204,10 +1077,8 @@ elif current_page == "Analytics":
                     sent, failed = 0, 0
                     for row in inactive:
                         ok, _ = send_reengagement_email(row[3], row[1])
-                        if ok:
-                            sent += 1
-                        else:
-                            failed += 1
+                        if ok: sent += 1
+                        else: failed += 1
                     st.success(f"✅ Sent: {sent}  |  ❌ Failed: {failed}")
             else:
                 st.success("No inactive users right now — everyone's engaged! 🎉")
@@ -1283,7 +1154,6 @@ elif current_page == "Dashboard":
     else:
         st.info("No transactions in this period.")
 
-    # ── Expense breakdown pie chart ──────────────────────────────────────────
     st.divider()
     st.subheader("🥧 Expense Breakdown by Category")
     with get_db() as (conn, cursor):
@@ -1298,15 +1168,11 @@ elif current_page == "Dashboard":
 
     if pie_rows:
         df_pie = pd.DataFrame(pie_rows, columns=["Expense", "Amount"])
-        # Group small items into "Others" so the chart stays readable
         threshold = df_pie["Amount"].sum() * 0.02
         df_pie_main = df_pie[df_pie["Amount"] >= threshold]
         df_pie_other = df_pie[df_pie["Amount"] < threshold]
         if not df_pie_other.empty:
-            others_row = pd.DataFrame([{
-                "Expense": "Others",
-                "Amount": df_pie_other["Amount"].sum()
-            }])
+            others_row = pd.DataFrame([{"Expense": "Others", "Amount": df_pie_other["Amount"].sum()}])
             df_pie_main = pd.concat([df_pie_main, others_row], ignore_index=True)
 
         fig_pie_dash = px.pie(
@@ -1379,13 +1245,11 @@ elif current_page == "Expenses":
                 bank_id = bank_map[selected_bank]
                 now = datetime.now().strftime("%Y-%m-%d")
                 with get_db() as (conn, cursor):
-                    # Insert transaction FIRST so we can capture its id
                     cursor.execute("""
                         INSERT INTO transactions (bank_id, type, amount, description, created_at)
                         VALUES (?, 'debit', ?, ?, ?)
                     """, (bank_id, expense_amount, f"Expense: {expense_name}", now))
                     tx_id = cursor.lastrowid
-                    # Insert expense with the tx_id linked
                     cursor.execute("""
                         INSERT INTO expenses (user_id, bank_id, name, amount, created_at, tx_id)
                         VALUES (?, ?, ?, ?, ?, ?)
@@ -1413,7 +1277,6 @@ elif current_page == "Expenses":
         for exp in expenses_data:
             exp_id, date, name, amount, bank_id, bank_name, acc_num, tx_id = exp
 
-            # Card display + action buttons in one row
             card_col, btn_col = st.columns([5, 1])
             with card_col:
                 st.markdown(f"""
@@ -1440,7 +1303,6 @@ elif current_page == "Expenses":
                     st.success("Expense deleted & bank refunded")
                     st.rerun()
 
-        # ── Expense pie chart (Expenses page) ────────────────────────────────
         st.divider()
         st.subheader("🥧 Your Expense Breakdown")
         df_exp_pie = pd.DataFrame(
@@ -1493,14 +1355,11 @@ elif current_page == "Expenses":
                 if st.button("Update Expense"):
                     diff = new_amount - old_amount
                     with get_db() as (conn, cursor):
-                        # Adjust bank balance by the difference
                         cursor.execute("UPDATE banks SET balance = balance - ? WHERE id=?", (diff, old_bank_id))
-                        # Update the linked transaction directly by its exact id
                         if old_tx_id:
                             cursor.execute("""
                                 UPDATE transactions SET amount=?, description=? WHERE id=?
                             """, (new_amount, f"Expense: {new_name}", old_tx_id))
-                        # Update the expense record
                         cursor.execute("UPDATE expenses SET name=?, amount=? WHERE id=?", (new_name, new_amount, edit_id))
                     st.success("Expense updated")
                     st.session_state.edit_exp_id = None
@@ -1547,13 +1406,9 @@ elif current_page == "Banks":
             with col3:
                 if st.button("🗑", key=f"delete_bank_{bank_id}"):
                     with get_db() as (conn, cursor):
-                        # 1. Clear the tx_id link on expenses for this bank (so FK is not violated)
                         cursor.execute("UPDATE expenses SET tx_id=NULL WHERE bank_id=?", (bank_id,))
-                        # 2. Delete all expenses linked to this bank
                         cursor.execute("DELETE FROM expenses WHERE bank_id=?", (bank_id,))
-                        # 3. Delete all transactions linked to this bank
                         cursor.execute("DELETE FROM transactions WHERE bank_id=?", (bank_id,))
-                        # 4. Now safely delete the bank
                         cursor.execute("DELETE FROM banks WHERE id=?", (bank_id,))
                     st.success("Bank and all its transactions deleted.")
                     st.rerun()
@@ -1716,7 +1571,6 @@ elif current_page == "Savings Goals":
 # ================= PAGE: IMPORT CSV =================
 elif current_page == "Import CSV":
     st.markdown("## 📥 Import Bank Statement (CSV)")
-    # csv_import_page receives a fresh connection it manages itself
     conn = get_connection()
     try:
         csv_import_page(conn, user_id)
