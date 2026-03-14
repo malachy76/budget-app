@@ -383,6 +383,8 @@ if "edit_exp_id" not in st.session_state:
     st.session_state.edit_exp_id = None
 if "edit_bank_id" not in st.session_state:
     st.session_state.edit_bank_id = None
+if "edit_income_id" not in st.session_state:       # ← NEW
+    st.session_state.edit_income_id = None
 
 # ---------------- AUTH FUNCTIONS ----------------
 def hash_password(password):
@@ -493,7 +495,6 @@ def create_session_token(user_id):
             "INSERT INTO session_tokens (user_id, token, created_at) VALUES (?, ?, ?)",
             (user_id, token, now)
         )
-    # Write to encrypted cookie
     cookies["session_token"] = token
     cookies.save()
     return token
@@ -526,13 +527,11 @@ def revoke_session_token(token):
             cursor.execute("DELETE FROM session_tokens WHERE token = ?", (token,))
     except Exception:
         pass
-    # Clear cookie
     cookies["session_token"] = ""
     cookies.save()
 
 # ============================================================
-# RESTORE SESSION FROM COOKIE (runs on every page load/refresh)
-# This is synchronous — no JS race condition!
+# RESTORE SESSION FROM COOKIE
 # ============================================================
 if st.session_state.user_id is None:
     _cookie_token = cookies.get("session_token", "")
@@ -543,7 +542,6 @@ if st.session_state.user_id is None:
             st.session_state.user_role     = _role
             st.session_state.session_token = _cookie_token
         else:
-            # Token invalid/expired — clear cookie
             cookies["session_token"] = ""
             cookies.save()
 
@@ -824,7 +822,6 @@ if st.session_state.user_id is None:
                     uid = login_user(login_username, login_password)
                     if uid:
                         track_login(uid)
-                        # ── Create token and save to cookie ──
                         token = create_session_token(uid)
                         st.session_state.session_token = token
                         st.success("Logged in!")
@@ -974,7 +971,6 @@ with st.sidebar:
     )
     st.divider()
     if st.button("🚪 Logout", key="logout_btn"):
-        # Revoke token from DB and clear cookie
         revoke_session_token(st.session_state.get("session_token"))
         st.session_state.user_id = None
         st.session_state.user_role = None
@@ -1199,12 +1195,62 @@ elif current_page == "Dashboard":
 
 # ================= PAGE: INCOME =================
 elif current_page == "Income":
-    st.markdown("## 💰 Add Income")
+    st.markdown("## 💰 Income")
 
     with get_db() as (conn, cursor):
         cursor.execute("SELECT id, bank_name, account_number, balance FROM banks WHERE user_id=?", (user_id,))
         banks = cursor.fetchall()
 
+    # ── EDIT FORM — renders at the top so user sees it immediately ──
+    if st.session_state.get("edit_income_id"):
+        edit_id = st.session_state.edit_income_id
+        with get_db() as (conn, cursor):
+            cursor.execute("""
+                SELECT t.id, t.description, t.amount, t.bank_id
+                FROM transactions t
+                JOIN banks b ON t.bank_id = b.id
+                WHERE t.id = ? AND b.user_id = ? AND t.type = 'credit'
+            """, (edit_id, user_id))
+            inc_row = cursor.fetchone()
+
+        if inc_row:
+            tx_id, old_desc, old_amount, old_bank_id = inc_row
+            display_source = old_desc.replace("Income: ", "", 1)
+            st.info(f"✏️ Editing: **{display_source}** — ₦{old_amount:,.0f}")
+
+            with st.form("edit_income_form"):
+                new_source = st.text_input("Income Source", value=display_source)
+                new_amount = st.number_input("Amount (₦)", min_value=1, value=int(old_amount))
+                save_col, cancel_col = st.columns(2)
+                save_clicked   = save_col.form_submit_button("💾 Save Changes")
+                cancel_clicked = cancel_col.form_submit_button("✖️ Cancel")
+
+            if save_clicked:
+                diff = new_amount - old_amount
+                with get_db() as (conn, cursor):
+                    cursor.execute(
+                        "UPDATE banks SET balance = balance + ? WHERE id=?",
+                        (diff, old_bank_id)
+                    )
+                    cursor.execute(
+                        "UPDATE transactions SET amount=?, description=? WHERE id=?",
+                        (new_amount, f"Income: {new_source}", tx_id)
+                    )
+                st.success("✅ Income updated!")
+                st.session_state.edit_income_id = None
+                st.rerun()
+
+            if cancel_clicked:
+                st.session_state.edit_income_id = None
+                st.rerun()
+        else:
+            st.warning("Income entry not found.")
+            st.session_state.edit_income_id = None
+
+        st.divider()
+
+    # ── ADD INCOME ──
+    st.subheader("Add Income")
     income_source = st.text_input("Income Source", key="income_source")
     income_amount = st.number_input("Amount (₦)", min_value=1, key="income_amt")
 
@@ -1220,10 +1266,65 @@ elif current_page == "Income":
                         INSERT INTO transactions (bank_id, type, amount, description, created_at)
                         VALUES (?, 'credit', ?, ?, ?)
                     """, (bank_id, income_amount, f"Income: {income_source}", datetime.now().strftime("%Y-%m-%d")))
-                st.success(f"Income of ₦{income_amount:,} added")
+                st.success(f"✅ Income of ₦{income_amount:,} added")
                 st.rerun()
     else:
         st.info("You need at least one bank account to add income.")
+
+    st.divider()
+
+    # ── INCOME HISTORY ──
+    st.subheader("📋 Income History")
+    with get_db() as (conn, cursor):
+        cursor.execute("""
+            SELECT t.id, t.created_at, t.description, t.amount, t.bank_id,
+                   b.bank_name, b.account_number
+            FROM transactions t
+            JOIN banks b ON t.bank_id = b.id
+            WHERE b.user_id = ? AND t.type = 'credit'
+              AND t.description LIKE 'Income:%'
+            ORDER BY t.created_at DESC
+        """, (user_id,))
+        income_data = cursor.fetchall()
+
+    if income_data:
+        for inc in income_data:
+            tx_id, date, desc, amount, bank_id, bank_name, acc_num = inc
+            source = desc.replace("Income: ", "", 1)
+
+            card_col, edit_col, del_col = st.columns([5, 0.5, 0.5])
+
+            with card_col:
+                st.markdown(f"""
+                <div class="exp-card" style="border-left-color:#0e7c5b;">
+                  <div class="exp-card-left">
+                    <div class="exp-card-name">{source}</div>
+                    <div class="exp-card-bank">🏦 {bank_name} (****{acc_num})</div>
+                    <div class="exp-card-date">📅 {date}</div>
+                  </div>
+                  <div class="exp-card-right">
+                    <div class="exp-card-amount" style="color:#0e7c5b;">+₦{amount:,.0f}</div>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            with edit_col:
+                if st.button("✏️", key=f"edit_inc_{tx_id}", help="Edit"):
+                    st.session_state.edit_income_id = tx_id
+                    st.rerun()
+
+            with del_col:
+                if st.button("🗑", key=f"delete_inc_{tx_id}", help="Delete"):
+                    with get_db() as (conn, cursor):
+                        cursor.execute(
+                            "UPDATE banks SET balance = balance - ? WHERE id=?",
+                            (amount, bank_id)
+                        )
+                        cursor.execute("DELETE FROM transactions WHERE id=?", (tx_id,))
+                    st.success(f"🗑 '{source}' deleted & ₦{amount:,.0f} reversed from bank.")
+                    st.rerun()
+    else:
+        st.info("No income entries yet.")
 
 # ================= PAGE: EXPENSES =================
 elif current_page == "Expenses":
@@ -1233,8 +1334,59 @@ elif current_page == "Expenses":
         cursor.execute("SELECT id, bank_name, account_number, balance FROM banks WHERE user_id=?", (user_id,))
         banks = cursor.fetchall()
 
+    # ── EDIT FORM — renders at the top so user sees it immediately ──
+    if st.session_state.get("edit_exp_id"):
+        edit_id = st.session_state.edit_exp_id
+        with get_db() as (conn, cursor):
+            cursor.execute(
+                "SELECT name, amount, bank_id, tx_id FROM expenses WHERE id=? AND user_id=?",
+                (edit_id, user_id)
+            )
+            exp_row = cursor.fetchone()
+
+        if exp_row:
+            old_name, old_amount, old_bank_id, old_tx_id = exp_row
+            st.info(f"✏️ Editing: **{old_name}** — ₦{old_amount:,.0f}")
+
+            with st.form("edit_expense_form"):
+                new_name   = st.text_input("Expense Name", value=old_name)
+                new_amount = st.number_input("Amount (₦)", min_value=1, value=int(old_amount))
+                save_col, cancel_col = st.columns(2)
+                save_clicked   = save_col.form_submit_button("💾 Save Changes")
+                cancel_clicked = cancel_col.form_submit_button("✖️ Cancel")
+
+            if save_clicked:
+                diff = new_amount - old_amount
+                with get_db() as (conn, cursor):
+                    cursor.execute(
+                        "UPDATE banks SET balance = balance - ? WHERE id=?",
+                        (diff, old_bank_id)
+                    )
+                    if old_tx_id:
+                        cursor.execute(
+                            "UPDATE transactions SET amount=?, description=? WHERE id=?",
+                            (new_amount, f"Expense: {new_name}", old_tx_id)
+                        )
+                    cursor.execute(
+                        "UPDATE expenses SET name=?, amount=? WHERE id=? AND user_id=?",
+                        (new_name, new_amount, edit_id, user_id)
+                    )
+                st.success("✅ Expense updated!")
+                st.session_state.edit_exp_id = None
+                st.rerun()
+
+            if cancel_clicked:
+                st.session_state.edit_exp_id = None
+                st.rerun()
+        else:
+            st.warning("Expense not found.")
+            st.session_state.edit_exp_id = None
+
+        st.divider()
+
+    # ── ADD EXPENSE ──
     st.subheader("Add Expense")
-    expense_name = st.text_input("Expense Name", key="exp_name")
+    expense_name   = st.text_input("Expense Name", key="exp_name")
     expense_amount = st.number_input("Amount (₦)", min_value=1, key="exp_amt")
 
     if banks:
@@ -1255,7 +1407,7 @@ elif current_page == "Expenses":
                         VALUES (?, ?, ?, ?, ?, ?)
                     """, (user_id, bank_id, expense_name, expense_amount, now, tx_id))
                     cursor.execute("UPDATE banks SET balance = balance - ? WHERE id=?", (expense_amount, bank_id))
-                st.success("Expense added & bank debited")
+                st.success("✅ Expense added & bank debited")
                 st.rerun()
             else:
                 st.warning("Please enter a name and amount.")
@@ -1264,6 +1416,7 @@ elif current_page == "Expenses":
 
     st.divider()
 
+    # ── EXPENSE LIST ──
     st.subheader("📋 Expense Summary")
     with get_db() as (conn, cursor):
         cursor.execute("""
@@ -1277,7 +1430,8 @@ elif current_page == "Expenses":
         for exp in expenses_data:
             exp_id, date, name, amount, bank_id, bank_name, acc_num, tx_id = exp
 
-            card_col, btn_col = st.columns([5, 1])
+            card_col, edit_col, del_col = st.columns([5, 0.5, 0.5])
+
             with card_col:
                 st.markdown(f"""
                 <div class="exp-card">
@@ -1291,16 +1445,20 @@ elif current_page == "Expenses":
                   </div>
                 </div>
                 """, unsafe_allow_html=True)
-            with btn_col:
+
+            with edit_col:
                 if st.button("✏️", key=f"edit_exp_{exp_id}", help="Edit"):
                     st.session_state.edit_exp_id = exp_id
+                    st.rerun()
+
+            with del_col:
                 if st.button("🗑", key=f"delete_exp_{exp_id}", help="Delete"):
                     with get_db() as (conn, cursor):
                         cursor.execute("UPDATE banks SET balance = balance + ? WHERE id=?", (amount, bank_id))
                         if tx_id:
                             cursor.execute("DELETE FROM transactions WHERE id=?", (tx_id,))
-                        cursor.execute("DELETE FROM expenses WHERE id=?", (exp_id,))
-                    st.success("Expense deleted & bank refunded")
+                        cursor.execute("DELETE FROM expenses WHERE id=? AND user_id=?", (exp_id, user_id))
+                    st.success(f"🗑 '{name}' deleted & ₦{amount:,.0f} refunded.")
                     st.rerun()
 
         st.divider()
@@ -1340,30 +1498,9 @@ elif current_page == "Expenses":
             showlegend=True,
         )
         st.plotly_chart(fig_pie_exp, use_container_width=True)
-        st.divider()
 
-        if st.session_state.get("edit_exp_id"):
-            edit_id = st.session_state.edit_exp_id
-            with get_db() as (conn, cursor):
-                cursor.execute("SELECT name, amount, bank_id, tx_id FROM expenses WHERE id=?", (edit_id,))
-                exp = cursor.fetchone()
-            if exp:
-                old_name, old_amount, old_bank_id, old_tx_id = exp
-                st.markdown("### ✏️ Edit Expense")
-                new_name = st.text_input("Expense Name", value=old_name)
-                new_amount = st.number_input("Amount (₦)", min_value=1, value=old_amount)
-                if st.button("Update Expense"):
-                    diff = new_amount - old_amount
-                    with get_db() as (conn, cursor):
-                        cursor.execute("UPDATE banks SET balance = balance - ? WHERE id=?", (diff, old_bank_id))
-                        if old_tx_id:
-                            cursor.execute("""
-                                UPDATE transactions SET amount=?, description=? WHERE id=?
-                            """, (new_amount, f"Expense: {new_name}", old_tx_id))
-                        cursor.execute("UPDATE expenses SET name=?, amount=? WHERE id=?", (new_name, new_amount, edit_id))
-                    st.success("Expense updated")
-                    st.session_state.edit_exp_id = None
-                    st.rerun()
+    else:
+        st.info("No expenses recorded yet.")
 
 # ================= PAGE: BANKS =================
 elif current_page == "Banks":
