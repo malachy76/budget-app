@@ -1,5 +1,6 @@
 streamlit
+streamlit-cookies-manager
 bcrypt
 pandas
 plotly
-streamlit-cookies-manager
+psycopg2-binary
