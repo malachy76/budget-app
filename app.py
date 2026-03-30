@@ -1,14 +1,17 @@
+# -*- coding: utf-8 -*-
 import streamlit as st
-st.set_page_config(page_title="Budgeting Smart", page_icon="💰", layout="wide")
+st.set_page_config(page_title="Budgeting Smart", page_icon="\U0001f4b0", layout="wide")
 
 # ============================================================
 # COOKIE-BASED PERSISTENT LOGIN
 # ============================================================
 from streamlit_cookies_manager import EncryptedCookieManager
 
+# Cookie encryption password now lives in st.secrets["COOKIE_PASSWORD"]
+# Add this key to your Streamlit secrets: COOKIE_PASSWORD = "your-secret-here"
 cookies = EncryptedCookieManager(
     prefix="budget_right_",
-    password="BR-Secret-Key-2024-XyZ9!"
+    password=st.secrets["COOKIE_PASSWORD"]
 )
 
 if not cookies.ready():
@@ -113,6 +116,7 @@ html, body { overflow-x: hidden !important; }
 </style>
 """, unsafe_allow_html=True)
 
+import re
 import psycopg2
 import psycopg2.extras
 import bcrypt
@@ -126,6 +130,30 @@ import pandas as pd
 import plotly.express as px
 
 from csv_import import csv_import_page
+
+# ---------------- VALIDATION HELPERS ----------------
+
+def is_valid_email(email: str) -> bool:
+    """Basic RFC-style email format check."""
+    pattern = r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
+    return bool(re.match(pattern, email.strip()))
+
+def validate_password(password: str):
+    """
+    Returns (True, "") if password is strong enough, else (False, reason).
+    Rules: 8+ chars, at least one uppercase, one lowercase, one digit, one special char.
+    """
+    if len(password) < 8:
+        return False, "Password must be at least 8 characters long."
+    if not re.search(r'[A-Z]', password):
+        return False, "Password must include at least one uppercase letter."
+    if not re.search(r'[a-z]', password):
+        return False, "Password must include at least one lowercase letter."
+    if not re.search(r'[0-9]', password):
+        return False, "Password must include at least one digit."
+    if not re.search(r'[!@#$%^&*()_+\-=\[\]{};\':"\\|,.<>\/?]', password):
+        return False, "Password must include at least one special character (!@#$%^&* etc.)."
+    return True, ""
 
 # ---------------- DATABASE (PostgreSQL / Supabase) ----------------
 
@@ -355,6 +383,8 @@ def change_password(user_id, current_pw, new_pw):
 # COOKIE SESSION HELPERS
 # ============================================================
 
+SESSION_EXPIRY_DAYS = 30  # Sessions expire after 30 days
+
 def create_session_token(user_id):
     token = secrets.token_urlsafe(48)
     now   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -368,18 +398,38 @@ def create_session_token(user_id):
     return token
 
 def validate_session_token(token):
+    """
+    Returns (user_id, role) if the token is valid and the user has been active
+    within the last SESSION_EXPIRY_DAYS days.
+
+    'created_at' on the session_tokens table is used as 'last_active_at':
+    it is refreshed to NOW on every successful validation, so the 30-day
+    window slides forward with each visit. Only a genuine absence of 30 days
+    will cause the session to expire.
+    """
     if not token:
         return None, None
     try:
+        now           = datetime.now()
+        expiry_cutoff = (now - timedelta(days=SESSION_EXPIRY_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+        now_str       = now.strftime("%Y-%m-%d %H:%M:%S")
         with get_db() as (conn, cursor):
+            # Check the token is valid and was last active within the window
             cursor.execute("""
                 SELECT u.id, u.role FROM session_tokens s
                 JOIN users u ON s.user_id = u.id
-                WHERE s.token=%s AND u.email_verified=1
-            """, (token,))
+                WHERE s.token = %s
+                  AND u.email_verified = 1
+                  AND s.created_at >= %s
+            """, (token, expiry_cutoff))
             row = cursor.fetchone()
-        if row:
-            return row["id"], row["role"]
+            if row:
+                # Slide the inactivity window: update last-active timestamp
+                cursor.execute(
+                    "UPDATE session_tokens SET created_at = %s WHERE token = %s",
+                    (now_str, token)
+                )
+                return row["id"], row["role"]
     except Exception:
         pass
     return None, None
@@ -477,10 +527,14 @@ def notify_admin_new_signup(new_name, new_username, new_email):
             cursor.execute("SELECT COUNT(*) AS n FROM users")
             total_users = cursor.fetchone()["n"] or 0
         msg = EmailMessage()
-        msg["Subject"] = f"🆕 New signup on Budget Right — {new_name}"
+        msg["Subject"] = f"New signup on Budget Right - {new_name}"
         msg["From"]    = st.secrets["EMAIL_SENDER"]
         msg["To"]      = st.secrets["ADMIN_EMAIL"]
-        msg.set_content(f"New user signed up!\nName: {new_name}\nUsername: {new_username}\nEmail: {new_email}\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M')}\nTotal users: {total_users}")
+        msg.set_content(
+            f"New user signed up!\nName: {new_name}\nUsername: {new_username}\n"
+            f"Email: {new_email}\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+            f"Total users: {total_users}"
+        )
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(st.secrets["EMAIL_SENDER"], st.secrets["EMAIL_APP_PASSWORD"])
             server.send_message(msg)
@@ -490,10 +544,15 @@ def notify_admin_new_signup(new_name, new_username, new_email):
 def send_reengagement_email(email, name):
     try:
         msg = EmailMessage()
-        msg["Subject"] = "We miss you on Budget Right 💰"
+        msg["Subject"] = "We miss you on Budget Right"
         msg["From"]    = st.secrets["EMAIL_SENDER"]
         msg["To"]      = email
-        msg.set_content(f"Hi {name},\n\nYou haven't logged into Budget Right in a while — your finances miss you! 😊\n\nLog back in to check your balance, track your spending, and stay on top of your savings goals.\n\nStay financially smart,\nThe Budget Right Team")
+        msg.set_content(
+            f"Hi {name},\n\nYou haven't logged into Budget Right in a while "
+            f"- your finances miss you!\n\nLog back in to check your balance, "
+            f"track your spending, and stay on top of your savings goals.\n\n"
+            f"Stay financially smart,\nThe Budget Right Team"
+        )
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(st.secrets["EMAIL_SENDER"], st.secrets["EMAIL_APP_PASSWORD"])
             server.send_message(msg)
@@ -528,55 +587,118 @@ if st.session_state.user_id is None:
     .demo-label  { color: #2c3e50; }
     .demo-date   { color: #95a5a6; font-size: 0.82rem; }
     .badge { display: inline-block; background: #e8f5f0; color: #0e7c5b; border-radius: 20px; padding: 4px 14px; font-size: 0.82rem; font-weight: 600; margin: 4px 4px 0 0; }
+    .trust-bar {
+        background: #f0f7f4; border: 1px solid #c2e0d4; border-radius: 12px;
+        padding: 18px 24px; margin: 18px 0 4px 0;
+        display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; align-items: center;
+    }
+    .trust-item {
+        display: flex; align-items: center; gap: 8px;
+        font-size: 0.92rem; color: #1a3c5e; font-weight: 600;
+    }
+    .trust-icon { font-size: 1.3rem; }
+    .trust-divider { color: #b0cfc4; font-size: 1.2rem; }
     </style>
     """, unsafe_allow_html=True)
 
     st.markdown("""
     <div class="landing-hero">
-      <span class="landing-logo">💰</span>
+      <span class="landing-logo">&#x1F4B0;</span>
       <p class="landing-title">Budget Right</p>
-      <p class="landing-tagline">🔒 Secure budget tracking — built for Nigerians</p>
-      <p class="landing-desc">Track your income, expenses, and savings easily.<br>Know exactly where your money goes — in naira, every day.</p>
+      <p class="landing-tagline">&#x1F512; Secure budget tracking &#x2014; built for Nigerians</p>
+      <p class="landing-desc">Track your income, expenses, and savings easily.<br>Know exactly where your money goes &#x2014; in naira, every day.</p>
     </div>
     """, unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
     fc1, fc2, fc3, fc4 = st.columns(4)
     features = [
-        ("💳", "Multiple Banks", "Link all your accounts — GTB, Access, Opay and more — in one place."),
-        ("📊", "Live Dashboard", "See your total balance, monthly spend, and net savings at a glance."),
-        ("🎯", "Savings Goals", "Set a target, contribute from any bank, and track your progress."),
-        ("📥", "CSV Import", "Upload your bank statement and have it auto-parsed into your ledger."),
+        ("&#x1F4B3;", "Multiple Banks", "Link all your accounts &mdash; GTB, Access, Opay and more &mdash; in one place."),
+        ("&#x1F4CA;", "Live Dashboard", "See your total balance, monthly spend, and net savings at a glance."),
+        ("&#x1F3AF;", "Savings Goals", "Set a target, contribute from any bank, and track your progress."),
+        ("&#x1F4E5;", "CSV Import", "Upload your bank statement and have it auto-parsed into your ledger."),
     ]
     for col, (icon, title, text) in zip([fc1, fc2, fc3, fc4], features):
         with col:
-            st.markdown(f'<div class="feature-card"><div class="feature-icon">{icon}</div><div class="feature-title">{title}</div><div class="feature-text">{text}</div></div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="feature-card">'
+                f'<div class="feature-icon">{icon}</div>'
+                f'<div class="feature-title">{title}</div>'
+                f'<div class="feature-text">{text}</div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
+    # ── TRUST / PRIVACY SECTION ──
+    st.markdown("""
+    <div class="trust-bar">
+      <div class="trust-item">
+        <span class="trust-icon">&#x1F6AB;</span>
+        <span>No ATM card needed</span>
+      </div>
+      <span class="trust-divider">|</span>
+      <div class="trust-item">
+        <span class="trust-icon">&#x1F512;</span>
+        <span>We do not move your money</span>
+      </div>
+      <span class="trust-divider">|</span>
+      <div class="trust-item">
+        <span class="trust-icon">&#x1F1F3;&#x1F1EC;</span>
+        <span>Built for Nigerians</span>
+      </div>
+      <span class="trust-divider">|</span>
+      <div class="trust-item">
+        <span class="trust-icon">&#x1F441;&#xFE0F;</span>
+        <span>Only you see your data</span>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
     demo_col, auth_col = st.columns([1.1, 1], gap="large")
 
     with demo_col:
-        st.markdown("#### 📱 See it in action")
+        st.markdown("#### &#x1F4F1; See it in action")
         st.markdown("""
         <div class="demo-card">
-          <div style="font-weight:700;color:#1a3c5e;margin-bottom:12px;font-size:1rem;">💳 My Dashboard &nbsp;·&nbsp; <span style="color:#0e7c5b;">₦ 842,500 total</span></div>
-          <div class="demo-row"><span class="demo-label">💼 Salary — GTB</span><span><span class="demo-date">Jun 28 &nbsp;</span><span class="demo-credit">+₦450,000</span></span></div>
-          <div class="demo-row"><span class="demo-label">🛒 Shoprite groceries</span><span><span class="demo-date">Jun 29 &nbsp;</span><span class="demo-debit">−₦18,400</span></span></div>
-          <div class="demo-row"><span class="demo-label">⚡ NEPA / electricity</span><span><span class="demo-date">Jun 30 &nbsp;</span><span class="demo-debit">−₦12,000</span></span></div>
-          <div class="demo-row"><span class="demo-label">🚗 Transport (Bolt)</span><span><span class="demo-date">Jul 01 &nbsp;</span><span class="demo-debit">−₦5,600</span></span></div>
-          <div class="demo-row"><span class="demo-label">🎯 Emergency Fund goal</span><span><span class="demo-date">Jul 01 &nbsp;</span><span class="demo-debit">−₦30,000</span></span></div>
+          <div style="font-weight:700;color:#1a3c5e;margin-bottom:12px;font-size:1rem;">
+            &#x1F4B3; My Dashboard &nbsp;&middot;&nbsp;
+            <span style="color:#0e7c5b;">&#x20A6; 842,500 total</span>
+          </div>
+          <div class="demo-row">
+            <span class="demo-label">&#x1F4BC; Salary &mdash; GTB</span>
+            <span><span class="demo-date">Jun 28 &nbsp;</span><span class="demo-credit">+&#x20A6;450,000</span></span>
+          </div>
+          <div class="demo-row">
+            <span class="demo-label">&#x1F6D2; Shoprite groceries</span>
+            <span><span class="demo-date">Jun 29 &nbsp;</span><span class="demo-debit">&minus;&#x20A6;18,400</span></span>
+          </div>
+          <div class="demo-row">
+            <span class="demo-label">&#x26A1; NEPA / electricity</span>
+            <span><span class="demo-date">Jun 30 &nbsp;</span><span class="demo-debit">&minus;&#x20A6;12,000</span></span>
+          </div>
+          <div class="demo-row">
+            <span class="demo-label">&#x1F697; Transport (Bolt)</span>
+            <span><span class="demo-date">Jul 01 &nbsp;</span><span class="demo-debit">&minus;&#x20A6;5,600</span></span>
+          </div>
+          <div class="demo-row">
+            <span class="demo-label">&#x1F3AF; Emergency Fund goal</span>
+            <span><span class="demo-date">Jul 01 &nbsp;</span><span class="demo-debit">&minus;&#x20A6;30,000</span></span>
+          </div>
           <div style="margin-top:16px;padding-top:12px;border-top:1px solid #eef5f2;">
-            <span class="badge">🏦 3 banks linked</span><span class="badge">📉 ₦66,000 spent</span><span class="badge">🎯 2 active goals</span>
+            <span class="badge">&#x1F3E6; 3 banks linked</span>
+            <span class="badge">&#x1F4C9; &#x20A6;66,000 spent</span>
+            <span class="badge">&#x1F3AF; 2 active goals</span>
           </div>
         </div>
         <div style="background:#fffbea;border-left:4px solid #f39c12;border-radius:8px;padding:12px 16px;margin-top:12px;font-size:0.9rem;color:#7d5a00;">
-          ⚠️ <strong>Spending alert:</strong> You've used 68% of your ₦97,000 monthly budget.
+          &#x26A0;&#xFE0F; <strong>Spending alert:</strong> You&#x2019;ve used 68% of your &#x20A6;97,000 monthly budget.
         </div>
         """, unsafe_allow_html=True)
 
     with auth_col:
-        st.markdown("#### 🚀 Get started — it's free")
-        tabs = st.tabs(["🔐 Login", "📝 Register", "📧 Verify Email"])
+        st.markdown("#### &#x1F680; Get started &mdash; it&#x2019;s free")
+        tabs = st.tabs(["&#x1F510; Login", "&#x1F4DD; Register", "&#x1F4E7; Verify Email"])
 
         with tabs[0]:
             login_username = st.text_input("Username", key="login_username")
@@ -602,14 +724,17 @@ if st.session_state.user_id is None:
                     email_input = st.text_input("Enter your email", key="reset_email_input")
                     if st.button("Send Reset Code", key="send_reset_btn"):
                         if email_input:
-                            success, msg = request_password_reset(email_input)
-                            if success:
-                                st.success(msg)
-                                st.session_state.show_forgot_password = False
-                                st.session_state.show_reset_form = True
-                                st.session_state.reset_email = email_input
+                            if not is_valid_email(email_input):
+                                st.error("Please enter a valid email address.")
                             else:
-                                st.error(msg)
+                                success, msg = request_password_reset(email_input)
+                                if success:
+                                    st.success(msg)
+                                    st.session_state.show_forgot_password = False
+                                    st.session_state.show_reset_form = True
+                                    st.session_state.reset_email = email_input
+                                else:
+                                    st.error(msg)
                         else:
                             st.warning("Enter your email.")
                     if st.button("Cancel", key="cancel_reset_btn"):
@@ -624,13 +749,17 @@ if st.session_state.user_id is None:
                     if st.button("Reset Password", key="do_reset_btn"):
                         if reset_code and new_pass and confirm_pass:
                             if new_pass == confirm_pass:
-                                success, msg = reset_password(st.session_state.reset_email, reset_code, new_pass)
-                                if success:
-                                    st.success(msg)
-                                    st.session_state.show_reset_form = False
-                                    st.session_state.reset_email = ""
+                                pw_ok, pw_msg = validate_password(new_pass)
+                                if not pw_ok:
+                                    st.error(pw_msg)
                                 else:
-                                    st.error(msg)
+                                    success, msg = reset_password(st.session_state.reset_email, reset_code, new_pass)
+                                    if success:
+                                        st.success(msg)
+                                        st.session_state.show_reset_form = False
+                                        st.session_state.reset_email = ""
+                                    else:
+                                        st.error(msg)
                             else:
                                 st.error("Passwords do not match.")
                         else:
@@ -646,10 +775,23 @@ if st.session_state.user_id is None:
             reg_email    = st.text_input("Email", key="reg_email")
             reg_username = st.text_input("Username", key="reg_username")
             reg_password = st.text_input("Password", type="password", key="reg_password")
-            st.caption("Password must be at least 8 characters, include uppercase, lowercase, digit, and special character.")
+            st.caption(
+                "Password must be at least 8 characters and include: "
+                "uppercase letter, lowercase letter, digit, and special character (!@#$%^&* etc.)"
+            )
             if st.button("Register", key="register_btn"):
+                errors = []
                 if not all([reg_surname, reg_other, reg_email, reg_username, reg_password]):
-                    st.error("All fields required")
+                    errors.append("All fields are required.")
+                if reg_email and not is_valid_email(reg_email):
+                    errors.append("Please enter a valid email address.")
+                if reg_password:
+                    pw_ok, pw_msg = validate_password(reg_password)
+                    if not pw_ok:
+                        errors.append(pw_msg)
+                if errors:
+                    for e in errors:
+                        st.error(e)
                 else:
                     code, msg = register_user(reg_surname, reg_other, reg_email, reg_username, reg_password)
                     if code:
@@ -661,7 +803,7 @@ if st.session_state.user_id is None:
                         notify_admin_new_signup(f"{reg_surname} {reg_other}", reg_username, reg_email)
                         success, email_msg = send_verification_email(reg_email, code)
                         if success:
-                            st.success("Account created. Check email to verify.")
+                            st.success("Account created! Check your email to verify.")
                         else:
                             st.error(f"Account created but email failed: {email_msg}")
                     else:
@@ -679,7 +821,7 @@ if st.session_state.user_id is None:
                         if user:
                             cursor.execute("UPDATE users SET email_verified=1, verification_code=NULL WHERE id=%s", (user["id"],))
                     if user:
-                        st.success("✅ Email verified. You can now log in.")
+                        st.success("Email verified. You can now log in.")
                     else:
                         st.error("Invalid email or code.")
             with col2:
@@ -701,34 +843,49 @@ with get_db() as (conn, cursor):
 st.session_state.user_role = user["role"]
 
 with st.sidebar:
-    st.markdown(f"### 👋 {user['surname']} {user['other_names']}")
+    st.markdown(f"### Hello, {user['surname']} {user['other_names']}")
     st.divider()
     pages = [
-        "📊 Dashboard", "💰 Income", "➕ Expenses",
-        "🏦 Banks", "💸 Transfers", "🎯 Savings Goals",
-        "📥 Import CSV", "⚙️ Settings",
+        "&#x1F4CA; Dashboard", "&#x1F4B0; Income", "&#x2795; Expenses",
+        "&#x1F3E6; Banks", "&#x1F4B8; Transfers", "&#x1F3AF; Savings Goals",
+        "&#x1F4E5; Import CSV", "&#x2699;&#xFE0F; Settings",
+    ]
+    pages_clean = [
+        "Dashboard", "Income", "Expenses",
+        "Banks", "Transfers", "Savings Goals",
+        "Import CSV", "Settings",
     ]
     if st.session_state.user_role == "admin":
-        pages.insert(0, "🛠 Admin Panel")
-        pages.insert(1, "📈 Analytics")
-    selected     = st.radio("Navigate", pages, key="nav_radio")
-    current_page = selected.split(" ", 1)[-1]
+        pages.insert(0, "&#x1F6E0; Admin Panel")
+        pages.insert(1, "&#x1F4C8; Analytics")
+        pages_clean.insert(0, "Admin Panel")
+        pages_clean.insert(1, "Analytics")
+
+    selected_idx = st.radio(
+        "Navigate",
+        range(len(pages)),
+        format_func=lambda i: pages_clean[i],
+        key="nav_radio"
+    )
+    current_page = pages_clean[selected_idx]
+
     st.divider()
     st.markdown(
-        "🐛 [Report a bug / Suggest a feature](https://docs.google.com/forms/d/e/1FAIpQLSccXTBLwx6GhwqpUCt6lrjQ4qzNzNgjs2APheQ-FOryC0wCJA/viewform?usp=dialog)",
+        "Report a bug / Suggest a feature: "
+        "[Click here](https://docs.google.com/forms/d/e/1FAIpQLSccXTBLwx6GhwqpUCt6lrjQ4qzNzNgjs2APheQ-FOryC0wCJA/viewform?usp=dialog)",
         unsafe_allow_html=False,
     )
     st.divider()
-    if st.button("🚪 Logout", key="logout_btn"):
+    if st.button("Logout", key="logout_btn"):
         revoke_session_token(st.session_state.get("session_token"))
         st.session_state.user_id = st.session_state.user_role = st.session_state.session_token = None
         st.rerun()
 
-st.success(f"Welcome {user['surname']} {user['other_names']} 👋")
+st.success(f"Welcome {user['surname']} {user['other_names']}")
 
 # ================= PAGE: ADMIN PANEL =================
 if current_page == "Admin Panel":
-    st.subheader("🛠 Admin Panel")
+    st.subheader("Admin Panel")
     tabs_admin = st.tabs(["Users", "Banks", "Expenses & Income"])
     with tabs_admin[0]:
         st.write("All Users:")
@@ -752,25 +909,25 @@ elif current_page == "Analytics":
     if st.session_state.user_role != "admin":
         st.error("Access denied.")
         st.stop()
-    st.markdown("## 📈 Analytics Dashboard")
+    st.markdown("## Analytics Dashboard")
     data = get_analytics()
     if not data:
         st.warning("Could not load analytics data.")
     else:
         c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("👥 Total Registered", data["total_registered"])
-        c2.metric("✅ Verified Users",    data["total_verified"])
-        c3.metric("🟢 Active Today",      data["dau"])
-        c4.metric("📅 Active This Week",  data["wau"])
-        c5.metric("📆 Active This Month", data["mau"])
+        c1.metric("Total Registered", data["total_registered"])
+        c2.metric("Verified Users",    data["total_verified"])
+        c3.metric("Active Today",      data["dau"])
+        c4.metric("Active This Week",  data["wau"])
+        c5.metric("Active This Month", data["mau"])
         st.divider()
         col_left, col_right = st.columns(2)
         with col_left:
-            st.subheader("📝 Signups")
+            st.subheader("Signups")
             s1, s2 = st.columns(2)
             s1.metric("Signups Today",     data["signups_today"])
             s2.metric("Signups (30 days)", data["new_signups_30d"])
-            st.subheader("📊 Daily Active Users — Last 14 Days")
+            st.subheader("Daily Active Users — Last 14 Days")
             if data["daily_rows"]:
                 df_dau = pd.DataFrame(data["daily_rows"], columns=["date", "active_users"])
                 df_dau["date"] = pd.to_datetime(df_dau["date"])
@@ -778,7 +935,7 @@ elif current_page == "Analytics":
             else:
                 st.info("No login data yet.")
         with col_right:
-            st.subheader(f"😴 Inactive Users ({len(data['inactive_users'])} total)")
+            st.subheader(f"Inactive Users ({len(data['inactive_users'])} total)")
             st.caption("Verified accounts with no login in the last 7 days.")
             inactive = data["inactive_users"]
             if inactive:
@@ -786,29 +943,29 @@ elif current_page == "Analytics":
                 df_inactive["Last Login"] = df_inactive["Last Login"].fillna("Never")
                 st.dataframe(df_inactive[["Surname","Other Names","Email","Last Login"]], use_container_width=True)
                 st.divider()
-                st.subheader("📧 Send Re-engagement Email")
+                st.subheader("Send Re-engagement Email")
                 email_options = {f"{r[1]} {r[2]} ({r[3]})": (r[3], r[1]) for r in inactive}
                 selected_user = st.selectbox("Select user to email", list(email_options.keys()), key="reeng_select")
-                if st.button("📨 Send Re-engagement Email", key="reeng_send_btn"):
+                if st.button("Send Re-engagement Email", key="reeng_send_btn"):
                     target_email, target_name = email_options[selected_user]
                     ok, msg = send_reengagement_email(target_email, target_name)
                     st.success(f"Email sent to {target_email}") if ok else st.error(f"Failed: {msg}")
                 st.divider()
-                st.subheader("📨 Bulk Email All Inactive Users")
+                st.subheader("Bulk Email All Inactive Users")
                 st.caption(f"This will send to all {len(inactive)} inactive verified accounts.")
-                if st.button("🚀 Send to All Inactive", key="reeng_bulk_btn"):
+                if st.button("Send to All Inactive", key="reeng_bulk_btn"):
                     sent, failed = 0, 0
                     for row in inactive:
                         ok, _ = send_reengagement_email(row[3], row[1])
                         if ok: sent += 1
                         else:  failed += 1
-                    st.success(f"✅ Sent: {sent}  |  ❌ Failed: {failed}")
+                    st.success(f"Sent: {sent}  |  Failed: {failed}")
             else:
-                st.success("No inactive users right now — everyone's engaged! 🎉")
+                st.success("No inactive users right now - everyone's engaged!")
 
 # ================= PAGE: DASHBOARD =================
 elif current_page == "Dashboard":
-    st.markdown("## 💳 My Dashboard")
+    st.markdown("## My Dashboard")
     with get_db() as (conn, cursor):
         cursor.execute("SELECT COALESCE(SUM(balance),0) AS n FROM banks WHERE user_id=%s", (user_id,))
         total_balance = cursor.fetchone()["n"]
@@ -829,13 +986,13 @@ elif current_page == "Dashboard":
         net_savings = cursor.fetchone()["n"]
 
     col1, col2, col3, col4 = st.columns(4)
-    with col1: st.metric("💰 Total Balance",       f"₦{total_balance:,.0f}")
-    with col2: st.metric("📉 Expenses This Month", f"₦{expenses_this_month:,.0f}")
-    with col3: st.metric("🏦 Bank Accounts",        num_banks)
-    with col4: st.metric("🎯 Net Savings",          f"₦{net_savings:,.0f}")
+    with col1: st.metric("Total Balance (NGN)",       f"{total_balance:,.0f}")
+    with col2: st.metric("Expenses This Month (NGN)", f"{expenses_this_month:,.0f}")
+    with col3: st.metric("Bank Accounts",              num_banks)
+    with col4: st.metric("Net Savings (NGN)",          f"{net_savings:,.0f}")
 
     st.divider()
-    st.subheader("📊 Income vs Expenses Over Time")
+    st.subheader("Income vs Expenses Over Time")
     period_map = {
         "Last 30 Days": timedelta(days=30), "Last 3 Months": timedelta(days=90),
         "Last 6 Months": timedelta(days=180), "Last Year": timedelta(days=365), "All Time": None,
@@ -863,7 +1020,7 @@ elif current_page == "Dashboard":
         st.info("No transactions in this period.")
 
     st.divider()
-    st.subheader("🥧 Expense Breakdown by Category")
+    st.subheader("Expense Breakdown by Category")
     with get_db() as (conn, cursor):
         cursor.execute("SELECT name, SUM(amount) AS total FROM expenses WHERE user_id=%s GROUP BY name ORDER BY total DESC", (user_id,))
         pie_rows = cursor.fetchall()
@@ -874,10 +1031,10 @@ elif current_page == "Dashboard":
         df_pie_other = df_pie[df_pie["Amount"] < threshold]
         if not df_pie_other.empty:
             df_pie_main = pd.concat([df_pie_main, pd.DataFrame([{"Expense":"Others","Amount":df_pie_other["Amount"].sum()}])], ignore_index=True)
-        fig = px.pie(df_pie_main, names="Expense", values="Amount", title="All-time Expense Breakdown (₦)",
+        fig = px.pie(df_pie_main, names="Expense", values="Amount", title="All-time Expense Breakdown (NGN)",
                      color_discrete_sequence=px.colors.qualitative.Set3, hole=0.35)
         fig.update_traces(textposition="inside", textinfo="percent+label",
-                          hovertemplate="<b>%{label}</b><br>₦%{value:,.0f}<br>%{percent}<extra></extra>")
+                          hovertemplate="<b>%{label}</b><br>NGN %{value:,.0f}<br>%{percent}<extra></extra>")
         fig.update_layout(margin=dict(t=40,b=10,l=10,r=10), legend=dict(orientation="v",x=1.02,y=0.5))
         st.plotly_chart(fig, use_container_width=True)
     else:
@@ -885,12 +1042,12 @@ elif current_page == "Dashboard":
 
 # ================= PAGE: INCOME =================
 elif current_page == "Income":
-    st.markdown("## 💰 Income")
+    st.markdown("## Income")
     with get_db() as (conn, cursor):
         cursor.execute("SELECT id, bank_name, account_number, balance FROM banks WHERE user_id=%s", (user_id,))
         banks = cursor.fetchall()
 
-    # ── EDIT FORM at top ──
+    # -- EDIT FORM at top --
     if st.session_state.get("edit_income_id"):
         edit_id = st.session_state.edit_income_id
         with get_db() as (conn, cursor):
@@ -902,20 +1059,20 @@ elif current_page == "Income":
             inc_row = cursor.fetchone()
         if inc_row:
             display_source = inc_row["description"].replace("Income: ", "", 1)
-            st.info(f"✏️ Editing: **{display_source}** — ₦{inc_row['amount']:,.0f}")
+            st.info(f"Editing: {display_source} — NGN {inc_row['amount']:,.0f}")
             with st.form("edit_income_form"):
                 new_source = st.text_input("Income Source", value=display_source)
-                new_amount = st.number_input("Amount (₦)", min_value=1, value=int(inc_row["amount"]))
+                new_amount = st.number_input("Amount (NGN)", min_value=1, value=int(inc_row["amount"]))
                 save_col, cancel_col = st.columns(2)
-                save_clicked   = save_col.form_submit_button("💾 Save Changes")
-                cancel_clicked = cancel_col.form_submit_button("✖️ Cancel")
+                save_clicked   = save_col.form_submit_button("Save Changes")
+                cancel_clicked = cancel_col.form_submit_button("Cancel")
             if save_clicked:
                 diff = new_amount - inc_row["amount"]
                 with get_db() as (conn, cursor):
                     cursor.execute("UPDATE banks SET balance = balance + %s WHERE id=%s", (diff, inc_row["bank_id"]))
                     cursor.execute("UPDATE transactions SET amount=%s, description=%s WHERE id=%s",
                                    (new_amount, f"Income: {new_source}", inc_row["id"]))
-                st.success("✅ Income updated!")
+                st.success("Income updated!")
                 st.session_state.edit_income_id = None
                 st.rerun()
             if cancel_clicked:
@@ -928,9 +1085,9 @@ elif current_page == "Income":
 
     st.subheader("Add Income")
     income_source = st.text_input("Income Source", key="income_source")
-    income_amount = st.number_input("Amount (₦)", min_value=1, key="income_amt")
+    income_amount = st.number_input("Amount (NGN)", min_value=1, key="income_amt")
     if banks:
-        bank_map_income = {f"{b['bank_name']} (****{b['account_number']}) – ₦{b['balance']:,}": b["id"] for b in banks}
+        bank_map_income = {f"{b['bank_name']} (****{b['account_number']}) - NGN {b['balance']:,}": b["id"] for b in banks}
         selected_bank_income = st.selectbox("Deposit To Bank", list(bank_map_income.keys()), key="bank_income_select")
         if st.button("Add Income", key="add_income_btn"):
             if income_source and income_amount > 0:
@@ -939,13 +1096,13 @@ elif current_page == "Income":
                     cursor.execute("UPDATE banks SET balance = balance + %s WHERE id=%s", (income_amount, bank_id))
                     cursor.execute("INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'credit', %s, %s, %s)",
                                    (bank_id, income_amount, f"Income: {income_source}", datetime.now().strftime("%Y-%m-%d")))
-                st.success(f"✅ Income of ₦{income_amount:,} added")
+                st.success(f"Income of NGN {income_amount:,} added")
                 st.rerun()
     else:
         st.info("You need at least one bank account to add income.")
 
     st.divider()
-    st.subheader("📋 Income History")
+    st.subheader("Income History")
     with get_db() as (conn, cursor):
         cursor.execute("""
             SELECT t.id, t.created_at, t.description, t.amount, t.bank_id, b.bank_name, b.account_number
@@ -964,49 +1121,49 @@ elif current_page == "Income":
                 <div class="exp-card" style="border-left-color:#0e7c5b;">
                   <div class="exp-card-left">
                     <div class="exp-card-name">{source}</div>
-                    <div class="exp-card-bank">🏦 {inc['bank_name']} (****{inc['account_number']})</div>
-                    <div class="exp-card-date">📅 {inc['created_at']}</div>
+                    <div class="exp-card-bank">Bank: {inc['bank_name']} (****{inc['account_number']})</div>
+                    <div class="exp-card-date">Date: {inc['created_at']}</div>
                   </div>
                   <div class="exp-card-right">
-                    <div class="exp-card-amount" style="color:#0e7c5b;">+₦{inc['amount']:,.0f}</div>
+                    <div class="exp-card-amount" style="color:#0e7c5b;">+NGN {inc['amount']:,.0f}</div>
                   </div>
                 </div>
                 """, unsafe_allow_html=True)
             with edit_col:
-                if st.button("✏️", key=f"edit_inc_{inc['id']}", help="Edit"):
+                if st.button("Edit", key=f"edit_inc_{inc['id']}", help="Edit"):
                     st.session_state.edit_income_id = inc["id"]
                     st.rerun()
             with del_col:
-                if st.button("🗑", key=f"delete_inc_{inc['id']}", help="Delete"):
+                if st.button("Del", key=f"delete_inc_{inc['id']}", help="Delete"):
                     with get_db() as (conn, cursor):
                         cursor.execute("UPDATE banks SET balance = balance - %s WHERE id=%s", (inc["amount"], inc["bank_id"]))
                         cursor.execute("DELETE FROM transactions WHERE id=%s", (inc["id"],))
-                    st.success(f"🗑 '{source}' deleted & ₦{inc['amount']:,.0f} reversed.")
+                    st.success(f"'{source}' deleted & NGN {inc['amount']:,.0f} reversed.")
                     st.rerun()
     else:
         st.info("No income entries yet.")
 
 # ================= PAGE: EXPENSES =================
 elif current_page == "Expenses":
-    st.markdown("## ➕ Expenses")
+    st.markdown("## Expenses")
     with get_db() as (conn, cursor):
         cursor.execute("SELECT id, bank_name, account_number, balance FROM banks WHERE user_id=%s", (user_id,))
         banks = cursor.fetchall()
 
-    # ── EDIT FORM at top ──
+    # -- EDIT FORM at top --
     if st.session_state.get("edit_exp_id"):
         edit_id = st.session_state.edit_exp_id
         with get_db() as (conn, cursor):
             cursor.execute("SELECT name, amount, bank_id, tx_id FROM expenses WHERE id=%s AND user_id=%s", (edit_id, user_id))
             exp_row = cursor.fetchone()
         if exp_row:
-            st.info(f"✏️ Editing: **{exp_row['name']}** — ₦{exp_row['amount']:,.0f}")
+            st.info(f"Editing: {exp_row['name']} — NGN {exp_row['amount']:,.0f}")
             with st.form("edit_expense_form"):
                 new_name   = st.text_input("Expense Name", value=exp_row["name"])
-                new_amount = st.number_input("Amount (₦)", min_value=1, value=int(exp_row["amount"]))
+                new_amount = st.number_input("Amount (NGN)", min_value=1, value=int(exp_row["amount"]))
                 save_col, cancel_col = st.columns(2)
-                save_clicked   = save_col.form_submit_button("💾 Save Changes")
-                cancel_clicked = cancel_col.form_submit_button("✖️ Cancel")
+                save_clicked   = save_col.form_submit_button("Save Changes")
+                cancel_clicked = cancel_col.form_submit_button("Cancel")
             if save_clicked:
                 diff = new_amount - exp_row["amount"]
                 with get_db() as (conn, cursor):
@@ -1016,7 +1173,7 @@ elif current_page == "Expenses":
                                        (new_amount, f"Expense: {new_name}", exp_row["tx_id"]))
                     cursor.execute("UPDATE expenses SET name=%s, amount=%s WHERE id=%s AND user_id=%s",
                                    (new_name, new_amount, edit_id, user_id))
-                st.success("✅ Expense updated!")
+                st.success("Expense updated!")
                 st.session_state.edit_exp_id = None
                 st.rerun()
             if cancel_clicked:
@@ -1029,9 +1186,9 @@ elif current_page == "Expenses":
 
     st.subheader("Add Expense")
     expense_name   = st.text_input("Expense Name", key="exp_name")
-    expense_amount = st.number_input("Amount (₦)", min_value=1, key="exp_amt")
+    expense_amount = st.number_input("Amount (NGN)", min_value=1, key="exp_amt")
     if banks:
-        bank_map = {f"{b['bank_name']} (****{b['account_number']}) – ₦{b['balance']:,}": b["id"] for b in banks}
+        bank_map = {f"{b['bank_name']} (****{b['account_number']}) - NGN {b['balance']:,}": b["id"] for b in banks}
         selected_bank = st.selectbox("Pay From Bank", list(bank_map.keys()), key="bank_select")
         if st.button("Add Expense", key="add_expense_btn"):
             if expense_name and expense_amount > 0:
@@ -1044,7 +1201,7 @@ elif current_page == "Expenses":
                     cursor.execute("INSERT INTO expenses (user_id, bank_id, name, amount, created_at, tx_id) VALUES (%s, %s, %s, %s, %s, %s)",
                                    (user_id, bank_id, expense_name, expense_amount, now, tx_id))
                     cursor.execute("UPDATE banks SET balance = balance - %s WHERE id=%s", (expense_amount, bank_id))
-                st.success("✅ Expense added & bank debited")
+                st.success("Expense added & bank debited")
                 st.rerun()
             else:
                 st.warning("Please enter a name and amount.")
@@ -1052,7 +1209,7 @@ elif current_page == "Expenses":
         st.info("Add a bank account first.")
 
     st.divider()
-    st.subheader("📋 Expense Summary")
+    st.subheader("Expense Summary")
     with get_db() as (conn, cursor):
         cursor.execute("""
             SELECT e.id, e.created_at, e.name, e.amount, e.bank_id, b.bank_name, b.account_number, e.tx_id
@@ -1069,30 +1226,30 @@ elif current_page == "Expenses":
                 <div class="exp-card">
                   <div class="exp-card-left">
                     <div class="exp-card-name">{exp['name']}</div>
-                    <div class="exp-card-bank">🏦 {exp['bank_name']} (****{exp['account_number']})</div>
-                    <div class="exp-card-date">📅 {exp['created_at']}</div>
+                    <div class="exp-card-bank">Bank: {exp['bank_name']} (****{exp['account_number']})</div>
+                    <div class="exp-card-date">Date: {exp['created_at']}</div>
                   </div>
                   <div class="exp-card-right">
-                    <div class="exp-card-amount">−₦{exp['amount']:,.0f}</div>
+                    <div class="exp-card-amount">-NGN {exp['amount']:,.0f}</div>
                   </div>
                 </div>
                 """, unsafe_allow_html=True)
             with edit_col:
-                if st.button("✏️", key=f"edit_exp_{exp['id']}", help="Edit"):
+                if st.button("Edit", key=f"edit_exp_{exp['id']}", help="Edit"):
                     st.session_state.edit_exp_id = exp["id"]
                     st.rerun()
             with del_col:
-                if st.button("🗑", key=f"delete_exp_{exp['id']}", help="Delete"):
+                if st.button("Del", key=f"delete_exp_{exp['id']}", help="Delete"):
                     with get_db() as (conn, cursor):
                         cursor.execute("UPDATE banks SET balance = balance + %s WHERE id=%s", (exp["amount"], exp["bank_id"]))
                         if exp["tx_id"]:
                             cursor.execute("DELETE FROM transactions WHERE id=%s", (exp["tx_id"],))
                         cursor.execute("DELETE FROM expenses WHERE id=%s AND user_id=%s", (exp["id"], user_id))
-                    st.success(f"🗑 '{exp['name']}' deleted & ₦{exp['amount']:,.0f} refunded.")
+                    st.success(f"'{exp['name']}' deleted & NGN {exp['amount']:,.0f} refunded.")
                     st.rerun()
 
         st.divider()
-        st.subheader("🥧 Your Expense Breakdown")
+        st.subheader("Your Expense Breakdown")
         df_exp_pie = pd.DataFrame([(e["name"], e["amount"]) for e in expenses_data], columns=["Expense","Amount"])
         df_grouped = df_exp_pie.groupby("Expense", as_index=False)["Amount"].sum().sort_values("Amount", ascending=False)
         threshold = df_grouped["Amount"].sum() * 0.02
@@ -1100,10 +1257,10 @@ elif current_page == "Expenses":
         df_other = df_grouped[df_grouped["Amount"] < threshold]
         if not df_other.empty:
             df_main = pd.concat([df_main, pd.DataFrame([{"Expense":"Others","Amount":df_other["Amount"].sum()}])], ignore_index=True)
-        fig = px.pie(df_main, names="Expense", values="Amount", title="Expenses by Name (₦)",
+        fig = px.pie(df_main, names="Expense", values="Amount", title="Expenses by Name (NGN)",
                      color_discrete_sequence=px.colors.qualitative.Pastel, hole=0.35)
         fig.update_traces(textposition="inside", textinfo="percent+label",
-                          hovertemplate="<b>%{label}</b><br>₦%{value:,.0f}<br>%{percent}<extra></extra>")
+                          hovertemplate="<b>%{label}</b><br>NGN %{value:,.0f}<br>%{percent}<extra></extra>")
         fig.update_layout(margin=dict(t=40,b=10,l=10,r=10), legend=dict(orientation="v",x=1.02,y=0.5))
         st.plotly_chart(fig, use_container_width=True)
     else:
@@ -1111,13 +1268,13 @@ elif current_page == "Expenses":
 
 # ================= PAGE: BANKS =================
 elif current_page == "Banks":
-    st.markdown("## 🏦 Bank Accounts")
+    st.markdown("## Bank Accounts")
     st.subheader("Add Bank Account")
     bank_name       = st.text_input("Bank Name", key="bank_name")
     account_name    = st.text_input("Account Name", key="acct_name")
     account_number  = st.text_input("Account Number (last 4 digits)", key="acct_num")
-    opening_balance = st.number_input("Opening Balance (₦)", min_value=0, key="open_bal")
-    min_alert       = st.number_input("Alert me if balance falls below (₦)", min_value=0, value=0, key="min_alert")
+    opening_balance = st.number_input("Opening Balance (NGN)", min_value=0, key="open_bal")
+    min_alert       = st.number_input("Alert me if balance falls below (NGN)", min_value=0, value=0, key="min_alert")
     if st.button("Add Bank", key="add_bank_btn"):
         if bank_name and account_name and account_number:
             with get_db() as (conn, cursor):
@@ -1138,12 +1295,12 @@ elif current_page == "Banks":
         for bank in banks_manage:
             col1, col2, col3 = st.columns([4, 1, 1])
             with col1:
-                st.markdown(f"**{bank['bank_name']}** (****{bank['account_number']}) — ₦{bank['balance']:,.0f}")
+                st.markdown(f"**{bank['bank_name']}** (****{bank['account_number']}) — NGN {bank['balance']:,.0f}")
             with col2:
-                if st.button("✏️", key=f"edit_bank_{bank['id']}"):
+                if st.button("Edit", key=f"edit_bank_{bank['id']}"):
                     st.session_state.edit_bank_id = bank["id"]
             with col3:
-                if st.button("🗑", key=f"delete_bank_{bank['id']}"):
+                if st.button("Delete", key=f"delete_bank_{bank['id']}"):
                     with get_db() as (conn, cursor):
                         cursor.execute("UPDATE expenses SET tx_id=NULL WHERE bank_id=%s", (bank["id"],))
                         cursor.execute("DELETE FROM expenses WHERE bank_id=%s", (bank["id"],))
@@ -1158,7 +1315,7 @@ elif current_page == "Banks":
                 cursor.execute("SELECT bank_name, account_name, account_number FROM banks WHERE id=%s", (edit_id,))
                 bank = cursor.fetchone()
             if bank:
-                st.markdown("### ✏️ Edit Bank")
+                st.markdown("### Edit Bank")
                 new_name     = st.text_input("Bank Name",      value=bank["bank_name"])
                 new_acc_name = st.text_input("Account Name",   value=bank["account_name"])
                 new_acc_num  = st.text_input("Account Number", value=bank["account_number"])
@@ -1174,16 +1331,16 @@ elif current_page == "Banks":
 
 # ================= PAGE: TRANSFERS =================
 elif current_page == "Transfers":
-    st.markdown("## 💸 Transfer Between Banks")
+    st.markdown("## Transfer Between Banks")
     with get_db() as (conn, cursor):
         cursor.execute("SELECT id, bank_name, account_number, balance FROM banks WHERE user_id=%s", (user_id,))
         banks = cursor.fetchall()
 
     if len(banks) >= 2:
-        bank_map_transfer = {f"{b['bank_name']} (****{b['account_number']}) – ₦{b['balance']:,}": b["id"] for b in banks}
+        bank_map_transfer = {f"{b['bank_name']} (****{b['account_number']}) - NGN {b['balance']:,}": b["id"] for b in banks}
         from_bank       = st.selectbox("From Bank", list(bank_map_transfer.keys()), key="from_bank")
         to_bank         = st.selectbox("To Bank",   list(bank_map_transfer.keys()), key="to_bank")
-        transfer_amount = st.number_input("Amount to Transfer (₦)", min_value=1, key="transfer_amt")
+        transfer_amount = st.number_input("Amount to Transfer (NGN)", min_value=1, key="transfer_amt")
         if st.button("Transfer", key="transfer_btn"):
             if from_bank == to_bank:
                 st.warning("Cannot transfer to the same bank")
@@ -1210,7 +1367,7 @@ elif current_page == "Transfers":
 
 # ================= PAGE: SAVINGS GOALS =================
 elif current_page == "Savings Goals":
-    st.markdown("## 🎯 Savings Goals")
+    st.markdown("## Savings Goals")
     with get_db() as (conn, cursor):
         cursor.execute("SELECT id, name, target_amount, current_amount, status FROM goals WHERE user_id=%s ORDER BY status, created_at DESC", (user_id,))
         goals = cursor.fetchall()
@@ -1221,7 +1378,10 @@ elif current_page == "Savings Goals":
             col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
             with col1:
                 st.markdown(f"**{goal['name']}**")
-                st.progress(min(progress/100, 1.0), text=f"₦{goal['current_amount']:,.0f} / ₦{goal['target_amount']:,.0f} ({progress:.1f}%)")
+                st.progress(
+                    min(progress/100, 1.0),
+                    text=f"NGN {goal['current_amount']:,.0f} / NGN {goal['target_amount']:,.0f} ({progress:.1f}%)"
+                )
             with col2:
                 st.markdown(f"Status: **{goal['status']}**")
             with col3:
@@ -1230,7 +1390,7 @@ elif current_page == "Savings Goals":
                         st.session_state.selected_goal          = goal["id"]
                         st.session_state.show_goal_contribution = True
             with col4:
-                if st.button("🗑", key=f"delete_goal_{goal['id']}"):
+                if st.button("Delete", key=f"delete_goal_{goal['id']}"):
                     with get_db() as (conn, cursor):
                         cursor.execute("DELETE FROM goals WHERE id=%s", (goal["id"],))
                     st.success("Goal deleted.")
@@ -1239,9 +1399,9 @@ elif current_page == "Savings Goals":
     else:
         st.info("No savings goals yet. Create one below.")
 
-    with st.expander("➕ Create New Goal"):
+    with st.expander("Create New Goal"):
         goal_name   = st.text_input("Goal Name",           key="goal_name")
-        goal_target = st.number_input("Target Amount (₦)", min_value=1, key="goal_target")
+        goal_target = st.number_input("Target Amount (NGN)", min_value=1, key="goal_target")
         if st.button("Create Goal", key="create_goal_btn"):
             if goal_name and goal_target > 0:
                 with get_db() as (conn, cursor):
@@ -1263,9 +1423,9 @@ elif current_page == "Savings Goals":
                 cursor.execute("SELECT id, bank_name, balance FROM banks WHERE user_id=%s", (user_id,))
                 bank_list = cursor.fetchall()
             if bank_list:
-                bank_options  = {f"{b['bank_name']} (₦{b['balance']:,})": b["id"] for b in bank_list}
+                bank_options  = {f"{b['bank_name']} (NGN {b['balance']:,})": b["id"] for b in bank_list}
                 selected_bank = st.selectbox("From Bank", list(bank_options.keys()), key="goal_bank")
-                contrib_amount = st.number_input("Amount to add (₦)", min_value=1, key="goal_amount")
+                contrib_amount = st.number_input("Amount to add (NGN)", min_value=1, key="goal_amount")
                 if st.button("Confirm Contribution", key="confirm_goal_contrib"):
                     bank_id = bank_options[selected_bank]
                     with get_db() as (conn, cursor):
@@ -1281,7 +1441,7 @@ elif current_page == "Savings Goals":
                             cursor.execute("UPDATE goals SET current_amount=%s, status=%s WHERE id=%s", (new_current, new_status, goal_id))
                             cursor.execute("INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'debit', %s, %s, %s)",
                                            (bank_id, contrib_amount, f"Savings goal: {g['name']}", now))
-                            st.success(f"Added ₦{contrib_amount:,.0f} to goal.")
+                            st.success(f"Added NGN {contrib_amount:,.0f} to goal.")
                             st.session_state.show_goal_contribution = False
                             st.rerun()
             else:
@@ -1291,7 +1451,7 @@ elif current_page == "Savings Goals":
 
 # ================= PAGE: IMPORT CSV =================
 elif current_page == "Import CSV":
-    st.markdown("## 📥 Import Bank Statement (CSV)")
+    st.markdown("## Import Bank Statement (CSV)")
     conn = get_connection()
     try:
         csv_import_page(conn, user_id)
@@ -1300,12 +1460,12 @@ elif current_page == "Import CSV":
 
 # ================= PAGE: SETTINGS =================
 elif current_page == "Settings":
-    st.markdown("## ⚙️ Settings")
-    st.subheader("🔔 Alert Settings")
+    st.markdown("## Settings")
+    st.subheader("Alert Settings")
     with get_db() as (conn, cursor):
         cursor.execute("SELECT monthly_spending_limit FROM users WHERE id=%s", (user_id,))
         current_limit = cursor.fetchone()["monthly_spending_limit"] or 0
-    new_limit = st.number_input("Monthly Spending Limit (₦) – 0 = no limit", min_value=0, value=current_limit, key="monthly_limit")
+    new_limit = st.number_input("Monthly Spending Limit (NGN) - 0 = no limit", min_value=0, value=current_limit, key="monthly_limit")
     if st.button("Update Spending Limit", key="update_limit_btn"):
         with get_db() as (conn, cursor):
             cursor.execute("UPDATE users SET monthly_spending_limit=%s WHERE id=%s", (new_limit, user_id))
@@ -1313,7 +1473,7 @@ elif current_page == "Settings":
         st.rerun()
 
     st.divider()
-    st.subheader("🔑 Change Password")
+    st.subheader("Change Password")
     current_pw     = st.text_input("Current Password",    type="password", key="current_pw")
     new_pw         = st.text_input("New Password",         type="password", key="new_pw")
     confirm_new_pw = st.text_input("Confirm New Password", type="password", key="confirm_new_pw")
@@ -1322,7 +1482,11 @@ elif current_page == "Settings":
             if new_pw != confirm_new_pw:
                 st.error("New passwords do not match.")
             else:
-                success, msg = change_password(user_id, current_pw, new_pw)
-                st.success(msg) if success else st.error(msg)
+                pw_ok, pw_msg = validate_password(new_pw)
+                if not pw_ok:
+                    st.error(pw_msg)
+                else:
+                    success, msg = change_password(user_id, current_pw, new_pw)
+                    st.success(msg) if success else st.error(msg)
         else:
             st.warning("All fields required.")
