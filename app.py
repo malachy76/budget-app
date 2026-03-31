@@ -274,6 +274,10 @@ if "edit_bank_id" not in st.session_state:
     st.session_state.edit_bank_id = None
 if "edit_income_id" not in st.session_state:
     st.session_state.edit_income_id = None
+if "selected_goal" not in st.session_state:
+    st.session_state.selected_goal = None
+if "show_goal_contribution" not in st.session_state:
+    st.session_state.show_goal_contribution = False
 
 # ---------------- AUTH FUNCTIONS ----------------
 def hash_password(password):
@@ -1368,65 +1372,52 @@ elif current_page == "Transfers":
 # ================= PAGE: SAVINGS GOALS =================
 elif current_page == "Savings Goals":
     st.markdown("## Savings Goals")
-    with get_db() as (conn, cursor):
-        cursor.execute("SELECT id, name, target_amount, current_amount, status FROM goals WHERE user_id=%s ORDER BY status, created_at DESC", (user_id,))
-        goals = cursor.fetchall()
 
-    if goals:
-        for goal in goals:
-            progress = (goal["current_amount"] / goal["target_amount"] * 100) if goal["target_amount"] > 0 else 0
-            col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
-            with col1:
-                st.markdown(f"**{goal['name']}**")
-                st.progress(
-                    min(progress/100, 1.0),
-                    text=f"NGN {goal['current_amount']:,.0f} / NGN {goal['target_amount']:,.0f} ({progress:.1f}%)"
-                )
-            with col2:
-                st.markdown(f"Status: **{goal['status']}**")
-            with col3:
-                if goal["status"] == "active":
-                    if st.button("Add Money", key=f"add_goal_{goal['id']}"):
-                        st.session_state.selected_goal          = goal["id"]
-                        st.session_state.show_goal_contribution = True
-            with col4:
-                if st.button("Delete", key=f"delete_goal_{goal['id']}"):
-                    with get_db() as (conn, cursor):
-                        cursor.execute("DELETE FROM goals WHERE id=%s", (goal["id"],))
-                    st.success("Goal deleted.")
-                    st.rerun()
-            st.divider()
-    else:
-        st.info("No savings goals yet. Create one below.")
-
-    with st.expander("Create New Goal"):
-        goal_name   = st.text_input("Goal Name",           key="goal_name")
-        goal_target = st.number_input("Target Amount (NGN)", min_value=1, key="goal_target")
-        if st.button("Create Goal", key="create_goal_btn"):
+    # ── Create New Goal form (always at top so it's always visible) ──
+    with st.expander("Create New Goal", expanded=False):
+        with st.form("create_goal_form"):
+            goal_name   = st.text_input("Goal Name", key="goal_name")
+            goal_target = st.number_input("Target Amount (NGN)", min_value=1, key="goal_target")
+            submitted   = st.form_submit_button("Create Goal")
+        if submitted:
             if goal_name and goal_target > 0:
                 with get_db() as (conn, cursor):
-                    cursor.execute("INSERT INTO goals (user_id, name, target_amount, created_at, current_amount, status) VALUES (%s, %s, %s, %s, 0, 'active')",
-                                   (user_id, goal_name, goal_target, datetime.now().strftime("%Y-%m-%d")))
-                st.success("Goal created!")
+                    cursor.execute(
+                        "INSERT INTO goals (user_id, name, target_amount, created_at, current_amount, status) "
+                        "VALUES (%s, %s, %s, %s, 0, 'active')",
+                        (user_id, goal_name, int(goal_target), datetime.now().strftime("%Y-%m-%d"))
+                    )
+                st.success(f"Goal '{goal_name}' created!")
                 st.rerun()
             else:
-                st.warning("Please enter a name and target.")
+                st.warning("Please enter a name and a target amount greater than 0.")
 
-    if st.session_state.get("show_goal_contribution") and st.session_state.get("selected_goal"):
+    st.divider()
+
+    # ── Contribution form (shown above goal list when "Add Money" is clicked) ──
+    if st.session_state.show_goal_contribution and st.session_state.selected_goal:
         goal_id = st.session_state.selected_goal
         with get_db() as (conn, cursor):
-            cursor.execute("SELECT name, target_amount, current_amount FROM goals WHERE id=%s", (goal_id,))
+            cursor.execute(
+                "SELECT name, target_amount, current_amount FROM goals WHERE id=%s AND user_id=%s",
+                (goal_id, user_id)
+            )
             g = cursor.fetchone()
         if g:
-            st.write(f"**Add money to '{g['name']}'**")
+            remaining = g["target_amount"] - g["current_amount"]
+            st.info(f"Adding money to: **{g['name']}** — NGN {g['current_amount']:,.0f} saved, NGN {remaining:,.0f} remaining")
             with get_db() as (conn, cursor):
                 cursor.execute("SELECT id, bank_name, balance FROM banks WHERE user_id=%s", (user_id,))
                 bank_list = cursor.fetchall()
             if bank_list:
-                bank_options  = {f"{b['bank_name']} (NGN {b['balance']:,})": b["id"] for b in bank_list}
-                selected_bank = st.selectbox("From Bank", list(bank_options.keys()), key="goal_bank")
-                contrib_amount = st.number_input("Amount to add (NGN)", min_value=1, key="goal_amount")
-                if st.button("Confirm Contribution", key="confirm_goal_contrib"):
+                bank_options = {f"{b['bank_name']} (NGN {b['balance']:,})": b["id"] for b in bank_list}
+                with st.form("goal_contribution_form"):
+                    selected_bank  = st.selectbox("From Bank", list(bank_options.keys()), key="goal_bank")
+                    contrib_amount = st.number_input("Amount to add (NGN)", min_value=1, key="goal_amount")
+                    confirm_col, cancel_col = st.columns(2)
+                    confirm = confirm_col.form_submit_button("Confirm Contribution")
+                    cancel  = cancel_col.form_submit_button("Cancel")
+                if confirm:
                     bank_id = bank_options[selected_bank]
                     with get_db() as (conn, cursor):
                         cursor.execute("SELECT balance FROM banks WHERE id=%s", (bank_id,))
@@ -1439,15 +1430,81 @@ elif current_page == "Savings Goals":
                             new_status  = "completed" if new_current >= g["target_amount"] else "active"
                             cursor.execute("UPDATE banks SET balance = balance - %s WHERE id=%s", (contrib_amount, bank_id))
                             cursor.execute("UPDATE goals SET current_amount=%s, status=%s WHERE id=%s", (new_current, new_status, goal_id))
-                            cursor.execute("INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'debit', %s, %s, %s)",
-                                           (bank_id, contrib_amount, f"Savings goal: {g['name']}", now))
-                            st.success(f"Added NGN {contrib_amount:,.0f} to goal.")
+                            cursor.execute(
+                                "INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'debit', %s, %s, %s)",
+                                (bank_id, contrib_amount, f"Savings goal: {g['name']}", now)
+                            )
+                            st.success(f"Added NGN {contrib_amount:,.0f} to '{g['name']}'.")
                             st.session_state.show_goal_contribution = False
+                            st.session_state.selected_goal = None
                             st.rerun()
+                if cancel:
+                    st.session_state.show_goal_contribution = False
+                    st.session_state.selected_goal = None
+                    st.rerun()
             else:
                 st.warning("You need a bank account to transfer from.")
+                if st.button("Cancel", key="cancel_contrib_no_bank"):
+                    st.session_state.show_goal_contribution = False
+                    st.session_state.selected_goal = None
+                    st.rerun()
         else:
             st.session_state.show_goal_contribution = False
+            st.session_state.selected_goal = None
+
+    # ── Goals list — active first, then completed ──
+    with get_db() as (conn, cursor):
+        cursor.execute("""
+            SELECT id, name, target_amount, current_amount, status
+            FROM goals
+            WHERE user_id = %s
+            ORDER BY
+                CASE WHEN status = 'active' THEN 0 ELSE 1 END,
+                created_at DESC
+        """, (user_id,))
+        goals = cursor.fetchall()
+
+    if not goals:
+        st.info("No savings goals yet. Use the form above to create one.")
+    else:
+        active_goals    = [g for g in goals if g["status"] == "active"]
+        completed_goals = [g for g in goals if g["status"] == "completed"]
+
+        def render_goal(goal):
+            progress = (goal["current_amount"] / goal["target_amount"] * 100) if goal["target_amount"] > 0 else 0
+            col1, col2, col3 = st.columns([5, 1, 1])
+            with col1:
+                st.markdown(f"**{goal['name']}**")
+                st.progress(
+                    min(progress / 100, 1.0),
+                    text=f"NGN {goal['current_amount']:,.0f} / NGN {goal['target_amount']:,.0f} ({progress:.1f}%)"
+                )
+            with col2:
+                if goal["status"] == "active":
+                    if st.button("Add Money", key=f"add_goal_{goal['id']}"):
+                        st.session_state.selected_goal          = goal["id"]
+                        st.session_state.show_goal_contribution = True
+                        st.rerun()
+                else:
+                    st.markdown("Completed")
+            with col3:
+                if st.button("Delete", key=f"delete_goal_{goal['id']}"):
+                    with get_db() as (conn, cursor):
+                        cursor.execute("DELETE FROM goals WHERE id=%s AND user_id=%s", (goal["id"], user_id))
+                    st.success(f"'{goal['name']}' deleted.")
+                    st.rerun()
+
+        if active_goals:
+            st.subheader(f"Active Goals ({len(active_goals)})")
+            for goal in active_goals:
+                render_goal(goal)
+                st.divider()
+
+        if completed_goals:
+            st.subheader(f"Completed Goals ({len(completed_goals)})")
+            for goal in completed_goals:
+                render_goal(goal)
+                st.divider()
 
 # ================= PAGE: IMPORT CSV =================
 elif current_page == "Import CSV":
