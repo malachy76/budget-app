@@ -287,8 +287,6 @@ if "onboarding_step" not in st.session_state:
     st.session_state.onboarding_step = 1
 if "quick_add_name" not in st.session_state:
     st.session_state.quick_add_name = ""
-if "quick_add_amt" not in st.session_state:
-    st.session_state.quick_add_amt = 0
 
 # ---------------- AUTH FUNCTIONS ----------------
 def hash_password(password):
@@ -1542,67 +1540,74 @@ elif current_page == "Expenses":
 
     # Nigerian daily expense categories
     QUICK_CATEGORIES = [
-        ("Transport", "&#x1F695;"),
-        ("Airtime/Data", "&#x1F4F1;"),
-        ("Food", "&#x1F37D;"),
-        ("Fuel", "&#x26FD;"),
-        ("Transfer Charges", "&#x1F4B8;"),
+        ("Transport",          "&#x1F695;"),
+        ("Airtime/Data",       "&#x1F4F1;"),
+        ("Food",               "&#x1F37D;"),
+        ("Fuel",               "&#x26FD;"),
+        ("Transfer Charges",   "&#x1F4B8;"),
         ("Electricity (NEPA)", "&#x26A1;"),
-        ("Internet", "&#x1F4F6;"),
-        ("Groceries", "&#x1F6D2;"),
-        ("Rent", "&#x1F3E0;"),
-        ("School Fees", "&#x1F393;"),
-        ("Hospital/Drugs", "&#x1F48A;"),
-        ("Church/Tithe", "&#x26EA;"),
-        ("Water", "&#x1F4A7;"),
-        ("Generator Repair", "&#x1F527;"),
-        ("Laundry", "&#x1F9FA;"),
-        ("Betting", "&#x1F3B2;"),
-        ("Subscription", "&#x1F4FA;"),
-        ("Hair/Beauty", "&#x1F488;"),
-        ("Clothing", "&#x1F455;"),
-        ("Savings Deposit", "&#x1F4B0;"),
-        ("Other", "&#x1F4DD;"),
+        ("Internet",           "&#x1F4F6;"),
+        ("Groceries",          "&#x1F6D2;"),
+        ("Rent",               "&#x1F3E0;"),
+        ("School Fees",        "&#x1F393;"),
+        ("Hospital/Drugs",     "&#x1F48A;"),
+        ("Church/Tithe",       "&#x26EA;"),
+        ("Water",              "&#x1F4A7;"),
+        ("Generator Repair",   "&#x1F527;"),
+        ("Laundry",            "&#x1F9FA;"),
+        ("Betting",            "&#x1F3B2;"),
+        ("Subscription",       "&#x1F4FA;"),
+        ("Hair/Beauty",        "&#x1F488;"),
+        ("Clothing",           "&#x1F455;"),
+        ("Savings Deposit",    "&#x1F4B0;"),
+        ("Other",              "&#x1F4DD;"),
     ]
 
-    # Render in rows of 4
+    # Render in rows of 4 — each button sets session state then reruns
     cols_per_row = 4
     rows = [QUICK_CATEGORIES[i:i+cols_per_row] for i in range(0, len(QUICK_CATEGORIES), cols_per_row)]
     for row in rows:
         cols = st.columns(len(row))
         for col, (cat_name, cat_icon) in zip(cols, row):
             with col:
-                btn_label = f"{cat_icon} {cat_name}"
-                if st.button(btn_label, key=f"qa_{cat_name}", use_container_width=True):
+                if st.button(
+                    f"{cat_icon} {cat_name}",
+                    key=f"qa_{cat_name}",
+                    use_container_width=True,
+                    type="secondary" if st.session_state.quick_add_name != cat_name else "primary",
+                ):
                     st.session_state.quick_add_name = cat_name
-                    st.session_state.quick_add_amt  = 0
+                    st.rerun()  # <-- critical: rerun so the form below picks up the new value
 
     st.divider()
 
-    # ── MANUAL / PRE-FILLED ADD FORM ─────────────────────────────────────
-    st.subheader("Add Expense")
-
-    # Pre-fill from quick-add if set
+    # ── ADD EXPENSE FORM (pre-filled from quick-add) ──────────────────────
     prefill_name = st.session_state.get("quick_add_name", "")
-    prefill_amt  = int(st.session_state.get("quick_add_amt", 0))
 
-    with st.form("add_expense_form"):
-        expense_name   = st.text_input("Expense Name", value=prefill_name, key="exp_name")
-        expense_amount = st.number_input("Amount (NGN)", min_value=1, value=max(prefill_amt, 1), step=100, key="exp_amt")
-        selected_bank  = st.selectbox("Pay From Bank", list(bank_map.keys()), key="bank_select")
+    if prefill_name:
+        st.info(f"Category selected: **{prefill_name}** — enter the amount and click Add Expense.")
+
+    # Use a dynamic form key tied to the selected category.
+    # Every time a new quick-add button is clicked the key changes,
+    # which forces Streamlit to destroy and recreate the form widgets
+    # from scratch — making value= reliably take effect.
+    form_key = f"add_expense_form_{prefill_name or 'custom'}"
+
+    with st.form(form_key, clear_on_submit=True):
+        expense_name   = st.text_input("Expense Name", value=prefill_name)
+        expense_amount = st.number_input("Amount (NGN)", min_value=1, step=100, value=1)
+        selected_bank  = st.selectbox("Pay From Bank", list(bank_map.keys()))
         submitted_exp  = st.form_submit_button("Add Expense", use_container_width=True)
 
     if submitted_exp:
-        if expense_name and expense_amount > 0:
+        if expense_name and expense_amount > 1:
             bank_id = bank_map[selected_bank]
-            save_expense(user_id, bank_id, expense_name, expense_amount)
-            st.success(f"Expense '{expense_name}' — NGN {expense_amount:,} added.")
-            # Clear quick-add prefill
+            save_expense(user_id, bank_id, expense_name, int(expense_amount))
+            st.success(f"'{expense_name}' — NGN {int(expense_amount):,} added.")
             st.session_state.quick_add_name = ""
-            st.session_state.quick_add_amt  = 0
             st.rerun()
         else:
-            st.warning("Please enter a name and amount.")
+            st.warning("Please enter an expense name and an amount greater than 0.")
 
     st.divider()
     st.subheader("Expense Summary")
