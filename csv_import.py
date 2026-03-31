@@ -22,7 +22,7 @@ def _clean_amount(x):
 
 
 def _clean_date(x):
-    """Parse any date format → 'YYYY-MM-DD' string, or today as fallback."""
+    """Parse any date format -> 'YYYY-MM-DD' string, or today as fallback."""
     if pd.isna(x):
         return datetime.now().strftime("%Y-%m-%d")
     dt = pd.to_datetime(x, errors="coerce", dayfirst=True)
@@ -40,27 +40,28 @@ def _clean_text(x):
 # ── main page ─────────────────────────────────────────────────────────────────
 
 def csv_import_page(conn, user_id: int):
-    st.header("📥 Import Bank Statement (CSV)")
+    st.header("Import Bank Statement (CSV)")
     st.caption(
         "Upload your bank statement CSV, map the columns, pick the bank "
         "it belongs to, preview — then import. "
-        "Each row becomes an **expense** + a **debit transaction** exactly "
+        "Each row becomes an expense + a debit transaction exactly "
         "like adding expenses manually."
     )
 
     # ── 1. Load user's banks ─────────────────────────────────────────────────
     cur = conn.cursor()
-    banks = cur.execute(
-        "SELECT id, bank_name, account_number, balance FROM banks WHERE user_id=?",
+    cur.execute(
+        "SELECT id, bank_name, account_number, balance FROM banks WHERE user_id = %s",
         (user_id,)
-    ).fetchall()
+    )
+    banks = cur.fetchall()
 
     if not banks:
         st.warning("You have no bank accounts yet. Add one on the Banks page first.")
         return
 
     bank_options = {
-        f"{b[1]} (****{b[2]}) — ₦{b[3]:,}": b[0]
+        f"{b['bank_name']} (****{b['account_number']}) - NGN {b['balance']:,}": b["id"]
         for b in banks
     }
     selected_bank_label = st.selectbox(
@@ -110,26 +111,26 @@ def csv_import_page(conn, user_id: int):
                              "merchant", "particulars", "reference", "memo"])
 
     amount_col = st.selectbox(
-        "💰 Amount column *",
+        "Amount column *",
         ["(none)"] + csv_cols,
         index=amount_idx,
         key="csv_amount_col"
     )
     date_col = st.selectbox(
-        "📅 Date column (optional — today used if blank)",
+        "Date column (optional — today used if blank)",
         ["(none)"] + csv_cols,
         index=date_idx,
         key="csv_date_col"
     )
     desc_col = st.selectbox(
-        "📝 Description / Narration column *",
+        "Description / Narration column *",
         ["(none)"] + csv_cols,
         index=desc_idx,
         key="csv_desc_col"
     )
 
     if amount_col == "(none)" or desc_col == "(none)":
-        st.info("Please map at least the **Amount** and **Description** columns to continue.")
+        st.info("Please map at least the Amount and Description columns to continue.")
         return
 
     # ── 4. Build preview data ────────────────────────────────────────────────
@@ -158,28 +159,28 @@ def csv_import_page(conn, user_id: int):
 
     st.dataframe(
         working[["date", "description", "amount"]].rename(columns={
-            "date": "Date", "description": "Description", "amount": "Amount (₦)"
+            "date": "Date", "description": "Description", "amount": "Amount (NGN)"
         }),
         use_container_width=True
     )
 
     total = working["amount"].sum()
-    st.markdown(f"**Total debit: ₦{total:,.2f}**")
+    st.markdown(f"**Total debit: NGN {total:,.2f}**")
 
     # ── 5. Bank balance check ────────────────────────────────────────────────
-    current_balance = cur.execute(
-        "SELECT balance FROM banks WHERE id=?", (bank_id,)
-    ).fetchone()[0] or 0
+    cur.execute("SELECT balance FROM banks WHERE id = %s", (bank_id,))
+    row = cur.fetchone()
+    current_balance = row["balance"] if row else 0
 
     if total > current_balance:
         st.warning(
-            f"⚠️ Total import (₦{total:,.0f}) exceeds current bank balance "
-            f"(₦{current_balance:,.0f}). Import will still work but balance "
+            f"Total import (NGN {total:,.0f}) exceeds current bank balance "
+            f"(NGN {current_balance:,.0f}). Import will still work but balance "
             f"will go negative."
         )
 
     # ── 6. Import button ─────────────────────────────────────────────────────
-    if st.button("✅ Import All into Expenses", use_container_width=True, key="csv_import_btn"):
+    if st.button("Import All into Expenses", use_container_width=True, key="csv_import_btn"):
         imported = 0
         errors   = 0
         try:
@@ -188,28 +189,29 @@ def csv_import_page(conn, user_id: int):
                 desc = row["description"]
                 date = row["date"]
 
-                # — Insert transaction FIRST (same pattern as manual expense add) —
+                # — Insert transaction FIRST, use RETURNING id (PostgreSQL syntax) —
                 cur.execute("""
                     INSERT INTO transactions (bank_id, type, amount, description, created_at)
-                    VALUES (?, 'debit', ?, ?, ?)
+                    VALUES (%s, 'debit', %s, %s, %s)
+                    RETURNING id
                 """, (bank_id, amt, f"Expense: {desc}", date))
-                tx_id = cur.lastrowid
+                tx_id = cur.fetchone()["id"]  # replaces SQLite's lastrowid
 
                 # — Insert expense with tx_id linked —
                 cur.execute("""
                     INSERT INTO expenses (user_id, bank_id, name, amount, created_at, tx_id)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s)
                 """, (user_id, bank_id, desc, amt, date, tx_id))
 
                 # — Debit the bank balance —
                 cur.execute(
-                    "UPDATE banks SET balance = balance - ? WHERE id=?",
+                    "UPDATE banks SET balance = balance - %s WHERE id = %s",
                     (amt, bank_id)
                 )
                 imported += 1
 
             conn.commit()
-            st.success(f"✅ Imported **{imported}** expenses successfully!")
+            st.success(f"Imported {imported} expenses successfully!")
             st.caption(
                 "All rows are now visible on the Expenses page and the "
                 "Dashboard charts. Your bank balance has been updated."
