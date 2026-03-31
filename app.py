@@ -1411,37 +1411,53 @@ elif current_page == "Savings Goals":
                 bank_list = cursor.fetchall()
             if bank_list:
                 bank_options = {f"{b['bank_name']} (NGN {b['balance']:,})": b["id"] for b in bank_list}
+                bank_labels  = list(bank_options.keys())
+
                 with st.form("goal_contribution_form"):
-                    selected_bank  = st.selectbox("From Bank", list(bank_options.keys()), key="goal_bank")
-                    contrib_amount = st.number_input("Amount to add (NGN)", min_value=1, key="goal_amount")
+                    selected_bank  = st.selectbox("From Bank", bank_labels)
+                    contrib_amount = st.number_input("Amount to add (NGN)", min_value=1, step=1, value=1)
                     confirm_col, cancel_col = st.columns(2)
                     confirm = confirm_col.form_submit_button("Confirm Contribution")
                     cancel  = cancel_col.form_submit_button("Cancel")
-                if confirm:
-                    bank_id = bank_options[selected_bank]
-                    with get_db() as (conn, cursor):
-                        cursor.execute("SELECT balance FROM banks WHERE id=%s", (bank_id,))
-                        bank_balance = cursor.fetchone()["balance"]
-                        if contrib_amount > bank_balance:
-                            st.error("Insufficient funds in selected bank.")
-                        else:
-                            now         = datetime.now().strftime("%Y-%m-%d")
-                            new_current = g["current_amount"] + contrib_amount
-                            new_status  = "completed" if new_current >= g["target_amount"] else "active"
-                            cursor.execute("UPDATE banks SET balance = balance - %s WHERE id=%s", (contrib_amount, bank_id))
-                            cursor.execute("UPDATE goals SET current_amount=%s, status=%s WHERE id=%s", (new_current, new_status, goal_id))
-                            cursor.execute(
-                                "INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'debit', %s, %s, %s)",
-                                (bank_id, contrib_amount, f"Savings goal: {g['name']}", now)
-                            )
-                            st.success(f"Added NGN {contrib_amount:,.0f} to '{g['name']}'.")
+
+                    if confirm:
+                        # Cast everything to int — number_input returns float
+                        amt     = int(contrib_amount)
+                        bank_id = bank_options[selected_bank]
+                        try:
+                            with get_db() as (conn, cursor):
+                                cursor.execute("SELECT balance FROM banks WHERE id=%s", (bank_id,))
+                                bank_balance = int(cursor.fetchone()["balance"])
+                                if amt > bank_balance:
+                                    st.error(f"Insufficient funds. Bank balance is NGN {bank_balance:,}.")
+                                else:
+                                    now         = datetime.now().strftime("%Y-%m-%d")
+                                    new_current = int(g["current_amount"]) + amt
+                                    new_status  = "completed" if new_current >= int(g["target_amount"]) else "active"
+                                    cursor.execute(
+                                        "UPDATE goals SET current_amount=%s, status=%s WHERE id=%s AND user_id=%s",
+                                        (new_current, new_status, goal_id, user_id)
+                                    )
+                                    cursor.execute(
+                                        "UPDATE banks SET balance = balance - %s WHERE id=%s",
+                                        (amt, bank_id)
+                                    )
+                                    cursor.execute(
+                                        "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
+                                        "VALUES (%s, 'debit', %s, %s, %s)",
+                                        (bank_id, amt, f"Savings goal: {g['name']}", now)
+                                    )
+                            st.success(f"Added NGN {amt:,} to '{g['name']}'.")
                             st.session_state.show_goal_contribution = False
                             st.session_state.selected_goal = None
                             st.rerun()
-                if cancel:
-                    st.session_state.show_goal_contribution = False
-                    st.session_state.selected_goal = None
-                    st.rerun()
+                        except Exception as e:
+                            st.error(f"Something went wrong: {e}")
+
+                    if cancel:
+                        st.session_state.show_goal_contribution = False
+                        st.session_state.selected_goal = None
+                        st.rerun()
             else:
                 st.warning("You need a bank account to transfer from.")
                 if st.button("Cancel", key="cancel_contrib_no_bank"):
