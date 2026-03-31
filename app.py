@@ -252,6 +252,11 @@ def create_tables():
             created_at TEXT NOT NULL
         )
         """)
+        # Safely add onboarding_complete to existing deployments
+        cursor.execute("""
+            ALTER TABLE users
+            ADD COLUMN IF NOT EXISTS onboarding_complete INTEGER DEFAULT 0
+        """)
 
 create_tables()
 
@@ -278,6 +283,12 @@ if "selected_goal" not in st.session_state:
     st.session_state.selected_goal = None
 if "show_goal_contribution" not in st.session_state:
     st.session_state.show_goal_contribution = False
+if "onboarding_step" not in st.session_state:
+    st.session_state.onboarding_step = 1
+if "quick_add_name" not in st.session_state:
+    st.session_state.quick_add_name = ""
+if "quick_add_amt" not in st.session_state:
+    st.session_state.quick_add_amt = 0
 
 # ---------------- AUTH FUNCTIONS ----------------
 def hash_password(password):
@@ -382,6 +393,70 @@ def change_password(user_id, current_pw, new_pw):
             )
             return True, "Password updated"
         return False, "Current password incorrect"
+
+def save_expense(user_id, bank_id, name, amount):
+    """Shared helper used by manual add and quick-add buttons."""
+    now = datetime.now().strftime("%Y-%m-%d")
+    amt = int(amount)
+    with get_db() as (conn, cursor):
+        cursor.execute(
+            "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
+            "VALUES (%s, 'debit', %s, %s, %s) RETURNING id",
+            (bank_id, amt, f"Expense: {name}", now)
+        )
+        tx_id = cursor.fetchone()["id"]
+        cursor.execute(
+            "INSERT INTO expenses (user_id, bank_id, name, amount, created_at, tx_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (user_id, bank_id, name, amt, now, tx_id)
+        )
+        cursor.execute(
+            "UPDATE banks SET balance = balance - %s WHERE id=%s",
+            (amt, bank_id)
+        )
+
+def get_onboarding_status(user_id):
+    """Returns dict with booleans for each onboarding step."""
+    with get_db() as (conn, cursor):
+        cursor.execute("SELECT onboarding_complete FROM users WHERE id=%s", (user_id,))
+        row = cursor.fetchone()
+        already_done = bool(row["onboarding_complete"])
+
+        cursor.execute("SELECT COUNT(*) AS n FROM banks WHERE user_id=%s", (user_id,))
+        has_bank = cursor.fetchone()["n"] > 0
+
+        cursor.execute(
+            "SELECT COUNT(*) AS n FROM transactions t "
+            "JOIN banks b ON t.bank_id=b.id "
+            "WHERE b.user_id=%s AND t.type='credit'", (user_id,)
+        )
+        has_income = cursor.fetchone()["n"] > 0
+
+        cursor.execute(
+            "SELECT COUNT(*) AS n FROM expenses WHERE user_id=%s", (user_id,)
+        )
+        has_expense = cursor.fetchone()["n"] > 0
+
+        cursor.execute(
+            "SELECT monthly_spending_limit FROM users WHERE id=%s", (user_id,)
+        )
+        limit_row = cursor.fetchone()
+        has_budget = bool(limit_row["monthly_spending_limit"])
+
+    return {
+        "already_done": already_done,
+        "has_bank":     has_bank,
+        "has_income":   has_income,
+        "has_expense":  has_expense,
+        "has_budget":   has_budget,
+        "all_done":     has_bank and has_income and has_expense and has_budget,
+    }
+
+def mark_onboarding_complete(user_id):
+    with get_db() as (conn, cursor):
+        cursor.execute(
+            "UPDATE users SET onboarding_complete=1 WHERE id=%s", (user_id,)
+        )
 
 # ============================================================
 # COOKIE SESSION HELPERS
@@ -887,6 +962,173 @@ with st.sidebar:
 
 st.success(f"Welcome {user['surname']} {user['other_names']}")
 
+# ================= ONBOARDING FLOW =================
+_ob = get_onboarding_status(user_id)
+
+if not _ob["already_done"]:
+    # Auto-mark complete once all steps done
+    if _ob["all_done"]:
+        mark_onboarding_complete(user_id)
+    else:
+        # Progress bar
+        steps_done = sum([_ob["has_bank"], _ob["has_income"], _ob["has_expense"], _ob["has_budget"]])
+        st.markdown("""
+        <style>
+        .ob-banner {
+            background: linear-gradient(90deg, #1a3c5e 0%, #0e7c5b 100%);
+            border-radius: 12px; padding: 18px 22px; margin-bottom: 16px;
+        }
+        .ob-title { color: #ffffff; font-size: 1.05rem; font-weight: 700; margin-bottom: 6px; }
+        .ob-sub   { color: #a8d8c8; font-size: 0.88rem; }
+        .ob-step  {
+            display: flex; align-items: center; gap: 10px;
+            background: #f0f7f4; border-radius: 8px;
+            padding: 10px 14px; margin-bottom: 6px; font-size: 0.92rem;
+        }
+        .ob-done   { border-left: 4px solid #0e7c5b; color: #2c7a5a; }
+        .ob-todo   { border-left: 4px solid #d0d0d0; color: #555; }
+        .ob-icon   { font-size: 1.2rem; }
+        .ob-skip   { font-size: 0.8rem; color: #95a5a6; text-align: right; margin-top: 4px; }
+        </style>
+        """, unsafe_allow_html=True)
+
+        with st.expander(f"Setup checklist — {steps_done}/4 steps done", expanded=(steps_done == 0)):
+            st.progress(steps_done / 4, text=f"You are {steps_done * 25}% set up")
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # Step 1 — Bank
+            done1 = _ob["has_bank"]
+            st.markdown(
+                f'<div class="ob-step {"ob-done" if done1 else "ob-todo"}">'
+                f'<span class="ob-icon">{"&#x2705;" if done1 else "&#x1F3E6;"}</span>'
+                f'<span><strong>Step 1: Add your first bank account</strong>'
+                f'{"&nbsp; — done!" if done1 else " — so Budget Right knows where your money lives."}</span>'
+                f'</div>', unsafe_allow_html=True
+            )
+            if not done1:
+                with st.form("ob_bank_form"):
+                    ob_bank_name    = st.text_input("Bank Name (e.g. GTB, Access, Opay)")
+                    ob_acct_name    = st.text_input("Account Name")
+                    ob_acct_num     = st.text_input("Account Number (last 4 digits)")
+                    ob_opening_bal  = st.number_input("Current Balance (NGN)", min_value=0, step=1000)
+                    ob_bank_submit  = st.form_submit_button("Add Bank and Continue")
+                if ob_bank_submit:
+                    if ob_bank_name and ob_acct_name and ob_acct_num:
+                        with get_db() as (conn, cursor):
+                            cursor.execute(
+                                "INSERT INTO banks (user_id, bank_name, account_name, account_number, balance, min_balance_alert) "
+                                "VALUES (%s, %s, %s, %s, %s, 0)",
+                                (user_id, ob_bank_name, ob_acct_name, ob_acct_num[-4:], int(ob_opening_bal))
+                            )
+                        st.success(f"Bank '{ob_bank_name}' added!")
+                        st.rerun()
+                    else:
+                        st.warning("Please fill all bank fields.")
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # Step 2 — Income
+            done2 = _ob["has_income"]
+            st.markdown(
+                f'<div class="ob-step {"ob-done" if done2 else "ob-todo"}">'
+                f'<span class="ob-icon">{"&#x2705;" if done2 else "&#x1F4B0;"}</span>'
+                f'<span><strong>Step 2: Record your first income</strong>'
+                f'{"&nbsp; — done!" if done2 else " — add your salary or any other income source."}</span>'
+                f'</div>', unsafe_allow_html=True
+            )
+            if done1 and not done2:
+                with get_db() as (conn, cursor):
+                    cursor.execute("SELECT id, bank_name, account_number, balance FROM banks WHERE user_id=%s", (user_id,))
+                    ob_banks = cursor.fetchall()
+                ob_bank_map = {f"{b['bank_name']} (****{b['account_number']})": b["id"] for b in ob_banks}
+                with st.form("ob_income_form"):
+                    ob_inc_source  = st.text_input("Income Source (e.g. Salary, Freelance)")
+                    ob_inc_amount  = st.number_input("Amount (NGN)", min_value=1, step=1000)
+                    ob_inc_bank    = st.selectbox("Which bank?", list(ob_bank_map.keys()))
+                    ob_inc_submit  = st.form_submit_button("Add Income and Continue")
+                if ob_inc_submit:
+                    if ob_inc_source and ob_inc_amount > 0:
+                        bk_id = ob_bank_map[ob_inc_bank]
+                        with get_db() as (conn, cursor):
+                            cursor.execute("UPDATE banks SET balance = balance + %s WHERE id=%s", (int(ob_inc_amount), bk_id))
+                            cursor.execute(
+                                "INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s,'credit',%s,%s,%s)",
+                                (bk_id, int(ob_inc_amount), f"Income: {ob_inc_source}", datetime.now().strftime("%Y-%m-%d"))
+                            )
+                        st.success("Income recorded!")
+                        st.rerun()
+                    else:
+                        st.warning("Please enter a source and amount.")
+            elif not done1 and not done2:
+                st.caption("Complete Step 1 first.")
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # Step 3 — Expense
+            done3 = _ob["has_expense"]
+            st.markdown(
+                f'<div class="ob-step {"ob-done" if done3 else "ob-todo"}">'
+                f'<span class="ob-icon">{"&#x2705;" if done3 else "&#x1F9FE;"}</span>'
+                f'<span><strong>Step 3: Log your first expense</strong>'
+                f'{"&nbsp; — done!" if done3 else " — what did you spend money on today?"}</span>'
+                f'</div>', unsafe_allow_html=True
+            )
+            if done1 and not done3:
+                with get_db() as (conn, cursor):
+                    cursor.execute("SELECT id, bank_name, account_number, balance FROM banks WHERE user_id=%s", (user_id,))
+                    ob_banks2 = cursor.fetchall()
+                ob_bank_map2 = {f"{b['bank_name']} (****{b['account_number']})": b["id"] for b in ob_banks2}
+                with st.form("ob_expense_form"):
+                    ob_exp_name   = st.text_input("Expense Name (e.g. Transport, Food)")
+                    ob_exp_amount = st.number_input("Amount (NGN)", min_value=1, step=100)
+                    ob_exp_bank   = st.selectbox("Pay From Bank", list(ob_bank_map2.keys()))
+                    ob_exp_submit = st.form_submit_button("Add Expense and Continue")
+                if ob_exp_submit:
+                    if ob_exp_name and ob_exp_amount > 0:
+                        bk_id = ob_bank_map2[ob_exp_bank]
+                        save_expense(user_id, bk_id, ob_exp_name, ob_exp_amount)
+                        st.success("Expense logged!")
+                        st.rerun()
+                    else:
+                        st.warning("Please enter a name and amount.")
+            elif not done1 and not done3:
+                st.caption("Complete Step 1 first.")
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # Step 4 — Budget
+            done4 = _ob["has_budget"]
+            st.markdown(
+                f'<div class="ob-step {"ob-done" if done4 else "ob-todo"}">'
+                f'<span class="ob-icon">{"&#x2705;" if done4 else "&#x1F4CA;"}</span>'
+                f'<span><strong>Step 4: Set your monthly spending budget</strong>'
+                f'{"&nbsp; — done!" if done4 else " — get alerts before you overspend."}</span>'
+                f'</div>', unsafe_allow_html=True
+            )
+            if not done4:
+                with st.form("ob_budget_form"):
+                    ob_budget = st.number_input("Monthly Budget (NGN)", min_value=1000, step=5000, value=100000)
+                    ob_budget_submit = st.form_submit_button("Set Budget and Finish")
+                if ob_budget_submit:
+                    with get_db() as (conn, cursor):
+                        cursor.execute("UPDATE users SET monthly_spending_limit=%s WHERE id=%s", (int(ob_budget), user_id))
+                    st.success("Budget set! You're all set up.")
+                    st.rerun()
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown(
+                '<div class="ob-skip">Already set up? '
+                '<a href="#" style="color:#95a5a6;">Skip this checklist</a> — '
+                'it disappears automatically once all steps are done.</div>',
+                unsafe_allow_html=True
+            )
+            # Let them skip manually
+            if st.button("Skip setup checklist", key="skip_onboarding"):
+                mark_onboarding_complete(user_id)
+                st.rerun()
+
+        st.divider()
+
 # ================= PAGE: ADMIN PANEL =================
 if current_page == "Admin Panel":
     st.subheader("Admin Panel")
@@ -988,12 +1230,52 @@ elif current_page == "Dashboard":
             FROM transactions t JOIN banks b ON t.bank_id = b.id WHERE b.user_id=%s
         """, (user_id,))
         net_savings = cursor.fetchone()["n"]
+        cursor.execute("SELECT monthly_spending_limit FROM users WHERE id=%s", (user_id,))
+        spending_limit = cursor.fetchone()["monthly_spending_limit"] or 0
+
+    # ── Empty state: no banks at all ──
+    if num_banks == 0:
+        st.markdown("""
+        <div style="background:#f0f7f4;border-radius:12px;padding:28px 24px;text-align:center;margin:16px 0;">
+          <div style="font-size:2.5rem;">&#x1F3E6;</div>
+          <div style="font-size:1.1rem;font-weight:700;color:#1a3c5e;margin:8px 0 4px;">Welcome! Let's get you set up.</div>
+          <div style="color:#4a6070;font-size:0.93rem;">
+            Your dashboard will show your balances, charts, and insights once you add a bank account.<br>
+            Start by adding your first bank on the <strong>Banks</strong> page.
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("Add my first bank account", key="dash_goto_banks"):
+            st.session_state.nav_radio = pages_clean.index("Banks")
+            st.rerun()
+        st.stop()
 
     col1, col2, col3, col4 = st.columns(4)
     with col1: st.metric("Total Balance (NGN)",       f"{total_balance:,.0f}")
     with col2: st.metric("Expenses This Month (NGN)", f"{expenses_this_month:,.0f}")
     with col3: st.metric("Bank Accounts",              num_banks)
     with col4: st.metric("Net Savings (NGN)",          f"{net_savings:,.0f}")
+
+    # ── Spending budget alert ──
+    if spending_limit > 0 and expenses_this_month > 0:
+        pct = (expenses_this_month / spending_limit) * 100
+        if pct >= 100:
+            st.error(
+                f"Budget exceeded! You have spent NGN {expenses_this_month:,.0f} — "
+                f"NGN {expenses_this_month - spending_limit:,.0f} over your NGN {spending_limit:,.0f} monthly limit."
+            )
+        elif pct >= 80:
+            st.warning(
+                f"Spending alert: You have used {pct:.0f}% of your NGN {spending_limit:,.0f} monthly budget "
+                f"(NGN {expenses_this_month:,.0f} spent). Only NGN {spending_limit - expenses_this_month:,.0f} left."
+            )
+        elif pct >= 50:
+            st.info(
+                f"You are halfway through your monthly budget — {pct:.0f}% used "
+                f"(NGN {expenses_this_month:,.0f} of NGN {spending_limit:,.0f})."
+            )
+    elif spending_limit == 0:
+        st.caption("Tip: Set a monthly spending limit in Settings to get budget alerts here.")
 
     st.divider()
     st.subheader("Income vs Expenses Over Time")
@@ -1021,7 +1303,13 @@ elif current_page == "Dashboard":
         st.line_chart(df_pivot[["Income","Expenses"]])
         st.bar_chart(df_pivot[["Income","Expenses"]])
     else:
-        st.info("No transactions in this period.")
+        st.markdown("""
+        <div style="background:#f0f7f4;border-radius:10px;padding:20px 22px;text-align:center;color:#4a6070;">
+          <div style="font-size:2rem;">&#x1F4C8;</div>
+          <div style="font-weight:700;margin:6px 0 4px;color:#1a3c5e;">No transactions yet</div>
+          <div style="font-size:0.92rem;">Add income on the <strong>Income</strong> page or log an expense on the <strong>Expenses</strong> page to see your chart here.</div>
+        </div>
+        """, unsafe_allow_html=True)
 
     st.divider()
     st.subheader("Expense Breakdown by Category")
@@ -1042,7 +1330,16 @@ elif current_page == "Dashboard":
         fig.update_layout(margin=dict(t=40,b=10,l=10,r=10), legend=dict(orientation="v",x=1.02,y=0.5))
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("No expenses recorded yet — your pie chart will appear here.")
+        st.markdown("""
+        <div style="background:#f0f7f4;border-radius:10px;padding:20px 22px;text-align:center;color:#4a6070;">
+          <div style="font-size:2rem;">&#x1F967;</div>
+          <div style="font-weight:700;margin:6px 0 4px;color:#1a3c5e;">Expense breakdown will appear here</div>
+          <div style="font-size:0.92rem;">
+            Log your first expense on the <strong>Expenses</strong> page —
+            or use the Quick Add buttons for Transport, Food, Airtime and more.
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
 # ================= PAGE: INCOME =================
 elif current_page == "Income":
@@ -1050,6 +1347,22 @@ elif current_page == "Income":
     with get_db() as (conn, cursor):
         cursor.execute("SELECT id, bank_name, account_number, balance FROM banks WHERE user_id=%s", (user_id,))
         banks = cursor.fetchall()
+
+    if not banks:
+        st.markdown("""
+        <div style="background:#f0f7f4;border-radius:12px;padding:24px;text-align:center;color:#4a6070;margin:12px 0;">
+          <div style="font-size:2rem;">&#x1F4B0;</div>
+          <div style="font-weight:700;margin:6px 0 4px;color:#1a3c5e;">Add a bank account first</div>
+          <div style="font-size:0.92rem;">
+            Before you can record income, Budget Right needs to know which account to credit.<br>
+            Go to <strong>Banks</strong> and add your first account — it only takes 30 seconds.
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("Go to Banks page", key="income_goto_banks"):
+            st.session_state.nav_radio = pages_clean.index("Banks")
+            st.rerun()
+        st.stop()
 
     # -- EDIT FORM at top --
     if st.session_state.get("edit_income_id"):
@@ -1145,7 +1458,13 @@ elif current_page == "Income":
                     st.success(f"'{source}' deleted & NGN {inc['amount']:,.0f} reversed.")
                     st.rerun()
     else:
-        st.info("No income entries yet.")
+        st.markdown("""
+        <div style="background:#f0f7f4;border-radius:10px;padding:20px 22px;text-align:center;color:#4a6070;">
+          <div style="font-size:2rem;">&#x1F4B0;</div>
+          <div style="font-weight:700;margin:6px 0 4px;color:#1a3c5e;">No income recorded yet</div>
+          <div style="font-size:0.92rem;">Add your salary, freelance pay, or any money that came in using the form above.</div>
+        </div>
+        """, unsafe_allow_html=True)
 
 # ================= PAGE: EXPENSES =================
 elif current_page == "Expenses":
@@ -1188,29 +1507,102 @@ elif current_page == "Expenses":
             st.session_state.edit_exp_id = None
         st.divider()
 
+    if not banks:
+        # Empty state — no banks
+        st.markdown("""
+        <div style="background:#f0f7f4;border-radius:12px;padding:28px 24px;text-align:center;margin:16px 0;">
+          <div style="font-size:2.5rem;">&#x1F3E6;</div>
+          <div style="font-size:1.1rem;font-weight:700;color:#1a3c5e;margin:8px 0 4px;">No bank account yet</div>
+          <div style="color:#4a6070;font-size:0.93rem;">
+            You need to add a bank account before you can log expenses.<br>
+            Head over to the <strong>Banks</strong> page to get started.
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("Go to Banks page", key="goto_banks_from_exp"):
+            st.session_state.nav_radio = 3  # Banks index
+            st.rerun()
+        st.stop()
+
+    bank_map = {f"{b['bank_name']} (****{b['account_number']}) - NGN {b['balance']:,}": b["id"] for b in banks}
+
+    # ── QUICK ADD BUTTONS ──────────────────────────────────────────────────
+    st.markdown("""
+    <style>
+    .qa-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
+    .qa-label {
+        font-size: 0.82rem; font-weight: 700; color: #1a3c5e;
+        text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.subheader("Quick Add Expense")
+    st.caption("Tap a category to pre-fill the form below — just enter the amount and submit.")
+
+    # Nigerian daily expense categories
+    QUICK_CATEGORIES = [
+        ("Transport", "&#x1F695;"),
+        ("Airtime/Data", "&#x1F4F1;"),
+        ("Food", "&#x1F37D;"),
+        ("Fuel", "&#x26FD;"),
+        ("Transfer Charges", "&#x1F4B8;"),
+        ("Electricity (NEPA)", "&#x26A1;"),
+        ("Internet", "&#x1F4F6;"),
+        ("Groceries", "&#x1F6D2;"),
+        ("Rent", "&#x1F3E0;"),
+        ("School Fees", "&#x1F393;"),
+        ("Hospital/Drugs", "&#x1F48A;"),
+        ("Church/Tithe", "&#x26EA;"),
+        ("Water", "&#x1F4A7;"),
+        ("Generator Repair", "&#x1F527;"),
+        ("Laundry", "&#x1F9FA;"),
+        ("Betting", "&#x1F3B2;"),
+        ("Subscription", "&#x1F4FA;"),
+        ("Hair/Beauty", "&#x1F488;"),
+        ("Clothing", "&#x1F455;"),
+        ("Savings Deposit", "&#x1F4B0;"),
+        ("Other", "&#x1F4DD;"),
+    ]
+
+    # Render in rows of 4
+    cols_per_row = 4
+    rows = [QUICK_CATEGORIES[i:i+cols_per_row] for i in range(0, len(QUICK_CATEGORIES), cols_per_row)]
+    for row in rows:
+        cols = st.columns(len(row))
+        for col, (cat_name, cat_icon) in zip(cols, row):
+            with col:
+                btn_label = f"{cat_icon} {cat_name}"
+                if st.button(btn_label, key=f"qa_{cat_name}", use_container_width=True):
+                    st.session_state.quick_add_name = cat_name
+                    st.session_state.quick_add_amt  = 0
+
+    st.divider()
+
+    # ── MANUAL / PRE-FILLED ADD FORM ─────────────────────────────────────
     st.subheader("Add Expense")
-    expense_name   = st.text_input("Expense Name", key="exp_name")
-    expense_amount = st.number_input("Amount (NGN)", min_value=1, key="exp_amt")
-    if banks:
-        bank_map = {f"{b['bank_name']} (****{b['account_number']}) - NGN {b['balance']:,}": b["id"] for b in banks}
-        selected_bank = st.selectbox("Pay From Bank", list(bank_map.keys()), key="bank_select")
-        if st.button("Add Expense", key="add_expense_btn"):
-            if expense_name and expense_amount > 0:
-                bank_id = bank_map[selected_bank]
-                now = datetime.now().strftime("%Y-%m-%d")
-                with get_db() as (conn, cursor):
-                    cursor.execute("INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'debit', %s, %s, %s) RETURNING id",
-                                   (bank_id, expense_amount, f"Expense: {expense_name}", now))
-                    tx_id = cursor.fetchone()["id"]
-                    cursor.execute("INSERT INTO expenses (user_id, bank_id, name, amount, created_at, tx_id) VALUES (%s, %s, %s, %s, %s, %s)",
-                                   (user_id, bank_id, expense_name, expense_amount, now, tx_id))
-                    cursor.execute("UPDATE banks SET balance = balance - %s WHERE id=%s", (expense_amount, bank_id))
-                st.success("Expense added & bank debited")
-                st.rerun()
-            else:
-                st.warning("Please enter a name and amount.")
-    else:
-        st.info("Add a bank account first.")
+
+    # Pre-fill from quick-add if set
+    prefill_name = st.session_state.get("quick_add_name", "")
+    prefill_amt  = int(st.session_state.get("quick_add_amt", 0))
+
+    with st.form("add_expense_form"):
+        expense_name   = st.text_input("Expense Name", value=prefill_name, key="exp_name")
+        expense_amount = st.number_input("Amount (NGN)", min_value=1, value=max(prefill_amt, 1), step=100, key="exp_amt")
+        selected_bank  = st.selectbox("Pay From Bank", list(bank_map.keys()), key="bank_select")
+        submitted_exp  = st.form_submit_button("Add Expense", use_container_width=True)
+
+    if submitted_exp:
+        if expense_name and expense_amount > 0:
+            bank_id = bank_map[selected_bank]
+            save_expense(user_id, bank_id, expense_name, expense_amount)
+            st.success(f"Expense '{expense_name}' — NGN {expense_amount:,} added.")
+            # Clear quick-add prefill
+            st.session_state.quick_add_name = ""
+            st.session_state.quick_add_amt  = 0
+            st.rerun()
+        else:
+            st.warning("Please enter a name and amount.")
 
     st.divider()
     st.subheader("Expense Summary")
@@ -1268,7 +1660,17 @@ elif current_page == "Expenses":
         fig.update_layout(margin=dict(t=40,b=10,l=10,r=10), legend=dict(orientation="v",x=1.02,y=0.5))
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("No expenses recorded yet.")
+        # Empty state — no expenses yet
+        st.markdown("""
+        <div style="background:#fff8f0;border-left:4px solid #f39c12;border-radius:10px;padding:20px 22px;margin:8px 0;">
+          <div style="font-size:1.8rem;">&#x1F9FE;</div>
+          <div style="font-weight:700;color:#7d5a00;margin:6px 0 4px;">No expenses recorded yet</div>
+          <div style="color:#8a6320;font-size:0.92rem;">
+            Use the Quick Add buttons above to log your first expense in seconds,
+            or type a custom name in the form.
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
 # ================= PAGE: BANKS =================
 elif current_page == "Banks":
@@ -1331,7 +1733,14 @@ elif current_page == "Banks":
                     st.session_state.edit_bank_id = None
                     st.rerun()
     else:
-        st.info("No bank accounts yet.")
+        st.markdown("""
+        <div style="background:#f0f7f4;border-radius:10px;padding:20px 22px;text-align:center;color:#4a6070;margin-top:12px;">
+          <div style="font-size:2rem;">&#x1F3E6;</div>
+          <div style="font-weight:700;margin:6px 0 4px;color:#1a3c5e;">No bank accounts yet</div>
+          <div style="font-size:0.92rem;">Use the form above to add your GTB, Access, Opay, or any other account.<br>
+          Your ATM card number is never needed — just your bank name and last 4 digits.</div>
+        </div>
+        """, unsafe_allow_html=True)
 
 # ================= PAGE: TRANSFERS =================
 elif current_page == "Transfers":
@@ -1367,11 +1776,38 @@ elif current_page == "Transfers":
                         st.success("Transfer completed")
                         st.rerun()
     else:
-        st.info("Add at least two bank accounts to enable transfers.")
+        st.markdown("""
+        <div style="background:#f0f7f4;border-radius:10px;padding:20px 22px;text-align:center;color:#4a6070;">
+          <div style="font-size:2rem;">&#x1F4B8;</div>
+          <div style="font-weight:700;margin:6px 0 4px;color:#1a3c5e;">You need at least two bank accounts to transfer</div>
+          <div style="font-size:0.92rem;">Add a second account on the <strong>Banks</strong> page, then come back here to move money between them.</div>
+        </div>
+        """, unsafe_allow_html=True)
 
 # ================= PAGE: SAVINGS GOALS =================
 elif current_page == "Savings Goals":
     st.markdown("## Savings Goals")
+
+    # Check for banks first
+    with get_db() as (conn, cursor):
+        cursor.execute("SELECT COUNT(*) AS n FROM banks WHERE user_id=%s", (user_id,))
+        goals_bank_count = cursor.fetchone()["n"]
+
+    if goals_bank_count == 0:
+        st.markdown("""
+        <div style="background:#f0f7f4;border-radius:12px;padding:24px;text-align:center;color:#4a6070;margin:12px 0;">
+          <div style="font-size:2rem;">&#x1F3AF;</div>
+          <div style="font-weight:700;margin:6px 0 4px;color:#1a3c5e;">Add a bank account first</div>
+          <div style="font-size:0.92rem;">
+            Savings goal contributions are deducted from a bank account.<br>
+            Add your bank on the <strong>Banks</strong> page, then set up your goals here.
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("Go to Banks page", key="goals_goto_banks"):
+            st.session_state.nav_radio = pages_clean.index("Banks")
+            st.rerun()
+        st.stop()
 
     # ── Create New Goal form (always at top so it's always visible) ──
     with st.expander("Create New Goal", expanded=False):
@@ -1481,7 +1917,16 @@ elif current_page == "Savings Goals":
         goals = cursor.fetchall()
 
     if not goals:
-        st.info("No savings goals yet. Use the form above to create one.")
+        st.markdown("""
+        <div style="background:#f0f7f4;border-radius:12px;padding:24px;text-align:center;color:#4a6070;margin-top:8px;">
+          <div style="font-size:2.2rem;">&#x1F3AF;</div>
+          <div style="font-weight:700;margin:8px 0 4px;color:#1a3c5e;">No savings goals yet</div>
+          <div style="font-size:0.93rem;">
+            Use the <strong>Create New Goal</strong> form above to set a target — emergency fund,
+            new phone, school fees, rent, or anything you're saving towards.
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
     else:
         active_goals    = [g for g in goals if g["status"] == "active"]
         completed_goals = [g for g in goals if g["status"] == "completed"]
@@ -1525,24 +1970,58 @@ elif current_page == "Savings Goals":
 # ================= PAGE: IMPORT CSV =================
 elif current_page == "Import CSV":
     st.markdown("## Import Bank Statement (CSV)")
-    conn = get_connection()
-    try:
-        csv_import_page(conn, user_id)
-    finally:
-        conn.close()
+
+    # Check if user has banks first
+    with get_db() as (conn, cursor):
+        cursor.execute("SELECT COUNT(*) AS n FROM banks WHERE user_id=%s", (user_id,))
+        csv_bank_count = cursor.fetchone()["n"]
+
+    if csv_bank_count == 0:
+        st.markdown("""
+        <div style="background:#f0f7f4;border-radius:12px;padding:24px;text-align:center;color:#4a6070;margin:12px 0;">
+          <div style="font-size:2rem;">&#x1F4E5;</div>
+          <div style="font-weight:700;margin:6px 0 4px;color:#1a3c5e;">Add a bank account before importing</div>
+          <div style="font-size:0.92rem;">
+            Your CSV transactions need to be linked to a bank account.<br>
+            Add your bank on the <strong>Banks</strong> page first, then come back to import.
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("Go to Banks page", key="csv_goto_banks"):
+            st.session_state.nav_radio = pages_clean.index("Banks")
+            st.rerun()
+    else:
+        with st.expander("How does CSV import work?", expanded=False):
+            st.markdown("""
+            1. **Download your bank statement** as a CSV from your bank's app or internet banking portal.
+            2. **Upload it here** using the file uploader below.
+            3. **Map the columns** — tell Budget Right which column is the amount, date, and description.
+            4. **Preview and import** — every row becomes an expense and debits your bank balance.
+
+            **Supported banks:** GTB, Access, Zenith, UBA, First Bank, Opay, Kuda, and any bank that exports CSV.
+            """)
+        conn_csv = get_connection()
+        try:
+            csv_import_page(conn_csv, user_id)
+        finally:
+            conn_csv.close()
 
 # ================= PAGE: SETTINGS =================
 elif current_page == "Settings":
     st.markdown("## Settings")
-    st.subheader("Alert Settings")
+    st.subheader("Monthly Spending Budget")
+    st.caption(
+        "Set a limit on how much you want to spend each month. "
+        "Budget Right will alert you on the Dashboard at 50%, 80%, and 100% of your limit."
+    )
     with get_db() as (conn, cursor):
         cursor.execute("SELECT monthly_spending_limit FROM users WHERE id=%s", (user_id,))
         current_limit = cursor.fetchone()["monthly_spending_limit"] or 0
-    new_limit = st.number_input("Monthly Spending Limit (NGN) - 0 = no limit", min_value=0, value=current_limit, key="monthly_limit")
-    if st.button("Update Spending Limit", key="update_limit_btn"):
+    new_limit = st.number_input("Monthly Budget (NGN) — set to 0 to disable alerts", min_value=0, value=current_limit, step=5000, key="monthly_limit")
+    if st.button("Update Budget", key="update_limit_btn"):
         with get_db() as (conn, cursor):
             cursor.execute("UPDATE users SET monthly_spending_limit=%s WHERE id=%s", (new_limit, user_id))
-        st.success("Monthly limit updated.")
+        st.success("Monthly budget updated. Alerts will show on your Dashboard.")
         st.rerun()
 
     st.divider()
