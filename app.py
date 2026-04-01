@@ -1275,6 +1275,188 @@ elif current_page == "Dashboard":
     elif spending_limit == 0:
         st.caption("Tip: Set a monthly spending limit in Settings to get budget alerts here.")
 
+    # ── NIGERIAN-STYLE INSIGHTS ──────────────────────────────────────────────
+    current_month_start = datetime.now().strftime("%Y-%m-01")
+    current_week_start  = (datetime.now() - timedelta(days=datetime.now().weekday())).strftime("%Y-%m-%d")
+    last_month_start    = (datetime.now().replace(day=1) - timedelta(days=1)).strftime("%Y-%m-01")
+    last_month_end      = (datetime.now().replace(day=1) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    with get_db() as (conn, cursor):
+        # Top category this month
+        cursor.execute("""
+            SELECT e.name, SUM(e.amount) AS total
+            FROM expenses e JOIN banks b ON e.bank_id = b.id
+            WHERE b.user_id = %s AND e.created_at >= %s
+            GROUP BY e.name ORDER BY total DESC LIMIT 1
+        """, (user_id, current_month_start))
+        top_cat_row = cursor.fetchone()
+
+        # Top category last month
+        cursor.execute("""
+            SELECT e.name, SUM(e.amount) AS total
+            FROM expenses e JOIN banks b ON e.bank_id = b.id
+            WHERE b.user_id = %s AND e.created_at >= %s AND e.created_at <= %s
+            GROUP BY e.name ORDER BY total DESC LIMIT 1
+        """, (user_id, last_month_start, last_month_end))
+        last_top_cat_row = cursor.fetchone()
+
+        # Airtime/Data this week vs last week
+        cursor.execute("""
+            SELECT COALESCE(SUM(e.amount), 0) AS total
+            FROM expenses e JOIN banks b ON e.bank_id = b.id
+            WHERE b.user_id = %s AND e.created_at >= %s
+              AND LOWER(e.name) LIKE %s
+        """, (user_id, current_week_start, "%airtime%"))
+        airtime_this_week = cursor.fetchone()["total"] or 0
+
+        last_week_start = (datetime.now() - timedelta(days=datetime.now().weekday() + 7)).strftime("%Y-%m-%d")
+        last_week_end   = (datetime.now() - timedelta(days=datetime.now().weekday() + 1)).strftime("%Y-%m-%d")
+        cursor.execute("""
+            SELECT COALESCE(SUM(e.amount), 0) AS total
+            FROM expenses e JOIN banks b ON e.bank_id = b.id
+            WHERE b.user_id = %s AND e.created_at >= %s AND e.created_at <= %s
+              AND LOWER(e.name) LIKE %s
+        """, (user_id, last_week_start, last_week_end, "%airtime%"))
+        airtime_last_week = cursor.fetchone()["total"] or 0
+
+        # Daily average spend this month
+        cursor.execute("""
+            SELECT COALESCE(SUM(e.amount), 0) AS total, COUNT(DISTINCT e.created_at) AS days
+            FROM expenses e JOIN banks b ON e.bank_id = b.id
+            WHERE b.user_id = %s AND e.created_at >= %s
+        """, (user_id, current_month_start))
+        row_daily = cursor.fetchone()
+        daily_total = row_daily["total"] or 0
+        daily_days  = max(row_daily["days"] or 1, 1)
+        daily_avg   = daily_total / daily_days
+
+        # Count of expense entries this month (small-spend detection)
+        cursor.execute("""
+            SELECT COUNT(*) AS n, COALESCE(SUM(e.amount), 0) AS total
+            FROM expenses e JOIN banks b ON e.bank_id = b.id
+            WHERE b.user_id = %s AND e.created_at >= %s AND e.amount <= 5000
+        """, (user_id, current_month_start))
+        small_row   = cursor.fetchone()
+        small_count = small_row["n"] or 0
+        small_total = small_row["total"] or 0
+
+        # Transport this month
+        cursor.execute("""
+            SELECT COALESCE(SUM(e.amount), 0) AS total
+            FROM expenses e JOIN banks b ON e.bank_id = b.id
+            WHERE b.user_id = %s AND e.created_at >= %s AND LOWER(e.name) LIKE %s
+        """, (user_id, current_month_start, "%transport%"))
+        transport_total = cursor.fetchone()["total"] or 0
+
+        # Total categories this month
+        cursor.execute("""
+            SELECT COUNT(DISTINCT e.name) AS n
+            FROM expenses e JOIN banks b ON e.bank_id = b.id
+            WHERE b.user_id = %s AND e.created_at >= %s
+        """, (user_id, current_month_start))
+        cat_count = cursor.fetchone()["n"] or 0
+
+    # Build insight messages
+    insights = []
+
+    if top_cat_row and top_cat_row["total"] > 0:
+        insights.append({
+            "icon": "&#x1F4CA;",
+            "color": "#1a3c5e",
+            "bg": "#e8f4fd",
+            "border": "#3498db",
+            "text": f"<strong>{top_cat_row['name']}</strong> is your highest expense this month "
+                    f"at NGN {int(top_cat_row['total']):,}. Check if you can reduce it."
+        })
+
+    if spending_limit > 0 and expenses_this_month > 0:
+        pct = (expenses_this_month / spending_limit) * 100
+        if 70 <= pct < 90:
+            insights.append({
+                "icon": "&#x26A0;&#xFE0F;",
+                "color": "#7d5a00",
+                "bg": "#fffbea",
+                "border": "#f39c12",
+                "text": f"You are getting close to your monthly budget — "
+                        f"{pct:.0f}% used. NGN {int(spending_limit - expenses_this_month):,} remaining this month."
+            })
+        elif pct >= 90 and pct < 100:
+            insights.append({
+                "icon": "&#x1F6A8;",
+                "color": "#922b21",
+                "bg": "#fdf2f2",
+                "border": "#e74c3c",
+                "text": f"Warning — you have almost finished your monthly budget. "
+                        f"Only NGN {int(spending_limit - expenses_this_month):,} left."
+            })
+
+    if airtime_this_week > 0 and airtime_last_week > 0 and airtime_this_week > airtime_last_week * 1.3:
+        insights.append({
+            "icon": "&#x1F4F1;",
+            "color": "#1a3c5e",
+            "bg": "#f0f7f4",
+            "border": "#0e7c5b",
+            "text": f"Your Airtime/Data spending this week (NGN {int(airtime_this_week):,}) "
+                    f"is higher than last week (NGN {int(airtime_last_week):,}). "
+                    f"Consider buying a data bundle to save money."
+        })
+
+    if small_count >= 5 and small_total > 0:
+        insights.append({
+            "icon": "&#x1F4A7;",
+            "color": "#4a235a",
+            "bg": "#fdf0ff",
+            "border": "#9b59b6",
+            "text": f"You have made {small_count} small purchases under NGN 5,000 this month, "
+                    f"totalling NGN {int(small_total):,}. Small daily spending adds up fast — track carefully."
+        })
+
+    if transport_total > 0 and top_cat_row and top_cat_row["name"].lower() in ("transport", "transport charges", "bolt", "uber"):
+        insights.append({
+            "icon": "&#x1F695;",
+            "color": "#1a3c5e",
+            "bg": "#e8f4fd",
+            "border": "#3498db",
+            "text": f"Transport is eating a big chunk of your budget this month "
+                    f"(NGN {int(transport_total):,}). Public transport or carpooling could help cut this down."
+        })
+
+    if daily_avg > 0:
+        insights.append({
+            "icon": "&#x1F4C5;",
+            "color": "#1a3c5e",
+            "bg": "#f0f7f4",
+            "border": "#0e7c5b",
+            "text": f"Your average daily spend this month is NGN {int(daily_avg):,}. "
+                    + (
+                        "You are spending within a comfortable daily range. Keep it up."
+                        if daily_avg < 10000
+                        else "That is on the high side — review your biggest categories and see where you can cut back."
+                    )
+        })
+
+    if last_top_cat_row and top_cat_row and last_top_cat_row["name"] == top_cat_row["name"]:
+        insights.append({
+            "icon": "&#x1F501;",
+            "color": "#7d5a00",
+            "bg": "#fffbea",
+            "border": "#f39c12",
+            "text": f"<strong>{top_cat_row['name']}</strong> was also your top expense last month. "
+                    f"This is a recurring pattern — consider budgeting specifically for it."
+        })
+
+    if insights:
+        st.divider()
+        st.subheader("Insights")
+        for ins in insights:
+            st.markdown(
+                f'<div style="background:{ins["bg"]};border-left:4px solid {ins["border"]};'
+                f'border-radius:9px;padding:12px 16px;margin-bottom:8px;color:{ins["color"]};font-size:0.93rem;">'
+                f'<span style="font-size:1.15rem;">{ins["icon"]}</span>&nbsp;&nbsp;{ins["text"]}'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
     st.divider()
     st.subheader("Income vs Expenses Over Time")
     period_map = {
@@ -1540,27 +1722,31 @@ elif current_page == "Expenses":
 
     # Nigerian daily expense categories
     QUICK_CATEGORIES = [
-        ("Transport",          "&#x1F695;"),
-        ("Airtime/Data",       "&#x1F4F1;"),
-        ("Food",               "&#x1F37D;"),
-        ("Fuel",               "&#x26FD;"),
-        ("Transfer Charges",   "&#x1F4B8;"),
-        ("Electricity (NEPA)", "&#x26A1;"),
-        ("Internet",           "&#x1F4F6;"),
-        ("Groceries",          "&#x1F6D2;"),
-        ("Rent",               "&#x1F3E0;"),
-        ("School Fees",        "&#x1F393;"),
-        ("Hospital/Drugs",     "&#x1F48A;"),
-        ("Church/Tithe",       "&#x26EA;"),
-        ("Water",              "&#x1F4A7;"),
-        ("Generator Repair",   "&#x1F527;"),
-        ("Laundry",            "&#x1F9FA;"),
-        ("Betting",            "&#x1F3B2;"),
-        ("Subscription",       "&#x1F4FA;"),
-        ("Hair/Beauty",        "&#x1F488;"),
-        ("Clothing",           "&#x1F455;"),
-        ("Savings Deposit",    "&#x1F4B0;"),
-        ("Other",              "&#x1F4DD;"),
+        ("Foodstuff",              "&#x1F35A;"),
+        ("Transport",              "&#x1F695;"),
+        ("Airtime/Data",           "&#x1F4F1;"),
+        ("Fuel",                   "&#x26FD;"),
+        ("Rent",                   "&#x1F3E0;"),
+        ("Electricity (NEPA)",     "&#x26A1;"),
+        ("POS Charges",            "&#x1F4B3;"),
+        ("Transfer Fees",          "&#x1F4B8;"),
+        ("School Fees",            "&#x1F393;"),
+        ("Church/Mosque Giving",   "&#x1F54C;"),
+        ("Business Stock",         "&#x1F4E6;"),
+        ("Family Support",         "&#x1F46A;"),
+        ("Food & Eating Out",      "&#x1F37D;"),
+        ("Internet",               "&#x1F4F6;"),
+        ("Groceries",              "&#x1F6D2;"),
+        ("Hospital/Drugs",         "&#x1F48A;"),
+        ("Water",                  "&#x1F4A7;"),
+        ("Generator/Fuel",         "&#x1F527;"),
+        ("Laundry",                "&#x1F9FA;"),
+        ("Subscription",           "&#x1F4FA;"),
+        ("Hair/Beauty",            "&#x1F488;"),
+        ("Clothing",               "&#x1F455;"),
+        ("Savings Deposit",        "&#x1F4B0;"),
+        ("Betting",                "&#x1F3B2;"),
+        ("Other",                  "&#x1F4DD;"),
     ]
 
     # Render in rows of 4 — each button sets session state then reruns
