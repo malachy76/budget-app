@@ -20,70 +20,46 @@ if not cookies.ready():
 # ---------------- MOBILE CSS ----------------
 st.markdown("""
 <style>
+/* ── BASE ── */
 html, body { overflow-x: hidden !important; }
-.main .block-container { max-width: 100% !important; }
+.main .block-container { max-width: 100% !important; padding-top: 1rem !important; }
 
-@media screen and (max-width: 640px) {
-    .main .block-container { padding: 0.6rem 0.7rem 1rem 0.7rem !important; }
-    h1 { font-size: 1.4rem !important; line-height: 1.3 !important; }
-    h2 { font-size: 1.2rem !important; }
-    h3 { font-size: 1.05rem !important; }
-    div[data-testid="stHorizontalBlock"] { flex-direction: column !important; gap: 0.4rem !important; }
-    div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"],
-    div[data-testid="stHorizontalBlock"] > div[class*="stColumn"] {
-        width: 100% !important; min-width: 100% !important; flex: 1 1 100% !important;
-    }
-    div[data-testid="stMetric"] {
-        background: #1a3c5e !important; border: 1px solid #0e7c5b !important;
-        border-radius: 10px !important; padding: 0.65rem 0.8rem !important; margin-bottom: 0.4rem !important;
-    }
-    div[data-testid="stMetric"] label,
-    div[data-testid="stMetric"] [data-testid="stMetricLabel"],
-    div[data-testid="stMetric"] [data-testid="stMetricLabel"] p,
-    div[data-testid="stMetric"] [data-testid="stMetricLabel"] div {
-        color: #a8d8c8 !important; font-size: 0.8rem !important; font-weight: 600 !important;
-    }
-    div[data-testid="stMetric"] [data-testid="stMetricValue"],
-    div[data-testid="stMetric"] [data-testid="stMetricValue"] div,
-    div[data-testid="stMetric"] [data-testid="stMetricValue"] p {
-        color: #ffffff !important; font-size: 1.25rem !important; font-weight: 800 !important;
-    }
-    .stButton > button {
-        width: 100% !important; min-height: 2.8rem !important;
-        font-size: 0.98rem !important; border-radius: 8px !important; margin-bottom: 0.3rem !important;
-    }
-    input, textarea,
-    div[data-baseweb="input"] input,
-    div[data-baseweb="textarea"] textarea,
-    div[data-baseweb="select"] {
-        font-size: 1rem !important; min-height: 2.6rem !important;
-        width: 100% !important; box-sizing: border-box !important;
-    }
-    div[data-testid="stTabs"] > div:first-child {
-        overflow-x: auto !important; -webkit-overflow-scrolling: touch !important;
-        white-space: nowrap !important; scrollbar-width: none !important;
-    }
-    div[data-testid="stTabs"] > div:first-child::-webkit-scrollbar { display: none !important; }
-    section[data-testid="stSidebar"] { min-width: 200px !important; max-width: 220px !important; }
-    section[data-testid="stSidebar"] label { font-size: 0.92rem !important; }
-    div[data-testid="stArrowVegaLiteChart"],
-    div[data-testid="stVegaLiteChart"],
-    .stPlotlyChart { overflow-x: auto !important; -webkit-overflow-scrolling: touch !important; }
-    div[data-testid="stDataFrame"],
-    div[data-testid="stTable"] { overflow-x: auto !important; -webkit-overflow-scrolling: touch !important; }
-    details, div[data-testid="stExpander"] { width: 100% !important; }
-    div[data-testid="stProgress"] { width: 100% !important; }
-    .landing-hero { padding: 24px 14px 20px 14px !important; border-radius: 12px !important; }
-    .landing-title   { font-size: 1.6rem !important; }
-    .landing-tagline { font-size: 0.9rem !important; }
-    .landing-desc    { font-size: 0.88rem !important; }
-    .demo-card  { padding: 12px !important; }
-    .demo-row   { font-size: 0.82rem !important; flex-wrap: wrap !important; }
-    .feature-card { margin-bottom: 0.5rem !important; }
-    hr { margin: 0.6rem 0 !important; }
-    .stAlert { font-size: 0.9rem !important; }
+/* ── INSIGHT CARDS ── */
+.insight-card {
+    border-radius: 12px; padding: 14px 16px; margin-bottom: 10px;
+    display: flex; align-items: flex-start; gap: 12px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
 }
+.insight-icon { font-size: 1.4rem; flex-shrink: 0; margin-top: 1px; }
+.insight-body { flex: 1; }
+.insight-title { font-weight: 700; font-size: 0.88rem; text-transform: uppercase;
+    letter-spacing: 0.04em; margin-bottom: 3px; opacity: 0.7; }
+.insight-text  { font-size: 0.93rem; line-height: 1.5; }
 
+/* ── WEEKLY SUMMARY CARD ── */
+.week-card {
+    background: linear-gradient(135deg,#1a3c5e 0%,#0e7c5b 100%);
+    border-radius: 14px; padding: 20px 22px; color: #fff; margin-bottom: 12px;
+}
+.week-title  { font-size: 1rem; font-weight: 700; margin-bottom: 14px; color: #a8d8c8; }
+.week-grid   { display: flex; flex-wrap: wrap; gap: 10px; }
+.week-stat   { background: rgba(255,255,255,0.12); border-radius: 10px;
+    padding: 10px 14px; flex: 1 1 120px; min-width: 110px; }
+.week-stat-label { font-size: 0.75rem; color: #a8d8c8; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.04em; }
+.week-stat-value { font-size: 1.15rem; font-weight: 800; color: #fff; margin-top: 2px; }
+
+/* ── GOAL PRESET CHIPS ── */
+.goal-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.goal-chip  {
+    background: #e8f5f0; color: #0e7c5b; border: 1.5px solid #0e7c5b;
+    border-radius: 20px; padding: 5px 14px; font-size: 0.85rem; font-weight: 600;
+    cursor: pointer; white-space: nowrap;
+}
+.goal-chip:hover { background: #0e7c5b; color: #fff; }
+.goal-chip.selected { background: #0e7c5b; color: #fff; }
+
+/* ── EXP CARDS ── */
 .exp-card {
     background: #ffffff; border: 1px solid #d0e8df;
     border-left: 4px solid #0e7c5b; border-radius: 10px;
@@ -93,30 +69,127 @@ html, body { overflow-x: hidden !important; }
 }
 .exp-card-left { flex: 1 1 60%; min-width: 0; }
 .exp-card-right { flex: 0 0 auto; text-align: right; }
-.exp-card-name {
-    font-weight: 700; color: #1a3c5e; font-size: 0.97rem;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
+.exp-card-name { font-weight: 700; color: #1a3c5e; font-size: 0.97rem;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .exp-card-bank  { font-size: 0.78rem; color: #7a9aaa; margin-top: 2px; }
 .exp-card-date  { font-size: 0.75rem; color: #95a5a6; margin-top: 2px; }
 .exp-card-amount { font-size: 1.05rem; font-weight: 800; color: #c0392b; }
 
+/* ── MOBILE ── */
 @media screen and (max-width: 640px) {
-    .exp-card { padding: 10px 11px !important; }
-    .exp-card-name { font-size: 0.92rem !important; }
-    .exp-card-amount { font-size: 1rem !important; }
+    .main .block-container { padding: 0.5rem 0.6rem 1rem 0.6rem !important; }
+    h1 { font-size: 1.3rem !important; line-height: 1.3 !important; }
+    h2 { font-size: 1.15rem !important; }
+    h3 { font-size: 1rem !important; }
+
+    /* Stack all columns on mobile */
+    div[data-testid="stHorizontalBlock"] { flex-direction: column !important; gap: 0.35rem !important; }
+    div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"],
+    div[data-testid="stHorizontalBlock"] > div[class*="stColumn"] {
+        width: 100% !important; min-width: 100% !important; flex: 1 1 100% !important;
+    }
+
+    /* Metrics — dark themed cards on mobile */
+    div[data-testid="stMetric"] {
+        background: #1a3c5e !important; border: 1px solid #0e7c5b !important;
+        border-radius: 10px !important; padding: 0.65rem 0.8rem !important; margin-bottom: 0.4rem !important;
+    }
+    div[data-testid="stMetric"] label,
+    div[data-testid="stMetric"] [data-testid="stMetricLabel"],
+    div[data-testid="stMetric"] [data-testid="stMetricLabel"] p,
+    div[data-testid="stMetric"] [data-testid="stMetricLabel"] div {
+        color: #a8d8c8 !important; font-size: 0.78rem !important; font-weight: 600 !important;
+    }
+    div[data-testid="stMetric"] [data-testid="stMetricValue"],
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] div,
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] p {
+        color: #ffffff !important; font-size: 1.2rem !important; font-weight: 800 !important;
+    }
+
+    /* Buttons — full width, tall enough for thumbs */
+    .stButton > button {
+        width: 100% !important; min-height: 3rem !important;
+        font-size: 1rem !important; border-radius: 8px !important; margin-bottom: 0.3rem !important;
+    }
+
+    /* Inputs — large enough to tap */
+    input, textarea,
+    div[data-baseweb="input"] input,
+    div[data-baseweb="textarea"] textarea,
+    div[data-baseweb="select"] {
+        font-size: 1rem !important; min-height: 2.8rem !important;
+        width: 100% !important; box-sizing: border-box !important;
+    }
+
+    /* Select dropdowns */
+    div[data-baseweb="select"] > div { min-height: 2.8rem !important; }
+
+    /* Tabs — horizontal scroll */
+    div[data-testid="stTabs"] > div:first-child {
+        overflow-x: auto !important; -webkit-overflow-scrolling: touch !important;
+        white-space: nowrap !important; scrollbar-width: none !important;
+    }
+    div[data-testid="stTabs"] > div:first-child::-webkit-scrollbar { display: none !important; }
+
+    /* Sidebar */
+    section[data-testid="stSidebar"] { min-width: 200px !important; max-width: 220px !important; }
+    section[data-testid="stSidebar"] label { font-size: 0.9rem !important; }
+
+    /* Charts */
+    div[data-testid="stArrowVegaLiteChart"],
+    div[data-testid="stVegaLiteChart"],
+    .stPlotlyChart { overflow-x: auto !important; -webkit-overflow-scrolling: touch !important; }
+
+    /* Tables */
+    div[data-testid="stDataFrame"],
+    div[data-testid="stTable"] { overflow-x: auto !important; -webkit-overflow-scrolling: touch !important; }
+
+    details, div[data-testid="stExpander"] { width: 100% !important; }
+    div[data-testid="stProgress"] { width: 100% !important; }
+
+    /* Landing page */
+    .landing-hero { padding: 20px 12px 16px 12px !important; border-radius: 12px !important; }
+    .landing-title   { font-size: 1.5rem !important; }
+    .landing-tagline { font-size: 0.88rem !important; }
+    .landing-desc    { font-size: 0.86rem !important; }
+    .demo-card  { padding: 10px !important; }
+    .demo-row   { font-size: 0.8rem !important; flex-wrap: wrap !important; }
+    .feature-card { margin-bottom: 0.5rem !important; padding: 12px 14px !important; }
+    .stAlert { font-size: 0.88rem !important; }
+
+    /* Exp cards */
+    .exp-card { padding: 10px 10px !important; }
+    .exp-card-name { font-size: 0.9rem !important; }
+    .exp-card-amount { font-size: 0.98rem !important; }
+
+    /* Weekly card */
+    .week-card { padding: 14px 14px !important; }
+    .week-stat { flex: 1 1 90px !important; padding: 8px 10px !important; }
+    .week-stat-value { font-size: 1rem !important; }
+
+    /* Insight cards */
+    .insight-card { padding: 11px 12px !important; }
+    .insight-text  { font-size: 0.88rem !important; }
+
+    /* Quick-add buttons — 2 per row on mobile */
+    div[data-testid="stHorizontalBlock"].qa-row > div { flex: 1 1 48% !important; max-width: 50% !important; }
+
+    hr { margin: 0.5rem 0 !important; }
 }
 
+/* ── TABLET ── */
 @media screen and (min-width: 641px) and (max-width: 900px) {
     .main .block-container { padding-left: 1rem !important; padding-right: 1rem !important; max-width: 100% !important; }
     div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"],
     div[data-testid="stHorizontalBlock"] > div[class*="stColumn"] { min-width: 44% !important; flex-wrap: wrap !important; }
-    .stButton > button { min-height: 2.5rem !important; font-size: 0.96rem !important; }
+    .stButton > button { min-height: 2.5rem !important; font-size: 0.95rem !important; }
+    .week-stat { flex: 1 1 130px !important; }
 }
 </style>
 """, unsafe_allow_html=True)
 
 import re
+import io
 import psycopg2
 import psycopg2.extras
 import bcrypt
@@ -283,6 +356,8 @@ if "selected_goal" not in st.session_state:
     st.session_state.selected_goal = None
 if "show_goal_contribution" not in st.session_state:
     st.session_state.show_goal_contribution = False
+if "goal_preset" not in st.session_state:
+    st.session_state.goal_preset = ""
 if "onboarding_step" not in st.session_state:
     st.session_state.onboarding_step = 1
 if "quick_add_name" not in st.session_state:
@@ -1438,6 +1513,7 @@ elif current_page == "Dashboard":
     if last_top_cat_row and top_cat_row and last_top_cat_row["name"] == top_cat_row["name"]:
         insights.append({
             "icon": "&#x1F501;",
+            "label": "Recurring Pattern",
             "color": "#7d5a00",
             "bg": "#fffbea",
             "border": "#f39c12",
@@ -1445,20 +1521,391 @@ elif current_page == "Dashboard":
                     f"This is a recurring pattern — consider budgeting specifically for it."
         })
 
+    # Add label field to earlier insights that don't have it
+    _label_map = {
+        "&#x1F4CA;": "Top Category",
+        "&#x26A0;&#xFE0F;": "Budget Alert",
+        "&#x1F6A8;": "Budget Critical",
+        "&#x1F4F1;": "Data Spending",
+        "&#x1F4A7;": "Small Purchases",
+        "&#x1F695;": "Transport",
+        "&#x1F4C5;": "Daily Average",
+    }
+    for ins in insights:
+        if "label" not in ins:
+            ins["label"] = _label_map.get(ins["icon"], "Insight")
+
     if insights:
         st.divider()
         st.subheader("Insights")
         for ins in insights:
             st.markdown(
-                f'<div style="background:{ins["bg"]};border-left:4px solid {ins["border"]};'
-                f'border-radius:9px;padding:12px 16px;margin-bottom:8px;color:{ins["color"]};font-size:0.93rem;">'
-                f'<span style="font-size:1.15rem;">{ins["icon"]}</span>&nbsp;&nbsp;{ins["text"]}'
-                f'</div>',
+                f'<div class="insight-card" style="background:{ins["bg"]};border-left:4px solid {ins["border"]};">'
+                f'<div class="insight-icon">{ins["icon"]}</div>'
+                f'<div class="insight-body">'
+                f'<div class="insight-title" style="color:{ins["border"]};">{ins["label"]}</div>'
+                f'<div class="insight-text" style="color:{ins["color"]};">{ins["text"]}</div>'
+                f'</div></div>',
                 unsafe_allow_html=True
             )
 
+    # ── WEEKLY SUMMARY ────────────────────────────────────────────────────────
     st.divider()
-    st.subheader("Income vs Expenses Over Time")
+    st.subheader("This Week at a Glance")
+
+    week_start = (datetime.now() - timedelta(days=datetime.now().weekday())).strftime("%Y-%m-%d")
+    week_end   = datetime.now().strftime("%Y-%m-%d")
+
+    with get_db() as (conn, cursor):
+        cursor.execute("""
+            SELECT COALESCE(SUM(CASE WHEN t.type='credit' THEN t.amount ELSE 0 END), 0) AS income,
+                   COALESCE(SUM(CASE WHEN t.type='debit'  THEN t.amount ELSE 0 END), 0) AS spent
+            FROM transactions t JOIN banks b ON t.bank_id = b.id
+            WHERE b.user_id = %s AND t.created_at >= %s
+        """, (user_id, week_start))
+        week_totals = cursor.fetchone()
+
+        cursor.execute("""
+            SELECT e.name, SUM(e.amount) AS total
+            FROM expenses e JOIN banks b ON e.bank_id = b.id
+            WHERE b.user_id = %s AND e.created_at >= %s
+            GROUP BY e.name ORDER BY total DESC LIMIT 1
+        """, (user_id, week_start))
+        week_top = cursor.fetchone()
+
+        cursor.execute("""
+            SELECT COUNT(*) AS n FROM expenses e JOIN banks b ON e.bank_id = b.id
+            WHERE b.user_id = %s AND e.created_at >= %s
+        """, (user_id, week_start))
+        week_txn_count = cursor.fetchone()["n"] or 0
+
+    week_income = int(week_totals["income"] or 0)
+    week_spent  = int(week_totals["spent"]  or 0)
+    week_net    = week_income - week_spent
+    net_color   = "#2ecc71" if week_net >= 0 else "#e74c3c"
+    net_label   = f"+NGN {week_net:,}" if week_net >= 0 else f"-NGN {abs(week_net):,}"
+    top_spend_html = (
+        f'<div class="week-stat"><div class="week-stat-label">Top Spend</div>'
+        f'<div class="week-stat-value" style="font-size:0.9rem;">{week_top["name"]}</div></div>'
+        if week_top else ""
+    )
+
+    st.markdown(f"""
+    <div class="week-card">
+      <div class="week-title">&#x1F4C5; {datetime.strptime(week_start, "%Y-%m-%d").strftime("%d %b")} &rarr; Today</div>
+      <div class="week-grid">
+        <div class="week-stat">
+          <div class="week-stat-label">Income</div>
+          <div class="week-stat-value">NGN {week_income:,}</div>
+        </div>
+        <div class="week-stat">
+          <div class="week-stat-label">Spent</div>
+          <div class="week-stat-value">NGN {week_spent:,}</div>
+        </div>
+        <div class="week-stat">
+          <div class="week-stat-label">Net</div>
+          <div class="week-stat-value" style="color:{net_color};">{net_label}</div>
+        </div>
+        <div class="week-stat">
+          <div class="week-stat-label">Expenses</div>
+          <div class="week-stat-value">{week_txn_count}</div>
+        </div>
+        {top_spend_html}
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── MONTHLY REPORT DOWNLOAD ───────────────────────────────────────────────
+    st.divider()
+    st.subheader("Monthly Report")
+    st.caption("Download a full CSV report of your income, expenses, and top categories for any month.")
+
+    report_months = []
+    for i in range(6):
+        d = (datetime.now().replace(day=1) - timedelta(days=i * 28)).replace(day=1)
+        report_months.append(d.strftime("%Y-%m"))
+    report_months = sorted(set(report_months), reverse=True)
+
+    selected_report_month = st.selectbox(
+        "Select month",
+        report_months,
+        format_func=lambda m: datetime.strptime(m, "%Y-%m").strftime("%B %Y"),
+        key="report_month_select"
+    )
+
+    if st.button("Generate Report", key="generate_report_btn", use_container_width=True):
+        r_start = f"{selected_report_month}-01"
+        r_end_dt = (datetime.strptime(selected_report_month, "%Y-%m").replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+        r_end_s  = r_end_dt.strftime("%Y-%m-%d")
+        month_label = datetime.strptime(selected_report_month, "%Y-%m").strftime("%B %Y")
+
+        with get_db() as (conn, cursor):
+            cursor.execute("""
+                SELECT e.created_at AS date, e.name AS category,
+                       b.bank_name AS bank, e.amount
+                FROM expenses e JOIN banks b ON e.bank_id = b.id
+                WHERE b.user_id = %s AND e.created_at >= %s AND e.created_at <= %s
+                ORDER BY e.created_at
+            """, (user_id, r_start, r_end_s))
+            exp_rows = cursor.fetchall()
+
+            cursor.execute("""
+                SELECT t.created_at AS date,
+                       CASE WHEN t.type='credit' THEN 'Income' ELSE 'Expense' END AS txn_type,
+                       t.description, b.bank_name AS bank, t.amount
+                FROM transactions t JOIN banks b ON t.bank_id = b.id
+                WHERE b.user_id = %s AND t.created_at >= %s AND t.created_at <= %s
+                ORDER BY t.created_at
+            """, (user_id, r_start, r_end_s))
+            txn_rows = cursor.fetchall()
+
+            cursor.execute("""
+                SELECT COALESCE(SUM(CASE WHEN t.type='credit' THEN t.amount ELSE 0 END),0) AS total_income,
+                       COALESCE(SUM(CASE WHEN t.type='debit'  THEN t.amount ELSE 0 END),0) AS total_spent
+                FROM transactions t JOIN banks b ON t.bank_id = b.id
+                WHERE b.user_id = %s AND t.created_at >= %s AND t.created_at <= %s
+            """, (user_id, r_start, r_end_s))
+            summary_row = cursor.fetchone()
+
+        total_income = int(summary_row["total_income"] or 0)
+        total_spent  = int(summary_row["total_spent"]  or 0)
+        net_saved    = total_income - total_spent
+
+        output = io.StringIO()
+        output.write(f"Budget Right - Monthly Report: {month_label}\n")
+        output.write(f"Generated: {datetime.now().strftime('%d %b %Y %H:%M')}\n\n")
+        output.write("SUMMARY\n")
+        output.write(f"Total Income,NGN {total_income:,}\n")
+        output.write(f"Total Spent,NGN {total_spent:,}\n")
+        output.write(f"Net Saved,NGN {net_saved:,}\n\n")
+        output.write("EXPENSES\n")
+        output.write("Date,Category,Bank,Amount (NGN)\n")
+        for r in exp_rows:
+            output.write(f"{r['date']},{r['category']},{r['bank']},{r['amount']}\n")
+        output.write("\nALL TRANSACTIONS\n")
+        output.write("Date,Type,Description,Bank,Amount (NGN)\n")
+        for r in txn_rows:
+            desc = (r["description"] or "").replace(",", " ")
+            output.write(f"{r['date']},{r['txn_type']},{desc},{r['bank']},{r['amount']}\n")
+        if exp_rows:
+            output.write("\nTOP CATEGORIES\n")
+            output.write("Category,Total Spent (NGN)\n")
+            df_cats = pd.DataFrame([(r["category"], r["amount"]) for r in exp_rows], columns=["Category","Amount"])
+            df_cats = df_cats.groupby("Category")["Amount"].sum().reset_index().sort_values("Amount", ascending=False)
+            for _, row in df_cats.iterrows():
+                output.write(f"{row['Category']},{int(row['Amount'])}\n")
+
+        csv_bytes = output.getvalue().encode("utf-8")
+        st.download_button(
+            label=f"Download {month_label} Report (CSV)",
+            data=csv_bytes,
+            file_name=f"BudgetRight_{selected_report_month}.csv",
+            mime="text/csv",
+            key="download_report_btn",
+            use_container_width=True
+        )
+        st.success(
+            f"{month_label}: NGN {total_income:,} income, "
+            f"NGN {total_spent:,} spent, NGN {net_saved:,} saved."
+        )
+
+    # ── WEEKLY SUMMARY ───────────────────────────────────────────────────────
+    week_start_dt = datetime.now() - timedelta(days=datetime.now().weekday())
+    week_start    = week_start_dt.strftime("%Y-%m-%d")
+    prev_week_start = (week_start_dt - timedelta(days=7)).strftime("%Y-%m-%d")
+    prev_week_end   = (week_start_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    with get_db() as (conn, cursor):
+        cursor.execute("""
+            SELECT COALESCE(SUM(t.amount),0) AS n FROM transactions t
+            JOIN banks b ON t.bank_id=b.id
+            WHERE b.user_id=%s AND t.type='debit' AND t.created_at>=%s
+        """, (user_id, week_start))
+        week_spent = int(cursor.fetchone()["n"] or 0)
+
+        cursor.execute("""
+            SELECT COALESCE(SUM(t.amount),0) AS n FROM transactions t
+            JOIN banks b ON t.bank_id=b.id
+            WHERE b.user_id=%s AND t.type='credit' AND t.created_at>=%s
+        """, (user_id, week_start))
+        week_income = int(cursor.fetchone()["n"] or 0)
+
+        cursor.execute("""
+            SELECT COALESCE(SUM(t.amount),0) AS n FROM transactions t
+            JOIN banks b ON t.bank_id=b.id
+            WHERE b.user_id=%s AND t.type='debit'
+              AND t.created_at>=%s AND t.created_at<=%s
+        """, (user_id, prev_week_start, prev_week_end))
+        prev_week_spent = int(cursor.fetchone()["n"] or 0)
+
+        cursor.execute("""
+            SELECT COUNT(*) AS n FROM expenses e
+            JOIN banks b ON e.bank_id=b.id
+            WHERE b.user_id=%s AND e.created_at>=%s
+        """, (user_id, week_start))
+        week_tx_count = int(cursor.fetchone()["n"] or 0)
+
+        cursor.execute("""
+            SELECT e.name, SUM(e.amount) AS total FROM expenses e
+            JOIN banks b ON e.bank_id=b.id
+            WHERE b.user_id=%s AND e.created_at>=%s
+            GROUP BY e.name ORDER BY total DESC LIMIT 1
+        """, (user_id, week_start))
+        week_top = cursor.fetchone()
+
+    week_net    = week_income - week_spent
+    spend_diff  = week_spent - prev_week_spent
+    spend_arrow = "&#x1F53C;" if spend_diff > 0 else ("&#x1F53D;" if spend_diff < 0 else "&#x27A1;")
+    spend_trend = (f"{spend_arrow} NGN {abs(spend_diff):,} {'more' if spend_diff > 0 else 'less'} than last week"
+                   if prev_week_spent > 0 else "First week of data")
+
+    st.divider()
+    st.subheader("This Week at a Glance")
+    st.markdown(f"""
+    <div class="week-card">
+      <div class="week-title">&#x1F4C5; Week of {week_start_dt.strftime("%d %b %Y")}</div>
+      <div class="week-grid">
+        <div class="week-stat">
+          <div class="week-stat-label">Spent</div>
+          <div class="week-stat-value">NGN {week_spent:,}</div>
+        </div>
+        <div class="week-stat">
+          <div class="week-stat-label">Income</div>
+          <div class="week-stat-value">NGN {week_income:,}</div>
+        </div>
+        <div class="week-stat">
+          <div class="week-stat-label">Net</div>
+          <div class="week-stat-value" style="color:{'#a8d8c8' if week_net >= 0 else '#f1948a'};">
+            {"+" if week_net >= 0 else ""}NGN {week_net:,}
+          </div>
+        </div>
+        <div class="week-stat">
+          <div class="week-stat-label">Transactions</div>
+          <div class="week-stat-value">{week_tx_count}</div>
+        </div>
+        <div class="week-stat">
+          <div class="week-stat-label">Top Category</div>
+          <div class="week-stat-value" style="font-size:0.9rem;">
+            {week_top['name'] if week_top else 'None yet'}
+          </div>
+        </div>
+        <div class="week-stat">
+          <div class="week-stat-label">vs Last Week</div>
+          <div class="week-stat-value" style="font-size:0.82rem;">{spend_trend}</div>
+        </div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── MONTHLY REPORT DOWNLOAD ──────────────────────────────────────────────
+    st.divider()
+    st.subheader("Monthly Report")
+    report_months = []
+    for i in range(6):
+        d = (datetime.now().replace(day=1) - timedelta(days=1) * (i * 30)).replace(day=1)
+        report_months.append(d.strftime("%Y-%m"))
+    report_months = sorted(set(report_months), reverse=True)
+
+    sel_month = st.selectbox(
+        "Choose month to download",
+        report_months,
+        format_func=lambda m: datetime.strptime(m, "%Y-%m").strftime("%B %Y"),
+        key="report_month_select"
+    )
+
+    if st.button("Generate & Download Report", key="gen_report_btn"):
+        rm_start = f"{sel_month}-01"
+        rm_end   = (datetime.strptime(sel_month, "%Y-%m").replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+        rm_end_s = rm_end.strftime("%Y-%m-%d")
+
+        with get_db() as (conn, cursor):
+            # Income
+            cursor.execute("""
+                SELECT t.created_at AS Date, t.description AS Description, t.amount AS Amount
+                FROM transactions t JOIN banks b ON t.bank_id=b.id
+                WHERE b.user_id=%s AND t.type='credit'
+                  AND t.created_at>=%s AND t.created_at<=%s
+                ORDER BY t.created_at
+            """, (user_id, rm_start, rm_end_s))
+            income_rows = cursor.fetchall()
+
+            # Expenses
+            cursor.execute("""
+                SELECT e.created_at AS Date, e.name AS Category, e.amount AS Amount,
+                       b.bank_name AS Bank
+                FROM expenses e JOIN banks b ON e.bank_id=b.id
+                WHERE e.user_id=%s AND e.created_at>=%s AND e.created_at<=%s
+                ORDER BY e.created_at
+            """, (user_id, rm_start, rm_end_s))
+            expense_rows = cursor.fetchall()
+
+            # Bank balances
+            cursor.execute("""
+                SELECT bank_name AS Bank, account_number AS "Account (last 4)",
+                       balance AS "Balance (NGN)"
+                FROM banks WHERE user_id=%s
+            """, (user_id,))
+            bank_rows = cursor.fetchall()
+
+            # Category summary
+            cursor.execute("""
+                SELECT e.name AS Category, SUM(e.amount) AS "Total (NGN)",
+                       COUNT(*) AS Transactions
+                FROM expenses e JOIN banks b ON e.bank_id=b.id
+                WHERE e.user_id=%s AND e.created_at>=%s AND e.created_at<=%s
+                GROUP BY e.name ORDER BY "Total (NGN)" DESC
+            """, (user_id, rm_start, rm_end_s))
+            summary_rows = cursor.fetchall()
+
+        month_label = datetime.strptime(sel_month, "%Y-%m").strftime("%B %Y")
+        total_inc  = sum(r["amount"] for r in income_rows)
+        total_exp  = sum(r["amount"] for r in expense_rows)
+
+        df_income   = pd.DataFrame([dict(r) for r in income_rows])  if income_rows  else pd.DataFrame(columns=["Date","Description","Amount"])
+        df_expense  = pd.DataFrame([dict(r) for r in expense_rows]) if expense_rows else pd.DataFrame(columns=["Date","Category","Amount","Bank"])
+        df_banks    = pd.DataFrame([dict(r) for r in bank_rows])    if bank_rows    else pd.DataFrame()
+        df_summary  = pd.DataFrame([dict(r) for r in summary_rows]) if summary_rows else pd.DataFrame(columns=["Category","Total (NGN)","Transactions"])
+
+        # Build CSV as a multi-section text report
+        import io
+        buf = io.StringIO()
+        buf.write(f"BUDGET RIGHT — MONTHLY REPORT\n")
+        buf.write(f"Month: {month_label}\n")
+        buf.write(f"Generated: {datetime.now().strftime('%d %b %Y %H:%M')}\n")
+        buf.write(f"\n{'='*50}\n")
+        buf.write(f"SUMMARY\n{'='*50}\n")
+        buf.write(f"Total Income:   NGN {total_inc:,}\n")
+        buf.write(f"Total Expenses: NGN {total_exp:,}\n")
+        buf.write(f"Net Savings:    NGN {total_inc - total_exp:,}\n")
+        if spending_limit > 0:
+            pct_used = (total_exp / spending_limit * 100) if spending_limit else 0
+            buf.write(f"Budget Used:    {pct_used:.1f}% of NGN {spending_limit:,}\n")
+
+        buf.write(f"\n{'='*50}\n")
+        buf.write(f"BANK BALANCES\n{'='*50}\n")
+        buf.write(df_banks.to_csv(index=False))
+
+        buf.write(f"\n{'='*50}\n")
+        buf.write(f"EXPENSE SUMMARY BY CATEGORY\n{'='*50}\n")
+        buf.write(df_summary.to_csv(index=False))
+
+        buf.write(f"\n{'='*50}\n")
+        buf.write(f"ALL EXPENSES ({len(df_expense)} transactions)\n{'='*50}\n")
+        buf.write(df_expense.to_csv(index=False))
+
+        buf.write(f"\n{'='*50}\n")
+        buf.write(f"ALL INCOME ({len(df_income)} entries)\n{'='*50}\n")
+        buf.write(df_income.to_csv(index=False))
+
+        csv_bytes = buf.getvalue().encode("utf-8")
+        st.download_button(
+            label=f"Download {month_label} Report (CSV)",
+            data=csv_bytes,
+            file_name=f"budget_right_{sel_month}.csv",
+            mime="text/csv",
+            key="download_report_btn"
+        )
+        st.success(f"Report ready — {len(df_expense)} expenses, {len(df_income)} income entries for {month_label}.")
     period_map = {
         "Last 30 Days": timedelta(days=30), "Last 3 Months": timedelta(days=90),
         "Last 6 Months": timedelta(days=180), "Last Year": timedelta(days=365), "All Time": None,
@@ -2001,11 +2448,53 @@ elif current_page == "Savings Goals":
         st.stop()
 
     # ── Create New Goal form (always at top so it's always visible) ──
+    GOAL_PRESETS = [
+        ("Wedding",          "&#x1F492;"),
+        ("Rent",             "&#x1F3E0;"),
+        ("House Project",    "&#x1F3D7;"),
+        ("Emergency Fund",   "&#x1F6A8;"),
+        ("School Fees",      "&#x1F393;"),
+        ("Business Restock", "&#x1F4E6;"),
+        ("New Phone",        "&#x1F4F1;"),
+        ("Car/Okada",        "&#x1F697;"),
+        ("Travel",           "&#x2708;"),
+        ("Medical",          "&#x1F48A;"),
+        ("Bride Price",      "&#x1F48D;"),
+        ("Generator",        "&#x1F50B;"),
+        ("Tithe/Offering",   "&#x26EA;"),
+        ("Custom",           "&#x270F;"),
+    ]
+
     with st.expander("Create New Goal", expanded=False):
-        with st.form("create_goal_form"):
-            goal_name   = st.text_input("Goal Name", key="goal_name")
-            goal_target = st.number_input("Target Amount (NGN)", min_value=1, key="goal_target")
-            submitted   = st.form_submit_button("Create Goal")
+        st.caption("Pick a preset or type your own goal name below.")
+
+        # Preset chips rendered as Streamlit buttons in a grid
+        preset_cols = st.columns(4)
+        for idx, (preset_name, preset_icon) in enumerate(GOAL_PRESETS):
+            with preset_cols[idx % 4]:
+                is_selected = st.session_state.get("goal_preset") == preset_name
+                btn_type = "primary" if is_selected else "secondary"
+                if st.button(
+                    f"{preset_icon} {preset_name}",
+                    key=f"gp_{preset_name}",
+                    use_container_width=True,
+                    type=btn_type,
+                ):
+                    st.session_state.goal_preset = preset_name
+                    st.rerun()
+
+        selected_preset = st.session_state.get("goal_preset", "")
+        # Dynamic form key so preset pre-fills cleanly
+        goal_form_key = f"create_goal_form_{selected_preset or 'custom'}"
+
+        with st.form(goal_form_key):
+            goal_name   = st.text_input(
+                "Goal Name",
+                value=selected_preset if selected_preset and selected_preset != "Custom" else ""
+            )
+            goal_target = st.number_input("Target Amount (NGN)", min_value=1, step=5000, value=50000)
+            submitted   = st.form_submit_button("Create Goal", use_container_width=True)
+
         if submitted:
             if goal_name and goal_target > 0:
                 with get_db() as (conn, cursor):
@@ -2015,6 +2504,7 @@ elif current_page == "Savings Goals":
                         (user_id, goal_name, int(goal_target), datetime.now().strftime("%Y-%m-%d"))
                     )
                 st.success(f"Goal '{goal_name}' created!")
+                st.session_state.goal_preset = ""
                 st.rerun()
             else:
                 st.warning("Please enter a name and a target amount greater than 0.")
