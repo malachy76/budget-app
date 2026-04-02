@@ -199,6 +199,7 @@ import secrets
 from contextlib import contextmanager
 from email.message import EmailMessage
 from datetime import datetime, timedelta
+import io
 import pandas as pd
 import plotly.express as px
 
@@ -358,10 +359,14 @@ if "show_goal_contribution" not in st.session_state:
     st.session_state.show_goal_contribution = False
 if "goal_preset" not in st.session_state:
     st.session_state.goal_preset = ""
+if "goal_preset_name" not in st.session_state:
+    st.session_state.goal_preset_name = ""
 if "onboarding_step" not in st.session_state:
     st.session_state.onboarding_step = 1
 if "quick_add_name" not in st.session_state:
     st.session_state.quick_add_name = ""
+if "quick_add_amt" not in st.session_state:
+    st.session_state.quick_add_amt = 0
 
 # ---------------- AUTH FUNCTIONS ----------------
 def hash_password(password):
@@ -1709,203 +1714,8 @@ elif current_page == "Dashboard":
             f"NGN {total_spent:,} spent, NGN {net_saved:,} saved."
         )
 
-    # ── WEEKLY SUMMARY ───────────────────────────────────────────────────────
-    week_start_dt = datetime.now() - timedelta(days=datetime.now().weekday())
-    week_start    = week_start_dt.strftime("%Y-%m-%d")
-    prev_week_start = (week_start_dt - timedelta(days=7)).strftime("%Y-%m-%d")
-    prev_week_end   = (week_start_dt - timedelta(days=1)).strftime("%Y-%m-%d")
-
-    with get_db() as (conn, cursor):
-        cursor.execute("""
-            SELECT COALESCE(SUM(t.amount),0) AS n FROM transactions t
-            JOIN banks b ON t.bank_id=b.id
-            WHERE b.user_id=%s AND t.type='debit' AND t.created_at>=%s
-        """, (user_id, week_start))
-        week_spent = int(cursor.fetchone()["n"] or 0)
-
-        cursor.execute("""
-            SELECT COALESCE(SUM(t.amount),0) AS n FROM transactions t
-            JOIN banks b ON t.bank_id=b.id
-            WHERE b.user_id=%s AND t.type='credit' AND t.created_at>=%s
-        """, (user_id, week_start))
-        week_income = int(cursor.fetchone()["n"] or 0)
-
-        cursor.execute("""
-            SELECT COALESCE(SUM(t.amount),0) AS n FROM transactions t
-            JOIN banks b ON t.bank_id=b.id
-            WHERE b.user_id=%s AND t.type='debit'
-              AND t.created_at>=%s AND t.created_at<=%s
-        """, (user_id, prev_week_start, prev_week_end))
-        prev_week_spent = int(cursor.fetchone()["n"] or 0)
-
-        cursor.execute("""
-            SELECT COUNT(*) AS n FROM expenses e
-            JOIN banks b ON e.bank_id=b.id
-            WHERE b.user_id=%s AND e.created_at>=%s
-        """, (user_id, week_start))
-        week_tx_count = int(cursor.fetchone()["n"] or 0)
-
-        cursor.execute("""
-            SELECT e.name, SUM(e.amount) AS total FROM expenses e
-            JOIN banks b ON e.bank_id=b.id
-            WHERE b.user_id=%s AND e.created_at>=%s
-            GROUP BY e.name ORDER BY total DESC LIMIT 1
-        """, (user_id, week_start))
-        week_top = cursor.fetchone()
-
-    week_net    = week_income - week_spent
-    spend_diff  = week_spent - prev_week_spent
-    spend_arrow = "&#x1F53C;" if spend_diff > 0 else ("&#x1F53D;" if spend_diff < 0 else "&#x27A1;")
-    spend_trend = (f"{spend_arrow} NGN {abs(spend_diff):,} {'more' if spend_diff > 0 else 'less'} than last week"
-                   if prev_week_spent > 0 else "First week of data")
-
     st.divider()
-    st.subheader("This Week at a Glance")
-    st.markdown(f"""
-    <div class="week-card">
-      <div class="week-title">&#x1F4C5; Week of {week_start_dt.strftime("%d %b %Y")}</div>
-      <div class="week-grid">
-        <div class="week-stat">
-          <div class="week-stat-label">Spent</div>
-          <div class="week-stat-value">NGN {week_spent:,}</div>
-        </div>
-        <div class="week-stat">
-          <div class="week-stat-label">Income</div>
-          <div class="week-stat-value">NGN {week_income:,}</div>
-        </div>
-        <div class="week-stat">
-          <div class="week-stat-label">Net</div>
-          <div class="week-stat-value" style="color:{'#a8d8c8' if week_net >= 0 else '#f1948a'};">
-            {"+" if week_net >= 0 else ""}NGN {week_net:,}
-          </div>
-        </div>
-        <div class="week-stat">
-          <div class="week-stat-label">Transactions</div>
-          <div class="week-stat-value">{week_tx_count}</div>
-        </div>
-        <div class="week-stat">
-          <div class="week-stat-label">Top Category</div>
-          <div class="week-stat-value" style="font-size:0.9rem;">
-            {week_top['name'] if week_top else 'None yet'}
-          </div>
-        </div>
-        <div class="week-stat">
-          <div class="week-stat-label">vs Last Week</div>
-          <div class="week-stat-value" style="font-size:0.82rem;">{spend_trend}</div>
-        </div>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── MONTHLY REPORT DOWNLOAD ──────────────────────────────────────────────
-    st.divider()
-    st.subheader("Monthly Report")
-    report_months = []
-    for i in range(6):
-        d = (datetime.now().replace(day=1) - timedelta(days=1) * (i * 30)).replace(day=1)
-        report_months.append(d.strftime("%Y-%m"))
-    report_months = sorted(set(report_months), reverse=True)
-
-    sel_month = st.selectbox(
-        "Choose month to download",
-        report_months,
-        format_func=lambda m: datetime.strptime(m, "%Y-%m").strftime("%B %Y"),
-        key="report_month_select"
-    )
-
-    if st.button("Generate & Download Report", key="gen_report_btn"):
-        rm_start = f"{sel_month}-01"
-        rm_end   = (datetime.strptime(sel_month, "%Y-%m").replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
-        rm_end_s = rm_end.strftime("%Y-%m-%d")
-
-        with get_db() as (conn, cursor):
-            # Income
-            cursor.execute("""
-                SELECT t.created_at AS Date, t.description AS Description, t.amount AS Amount
-                FROM transactions t JOIN banks b ON t.bank_id=b.id
-                WHERE b.user_id=%s AND t.type='credit'
-                  AND t.created_at>=%s AND t.created_at<=%s
-                ORDER BY t.created_at
-            """, (user_id, rm_start, rm_end_s))
-            income_rows = cursor.fetchall()
-
-            # Expenses
-            cursor.execute("""
-                SELECT e.created_at AS Date, e.name AS Category, e.amount AS Amount,
-                       b.bank_name AS Bank
-                FROM expenses e JOIN banks b ON e.bank_id=b.id
-                WHERE e.user_id=%s AND e.created_at>=%s AND e.created_at<=%s
-                ORDER BY e.created_at
-            """, (user_id, rm_start, rm_end_s))
-            expense_rows = cursor.fetchall()
-
-            # Bank balances
-            cursor.execute("""
-                SELECT bank_name AS Bank, account_number AS "Account (last 4)",
-                       balance AS "Balance (NGN)"
-                FROM banks WHERE user_id=%s
-            """, (user_id,))
-            bank_rows = cursor.fetchall()
-
-            # Category summary
-            cursor.execute("""
-                SELECT e.name AS Category, SUM(e.amount) AS "Total (NGN)",
-                       COUNT(*) AS Transactions
-                FROM expenses e JOIN banks b ON e.bank_id=b.id
-                WHERE e.user_id=%s AND e.created_at>=%s AND e.created_at<=%s
-                GROUP BY e.name ORDER BY "Total (NGN)" DESC
-            """, (user_id, rm_start, rm_end_s))
-            summary_rows = cursor.fetchall()
-
-        month_label = datetime.strptime(sel_month, "%Y-%m").strftime("%B %Y")
-        total_inc  = sum(r["amount"] for r in income_rows)
-        total_exp  = sum(r["amount"] for r in expense_rows)
-
-        df_income   = pd.DataFrame([dict(r) for r in income_rows])  if income_rows  else pd.DataFrame(columns=["Date","Description","Amount"])
-        df_expense  = pd.DataFrame([dict(r) for r in expense_rows]) if expense_rows else pd.DataFrame(columns=["Date","Category","Amount","Bank"])
-        df_banks    = pd.DataFrame([dict(r) for r in bank_rows])    if bank_rows    else pd.DataFrame()
-        df_summary  = pd.DataFrame([dict(r) for r in summary_rows]) if summary_rows else pd.DataFrame(columns=["Category","Total (NGN)","Transactions"])
-
-        # Build CSV as a multi-section text report
-        import io
-        buf = io.StringIO()
-        buf.write(f"BUDGET RIGHT — MONTHLY REPORT\n")
-        buf.write(f"Month: {month_label}\n")
-        buf.write(f"Generated: {datetime.now().strftime('%d %b %Y %H:%M')}\n")
-        buf.write(f"\n{'='*50}\n")
-        buf.write(f"SUMMARY\n{'='*50}\n")
-        buf.write(f"Total Income:   NGN {total_inc:,}\n")
-        buf.write(f"Total Expenses: NGN {total_exp:,}\n")
-        buf.write(f"Net Savings:    NGN {total_inc - total_exp:,}\n")
-        if spending_limit > 0:
-            pct_used = (total_exp / spending_limit * 100) if spending_limit else 0
-            buf.write(f"Budget Used:    {pct_used:.1f}% of NGN {spending_limit:,}\n")
-
-        buf.write(f"\n{'='*50}\n")
-        buf.write(f"BANK BALANCES\n{'='*50}\n")
-        buf.write(df_banks.to_csv(index=False))
-
-        buf.write(f"\n{'='*50}\n")
-        buf.write(f"EXPENSE SUMMARY BY CATEGORY\n{'='*50}\n")
-        buf.write(df_summary.to_csv(index=False))
-
-        buf.write(f"\n{'='*50}\n")
-        buf.write(f"ALL EXPENSES ({len(df_expense)} transactions)\n{'='*50}\n")
-        buf.write(df_expense.to_csv(index=False))
-
-        buf.write(f"\n{'='*50}\n")
-        buf.write(f"ALL INCOME ({len(df_income)} entries)\n{'='*50}\n")
-        buf.write(df_income.to_csv(index=False))
-
-        csv_bytes = buf.getvalue().encode("utf-8")
-        st.download_button(
-            label=f"Download {month_label} Report (CSV)",
-            data=csv_bytes,
-            file_name=f"budget_right_{sel_month}.csv",
-            mime="text/csv",
-            key="download_report_btn"
-        )
-        st.success(f"Report ready — {len(df_expense)} expenses, {len(df_income)} income entries for {month_label}.")
+    st.subheader("Income vs Expenses Over Time")
     period_map = {
         "Last 30 Days": timedelta(days=30), "Last 3 Months": timedelta(days=90),
         "Last 6 Months": timedelta(days=180), "Last Year": timedelta(days=365), "All Time": None,
@@ -2074,11 +1884,11 @@ elif current_page == "Income":
                 </div>
                 """, unsafe_allow_html=True)
             with edit_col:
-                if st.button("Edit", key=f"edit_inc_{inc['id']}", help="Edit"):
+                if st.button("✏️", key=f"edit_inc_{inc['id']}", help="Edit income"):
                     st.session_state.edit_income_id = inc["id"]
                     st.rerun()
             with del_col:
-                if st.button("Del", key=f"delete_inc_{inc['id']}", help="Delete"):
+                if st.button("🗑️", key=f"delete_inc_{inc['id']}", help="Delete income"):
                     with get_db() as (conn, cursor):
                         cursor.execute("UPDATE banks SET balance = balance - %s WHERE id=%s", (inc["amount"], inc["bank_id"]))
                         cursor.execute("DELETE FROM transactions WHERE id=%s", (inc["id"],))
@@ -2220,14 +2030,27 @@ elif current_page == "Expenses":
     if prefill_name:
         st.info(f"Category selected: **{prefill_name}** — enter the amount and click Add Expense.")
 
-    # Use a dynamic form key tied to the selected category.
-    # Every time a new quick-add button is clicked the key changes,
-    # which forces Streamlit to destroy and recreate the form widgets
-    # from scratch — making value= reliably take effect.
+    # All category names for the searchable dropdown
+    ALL_EXPENSE_CATEGORIES = [cat for cat, _ in QUICK_CATEGORIES] + ["-- Type custom name --"]
+
+    # Dynamic form key so quick-add pre-fills cleanly
     form_key = f"add_expense_form_{prefill_name or 'custom'}"
 
+    # Determine default index for selectbox
+    try:
+        default_cat_idx = ALL_EXPENSE_CATEGORIES.index(prefill_name) if prefill_name in ALL_EXPENSE_CATEGORIES else len(ALL_EXPENSE_CATEGORIES) - 1
+    except ValueError:
+        default_cat_idx = len(ALL_EXPENSE_CATEGORIES) - 1
+
     with st.form(form_key, clear_on_submit=True):
-        expense_name   = st.text_input("Expense Name", value=prefill_name)
+        selected_category = st.selectbox(
+            "Expense Category (search or scroll)",
+            ALL_EXPENSE_CATEGORIES,
+            index=default_cat_idx,
+        )
+        # Show custom text input only when "-- Type custom name --" is selected
+        custom_name   = st.text_input("Custom expense name (if not in list above)", value="" if selected_category != "-- Type custom name --" else prefill_name)
+        expense_name  = custom_name.strip() if selected_category == "-- Type custom name --" else selected_category
         expense_amount = st.number_input("Amount (NGN)", min_value=1, step=100, value=1)
         selected_bank  = st.selectbox("Pay From Bank", list(bank_map.keys()))
         submitted_exp  = st.form_submit_button("Add Expense", use_container_width=True)
@@ -2269,11 +2092,11 @@ elif current_page == "Expenses":
                 </div>
                 """, unsafe_allow_html=True)
             with edit_col:
-                if st.button("Edit", key=f"edit_exp_{exp['id']}", help="Edit"):
+                if st.button("✏️", key=f"edit_exp_{exp['id']}", help="Edit expense"):
                     st.session_state.edit_exp_id = exp["id"]
                     st.rerun()
             with del_col:
-                if st.button("Del", key=f"delete_exp_{exp['id']}", help="Delete"):
+                if st.button("🗑️", key=f"delete_exp_{exp['id']}", help="Delete expense"):
                     with get_db() as (conn, cursor):
                         cursor.execute("UPDATE banks SET balance = balance + %s WHERE id=%s", (exp["amount"], exp["bank_id"]))
                         if exp["tx_id"]:
@@ -2341,10 +2164,10 @@ elif current_page == "Banks":
             with col1:
                 st.markdown(f"**{bank['bank_name']}** (****{bank['account_number']}) — NGN {bank['balance']:,.0f}")
             with col2:
-                if st.button("Edit", key=f"edit_bank_{bank['id']}"):
+                if st.button("✏️", key=f"edit_bank_{bank['id']}", help="Edit bank"):
                     st.session_state.edit_bank_id = bank["id"]
             with col3:
-                if st.button("Delete", key=f"delete_bank_{bank['id']}"):
+                if st.button("🗑️", key=f"delete_bank_{bank['id']}", help="Delete bank"):
                     with get_db() as (conn, cursor):
                         cursor.execute("UPDATE expenses SET tx_id=NULL WHERE bank_id=%s", (bank["id"],))
                         cursor.execute("DELETE FROM expenses WHERE bank_id=%s", (bank["id"],))
@@ -2487,11 +2310,24 @@ elif current_page == "Savings Goals":
         # Dynamic form key so preset pre-fills cleanly
         goal_form_key = f"create_goal_form_{selected_preset or 'custom'}"
 
+        ALL_GOAL_NAMES = [name for name, _ in GOAL_PRESETS if name != "Custom"] + ["-- Type custom name --"]
+
+        try:
+            default_goal_idx = ALL_GOAL_NAMES.index(selected_preset) if selected_preset and selected_preset in ALL_GOAL_NAMES else len(ALL_GOAL_NAMES) - 1
+        except ValueError:
+            default_goal_idx = len(ALL_GOAL_NAMES) - 1
+
         with st.form(goal_form_key):
-            goal_name   = st.text_input(
-                "Goal Name",
-                value=selected_preset if selected_preset and selected_preset != "Custom" else ""
+            selected_goal_label = st.selectbox(
+                "Goal Name (search or scroll)",
+                ALL_GOAL_NAMES,
+                index=default_goal_idx,
             )
+            custom_goal_name = st.text_input(
+                "Custom goal name (if not in list above)",
+                value="" if selected_goal_label != "-- Type custom name --" else ""
+            )
+            goal_name   = custom_goal_name.strip() if selected_goal_label == "-- Type custom name --" else selected_goal_label
             goal_target = st.number_input("Target Amount (NGN)", min_value=1, step=5000, value=50000)
             submitted   = st.form_submit_button("Create Goal", use_container_width=True)
 
@@ -2630,7 +2466,7 @@ elif current_page == "Savings Goals":
                 else:
                     st.markdown("Completed")
             with col3:
-                if st.button("Delete", key=f"delete_goal_{goal['id']}"):
+                if st.button("🗑️", key=f"delete_goal_{goal['id']}", help="Delete goal"):
                     with get_db() as (conn, cursor):
                         cursor.execute("DELETE FROM goals WHERE id=%s AND user_id=%s", (goal["id"], user_id))
                     st.success(f"'{goal['name']}' deleted.")
