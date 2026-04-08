@@ -252,6 +252,8 @@ def get_db():
 
 def create_tables():
     with get_db() as (conn, cursor):
+
+        # ── users ────────────────────────────────────────────────────────────
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
@@ -264,14 +266,17 @@ def create_tables():
             verification_code TEXT,
             role TEXT DEFAULT 'user',
             monthly_spending_limit INTEGER DEFAULT 0,
-            created_at TEXT,
-            last_login TEXT
+            onboarding_complete INTEGER DEFAULT 0,
+            created_at DATE,
+            last_login DATE
         )
         """)
+
+        # ── banks ─────────────────────────────────────────────────────────────
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS banks (
             id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id),
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             bank_name TEXT NOT NULL,
             account_name TEXT NOT NULL,
             account_number TEXT NOT NULL,
@@ -279,58 +284,174 @@ def create_tables():
             min_balance_alert INTEGER DEFAULT 0
         )
         """)
+
+        # ── transactions ──────────────────────────────────────────────────────
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
             id SERIAL PRIMARY KEY,
-            bank_id INTEGER NOT NULL REFERENCES banks(id),
+            bank_id INTEGER NOT NULL REFERENCES banks(id) ON DELETE CASCADE,
             type TEXT CHECK(type IN ('credit','debit')),
             amount INTEGER NOT NULL,
             description TEXT,
-            created_at TEXT
+            created_at DATE DEFAULT CURRENT_DATE
         )
         """)
+
+        # ── expenses ──────────────────────────────────────────────────────────
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS expenses (
             id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id),
-            bank_id INTEGER REFERENCES banks(id),
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            bank_id INTEGER REFERENCES banks(id) ON DELETE SET NULL,
             name TEXT NOT NULL,
+            category TEXT,
             amount INTEGER NOT NULL,
-            created_at TEXT,
-            tx_id INTEGER REFERENCES transactions(id)
+            created_at DATE DEFAULT CURRENT_DATE,
+            tx_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL
         )
         """)
+
+        # ── goals ─────────────────────────────────────────────────────────────
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS goals (
             id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id),
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             name TEXT NOT NULL,
             target_amount INTEGER NOT NULL,
             current_amount INTEGER DEFAULT 0,
             status TEXT DEFAULT 'active',
-            created_at TEXT
+            created_at DATE DEFAULT CURRENT_DATE
         )
         """)
+
+        # ── goal_contributions ────────────────────────────────────────────────
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS goal_contributions (
+            id SERIAL PRIMARY KEY,
+            goal_id INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            bank_id INTEGER NOT NULL REFERENCES banks(id) ON DELETE CASCADE,
+            amount INTEGER NOT NULL,
+            contributed_at DATE DEFAULT CURRENT_DATE
+        )
+        """)
+
+        # ── analytics_logins ──────────────────────────────────────────────────
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS analytics_logins (
             id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id),
-            login_date TEXT NOT NULL
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            login_date DATE NOT NULL DEFAULT CURRENT_DATE
         )
         """)
+
+        # ── session_tokens ────────────────────────────────────────────────────
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS session_tokens (
             id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id),
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             token TEXT UNIQUE NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TIMESTAMP NOT NULL DEFAULT NOW()
         )
         """)
-        # Safely add onboarding_complete to existing deployments
+
+        # ── Migrate existing TEXT columns to proper date types ────────────────
+        # These are safe to run repeatedly — IF NOT EXISTS / type checks protect them.
+
+        # users
         cursor.execute("""
             ALTER TABLE users
-            ADD COLUMN IF NOT EXISTS onboarding_complete INTEGER DEFAULT 0
+                ADD COLUMN IF NOT EXISTS onboarding_complete INTEGER DEFAULT 0
         """)
+        cursor.execute("""
+            DO $$ BEGIN
+                ALTER TABLE users ALTER COLUMN created_at TYPE DATE
+                    USING CASE WHEN created_at ~ '^\\d{4}-\\d{2}-\\d{2}'
+                               THEN created_at::DATE ELSE NULL END;
+            EXCEPTION WHEN others THEN NULL; END $$;
+        """)
+        cursor.execute("""
+            DO $$ BEGIN
+                ALTER TABLE users ALTER COLUMN last_login TYPE DATE
+                    USING CASE WHEN last_login ~ '^\\d{4}-\\d{2}-\\d{2}'
+                               THEN last_login::DATE ELSE NULL END;
+            EXCEPTION WHEN others THEN NULL; END $$;
+        """)
+
+        # transactions
+        cursor.execute("""
+            DO $$ BEGIN
+                ALTER TABLE transactions ALTER COLUMN created_at TYPE DATE
+                    USING CASE WHEN created_at ~ '^\\d{4}-\\d{2}-\\d{2}'
+                               THEN created_at::DATE ELSE CURRENT_DATE END;
+            EXCEPTION WHEN others THEN NULL; END $$;
+        """)
+
+        # expenses — also add category column
+        cursor.execute("""
+            ALTER TABLE expenses
+                ADD COLUMN IF NOT EXISTS category TEXT
+        """)
+        cursor.execute("""
+            DO $$ BEGIN
+                ALTER TABLE expenses ALTER COLUMN created_at TYPE DATE
+                    USING CASE WHEN created_at ~ '^\\d{4}-\\d{2}-\\d{2}'
+                               THEN created_at::DATE ELSE CURRENT_DATE END;
+            EXCEPTION WHEN others THEN NULL; END $$;
+        """)
+        # Back-fill category from name for existing rows
+        cursor.execute("""
+            UPDATE expenses SET category = name WHERE category IS NULL
+        """)
+
+        # goals
+        cursor.execute("""
+            DO $$ BEGIN
+                ALTER TABLE goals ALTER COLUMN created_at TYPE DATE
+                    USING CASE WHEN created_at ~ '^\\d{4}-\\d{2}-\\d{2}'
+                               THEN created_at::DATE ELSE CURRENT_DATE END;
+            EXCEPTION WHEN others THEN NULL; END $$;
+        """)
+
+        # analytics_logins
+        cursor.execute("""
+            DO $$ BEGIN
+                ALTER TABLE analytics_logins ALTER COLUMN login_date TYPE DATE
+                    USING CASE WHEN login_date ~ '^\\d{4}-\\d{2}-\\d{2}'
+                               THEN login_date::DATE ELSE CURRENT_DATE END;
+            EXCEPTION WHEN others THEN NULL; END $$;
+        """)
+
+        # session_tokens
+        cursor.execute("""
+            DO $$ BEGIN
+                ALTER TABLE session_tokens ALTER COLUMN created_at TYPE TIMESTAMP
+                    USING CASE WHEN created_at ~ '^\\d{4}-\\d{2}-\\d{2}'
+                               THEN created_at::TIMESTAMP ELSE NOW() END;
+            EXCEPTION WHEN others THEN NULL; END $$;
+        """)
+
+        # ── Indexes for fast queries ──────────────────────────────────────────
+        index_stmts = [
+            "CREATE INDEX IF NOT EXISTS idx_banks_user_id ON banks(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_transactions_bank_id ON transactions(bank_id)",
+            "CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_transactions_type ON transactions(type)",
+            "CREATE INDEX IF NOT EXISTS idx_expenses_user_id ON expenses(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_expenses_bank_id ON expenses(bank_id)",
+            "CREATE INDEX IF NOT EXISTS idx_expenses_created_at ON expenses(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category)",
+            "CREATE INDEX IF NOT EXISTS idx_goals_user_id ON goals(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status)",
+            "CREATE INDEX IF NOT EXISTS idx_goal_contributions_goal_id ON goal_contributions(goal_id)",
+            "CREATE INDEX IF NOT EXISTS idx_goal_contributions_user_id ON goal_contributions(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_analytics_logins_user_id ON analytics_logins(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_analytics_logins_login_date ON analytics_logins(login_date)",
+            "CREATE INDEX IF NOT EXISTS idx_session_tokens_user_id ON session_tokens(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_session_tokens_created_at ON session_tokens(created_at)",
+        ]
+        for stmt in index_stmts:
+            cursor.execute(stmt)
 
 create_tables()
 
@@ -385,7 +506,7 @@ def register_user(surname, other, email, username, password):
             cursor.execute("""
                 INSERT INTO users (surname, other_names, email, username, password, verification_code, created_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """, (surname, other, email, username, psycopg2.Binary(hashed_pw), code, datetime.now().strftime("%Y-%m-%d")))
+            """, (surname, other, email, username, psycopg2.Binary(hashed_pw), code, datetime.now().date()))
         return code, "User created"
     except psycopg2.errors.UniqueViolation:
         return None, "Username or email already exists"
@@ -472,21 +593,25 @@ def change_password(user_id, current_pw, new_pw):
             return True, "Password updated"
         return False, "Current password incorrect"
 
-def save_expense(user_id, bank_id, name, amount):
-    """Shared helper used by manual add and quick-add buttons."""
-    now = datetime.now().strftime("%Y-%m-%d")
-    amt = int(amount)
+def save_expense(user_id, bank_id, name, amount, category=None):
+    """Shared helper used by manual add and quick-add buttons.
+    category defaults to name when not provided (backward compatible).
+    Passes Python date objects — psycopg2 handles the DATE cast natively.
+    """
+    today = datetime.now().date()
+    amt   = int(amount)
+    cat   = category or name   # back-fill: if no category given, use name
     with get_db() as (conn, cursor):
         cursor.execute(
             "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
             "VALUES (%s, 'debit', %s, %s, %s) RETURNING id",
-            (bank_id, amt, f"Expense: {name}", now)
+            (bank_id, amt, f"Expense: {name}", today)
         )
         tx_id = cursor.fetchone()["id"]
         cursor.execute(
-            "INSERT INTO expenses (user_id, bank_id, name, amount, created_at, tx_id) "
-            "VALUES (%s, %s, %s, %s, %s, %s)",
-            (user_id, bank_id, name, amt, now, tx_id)
+            "INSERT INTO expenses (user_id, bank_id, name, category, amount, created_at, tx_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (user_id, bank_id, name, cat, amt, today, tx_id)
         )
         cursor.execute(
             "UPDATE banks SET balance = balance - %s WHERE id=%s",
@@ -544,7 +669,7 @@ SESSION_EXPIRY_DAYS = 30  # Sessions expire after 30 days
 
 def create_session_token(user_id):
     token = secrets.token_urlsafe(48)
-    now   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now   = datetime.now()
     with get_db() as (conn, cursor):
         cursor.execute(
             "INSERT INTO session_tokens (user_id, token, created_at) VALUES (%s, %s, %s)",
@@ -568,10 +693,8 @@ def validate_session_token(token):
         return None, None
     try:
         now           = datetime.now()
-        expiry_cutoff = (now - timedelta(days=SESSION_EXPIRY_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
-        now_str       = now.strftime("%Y-%m-%d %H:%M:%S")
+        expiry_cutoff = now - timedelta(days=SESSION_EXPIRY_DAYS)
         with get_db() as (conn, cursor):
-            # Check the token is valid and was last active within the window
             cursor.execute("""
                 SELECT u.id, u.role FROM session_tokens s
                 JOIN users u ON s.user_id = u.id
@@ -581,10 +704,9 @@ def validate_session_token(token):
             """, (token, expiry_cutoff))
             row = cursor.fetchone()
             if row:
-                # Slide the inactivity window: update last-active timestamp
                 cursor.execute(
                     "UPDATE session_tokens SET created_at = %s WHERE token = %s",
-                    (now_str, token)
+                    (now, token)
                 )
                 return row["id"], row["role"]
     except Exception:
@@ -620,27 +742,27 @@ if st.session_state.user_id is None:
 # ---------------- ANALYTICS FUNCTIONS ----------------
 def track_login(user_id):
     try:
-        now = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now().date()
         with get_db() as (conn, cursor):
-            cursor.execute("INSERT INTO analytics_logins (user_id, login_date) VALUES (%s, %s)", (user_id, now))
-            cursor.execute("UPDATE users SET last_login=%s WHERE id=%s", (now, user_id))
+            cursor.execute("INSERT INTO analytics_logins (user_id, login_date) VALUES (%s, %s)", (user_id, today))
+            cursor.execute("UPDATE users SET last_login=%s WHERE id=%s", (today, user_id))
     except Exception:
         pass
 
 def track_signup(user_id):
     try:
-        now = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now().date()
         with get_db() as (conn, cursor):
-            cursor.execute("INSERT INTO analytics_logins (user_id, login_date) VALUES (%s, %s)", (user_id, now))
+            cursor.execute("INSERT INTO analytics_logins (user_id, login_date) VALUES (%s, %s)", (user_id, today))
     except Exception:
         pass
 
 def get_analytics():
     try:
         with get_db() as (conn, cursor):
-            today     = datetime.now().strftime("%Y-%m-%d")
-            cutoff_30 = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-            cutoff_7  = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+            today     = datetime.now().date()
+            cutoff_30 = today - timedelta(days=30)
+            cutoff_7  = today - timedelta(days=7)
 
             cursor.execute("SELECT COUNT(*) AS n FROM users WHERE email_verified=1")
             total_verified = cursor.fetchone()["n"] or 0
@@ -1131,7 +1253,7 @@ if not _ob["already_done"]:
                             cursor.execute("UPDATE banks SET balance = balance + %s WHERE id=%s", (int(ob_inc_amount), bk_id))
                             cursor.execute(
                                 "INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s,'credit',%s,%s,%s)",
-                                (bk_id, int(ob_inc_amount), f"Income: {ob_inc_source}", datetime.now().strftime("%Y-%m-%d"))
+                                (bk_id, int(ob_inc_amount), f"Income: {ob_inc_source}", datetime.now().date())
                             )
                         st.success("Income recorded!")
                         st.rerun()
@@ -1293,13 +1415,13 @@ elif current_page == "Dashboard":
     with get_db() as (conn, cursor):
         cursor.execute("SELECT COALESCE(SUM(balance),0) AS n FROM banks WHERE user_id=%s", (user_id,))
         total_balance = cursor.fetchone()["n"]
-        current_month = datetime.now().strftime("%Y-%m")
+        current_month_start = datetime.now().date().replace(day=1)
         cursor.execute("""
             SELECT COALESCE(SUM(t.amount),0) AS n FROM transactions t
             JOIN banks b ON t.bank_id = b.id
             WHERE b.user_id=%s AND t.type='debit'
-              AND TO_CHAR(TO_DATE(t.created_at,'YYYY-MM-DD'),'YYYY-MM') = %s
-        """, (user_id, current_month))
+              AND t.created_at >= %s
+        """, (user_id, current_month_start))
         expenses_this_month = cursor.fetchone()["n"]
         cursor.execute("SELECT COUNT(*) AS n FROM banks WHERE user_id=%s", (user_id,))
         num_banks = cursor.fetchone()["n"]
@@ -1356,27 +1478,30 @@ elif current_page == "Dashboard":
         st.caption("Tip: Set a monthly spending limit in Settings to get budget alerts here.")
 
     # ── NIGERIAN-STYLE INSIGHTS ──────────────────────────────────────────────
-    current_month_start = datetime.now().strftime("%Y-%m-01")
-    current_week_start  = (datetime.now() - timedelta(days=datetime.now().weekday())).strftime("%Y-%m-%d")
-    last_month_start    = (datetime.now().replace(day=1) - timedelta(days=1)).strftime("%Y-%m-01")
-    last_month_end      = (datetime.now().replace(day=1) - timedelta(days=1)).strftime("%Y-%m-%d")
+    _today             = datetime.now().date()
+    current_month_start = _today.replace(day=1)
+    current_week_start  = _today - timedelta(days=_today.weekday())
+    last_month_end      = current_month_start - timedelta(days=1)
+    last_month_start    = last_month_end.replace(day=1)
+    last_week_start     = current_week_start - timedelta(days=7)
+    last_week_end       = current_week_start - timedelta(days=1)
 
     with get_db() as (conn, cursor):
         # Top category this month
         cursor.execute("""
-            SELECT e.name, SUM(e.amount) AS total
+            SELECT e.category, SUM(e.amount) AS total
             FROM expenses e JOIN banks b ON e.bank_id = b.id
             WHERE b.user_id = %s AND e.created_at >= %s
-            GROUP BY e.name ORDER BY total DESC LIMIT 1
+            GROUP BY e.category ORDER BY total DESC LIMIT 1
         """, (user_id, current_month_start))
         top_cat_row = cursor.fetchone()
 
         # Top category last month
         cursor.execute("""
-            SELECT e.name, SUM(e.amount) AS total
+            SELECT e.category, SUM(e.amount) AS total
             FROM expenses e JOIN banks b ON e.bank_id = b.id
             WHERE b.user_id = %s AND e.created_at >= %s AND e.created_at <= %s
-            GROUP BY e.name ORDER BY total DESC LIMIT 1
+            GROUP BY e.category ORDER BY total DESC LIMIT 1
         """, (user_id, last_month_start, last_month_end))
         last_top_cat_row = cursor.fetchone()
 
@@ -1385,17 +1510,15 @@ elif current_page == "Dashboard":
             SELECT COALESCE(SUM(e.amount), 0) AS total
             FROM expenses e JOIN banks b ON e.bank_id = b.id
             WHERE b.user_id = %s AND e.created_at >= %s
-              AND LOWER(e.name) LIKE %s
+              AND LOWER(e.category) LIKE %s
         """, (user_id, current_week_start, "%airtime%"))
         airtime_this_week = cursor.fetchone()["total"] or 0
 
-        last_week_start = (datetime.now() - timedelta(days=datetime.now().weekday() + 7)).strftime("%Y-%m-%d")
-        last_week_end   = (datetime.now() - timedelta(days=datetime.now().weekday() + 1)).strftime("%Y-%m-%d")
         cursor.execute("""
             SELECT COALESCE(SUM(e.amount), 0) AS total
             FROM expenses e JOIN banks b ON e.bank_id = b.id
             WHERE b.user_id = %s AND e.created_at >= %s AND e.created_at <= %s
-              AND LOWER(e.name) LIKE %s
+              AND LOWER(e.category) LIKE %s
         """, (user_id, last_week_start, last_week_end, "%airtime%"))
         airtime_last_week = cursor.fetchone()["total"] or 0
 
@@ -1424,19 +1547,19 @@ elif current_page == "Dashboard":
         cursor.execute("""
             SELECT COALESCE(SUM(e.amount), 0) AS total
             FROM expenses e JOIN banks b ON e.bank_id = b.id
-            WHERE b.user_id = %s AND e.created_at >= %s AND LOWER(e.name) LIKE %s
+            WHERE b.user_id = %s AND e.created_at >= %s AND LOWER(e.category) LIKE %s
         """, (user_id, current_month_start, "%transport%"))
         transport_total = cursor.fetchone()["total"] or 0
 
         # Total categories this month
         cursor.execute("""
-            SELECT COUNT(DISTINCT e.name) AS n
+            SELECT COUNT(DISTINCT e.category) AS n
             FROM expenses e JOIN banks b ON e.bank_id = b.id
             WHERE b.user_id = %s AND e.created_at >= %s
         """, (user_id, current_month_start))
         cat_count = cursor.fetchone()["n"] or 0
 
-    # Build insight messages
+    # Build insight messages — use 'category' key (not 'name')
     insights = []
 
     if top_cat_row and top_cat_row["total"] > 0:
@@ -1445,7 +1568,7 @@ elif current_page == "Dashboard":
             "color": "#1a3c5e",
             "bg": "#e8f4fd",
             "border": "#3498db",
-            "text": f"<strong>{top_cat_row['name']}</strong> is your highest expense this month "
+            "text": f"<strong>{top_cat_row['category']}</strong> is your highest expense this month "
                     f"at NGN {int(top_cat_row['total']):,}. Check if you can reduce it."
         })
 
@@ -1491,7 +1614,7 @@ elif current_page == "Dashboard":
                     f"totalling NGN {int(small_total):,}. Small daily spending adds up fast — track carefully."
         })
 
-    if transport_total > 0 and top_cat_row and top_cat_row["name"].lower() in ("transport", "transport charges", "bolt", "uber"):
+    if transport_total > 0 and top_cat_row and top_cat_row["category"].lower() in ("transport", "transport charges", "bolt", "uber"):
         insights.append({
             "icon": "&#x1F695;",
             "color": "#1a3c5e",
@@ -1515,14 +1638,14 @@ elif current_page == "Dashboard":
                     )
         })
 
-    if last_top_cat_row and top_cat_row and last_top_cat_row["name"] == top_cat_row["name"]:
+    if last_top_cat_row and top_cat_row and last_top_cat_row["category"] == top_cat_row["category"]:
         insights.append({
             "icon": "&#x1F501;",
             "label": "Recurring Pattern",
             "color": "#7d5a00",
             "bg": "#fffbea",
             "border": "#f39c12",
-            "text": f"<strong>{top_cat_row['name']}</strong> was also your top expense last month. "
+            "text": f"<strong>{top_cat_row['category']}</strong> was also your top expense last month. "
                     f"This is a recurring pattern — consider budgeting specifically for it."
         })
 
@@ -1558,8 +1681,8 @@ elif current_page == "Dashboard":
     st.divider()
     st.subheader("This Week at a Glance")
 
-    week_start = (datetime.now() - timedelta(days=datetime.now().weekday())).strftime("%Y-%m-%d")
-    week_end   = datetime.now().strftime("%Y-%m-%d")
+    week_start = datetime.now().date() - timedelta(days=datetime.now().weekday())
+    week_end   = datetime.now().date()
 
     with get_db() as (conn, cursor):
         cursor.execute("""
@@ -1571,10 +1694,10 @@ elif current_page == "Dashboard":
         week_totals = cursor.fetchone()
 
         cursor.execute("""
-            SELECT e.name, SUM(e.amount) AS total
+            SELECT e.category, SUM(e.amount) AS total
             FROM expenses e JOIN banks b ON e.bank_id = b.id
             WHERE b.user_id = %s AND e.created_at >= %s
-            GROUP BY e.name ORDER BY total DESC LIMIT 1
+            GROUP BY e.category ORDER BY total DESC LIMIT 1
         """, (user_id, week_start))
         week_top = cursor.fetchone()
 
@@ -1591,13 +1714,13 @@ elif current_page == "Dashboard":
     net_label   = f"+NGN {week_net:,}" if week_net >= 0 else f"-NGN {abs(week_net):,}"
     top_spend_html = (
         f'<div class="week-stat"><div class="week-stat-label">Top Spend</div>'
-        f'<div class="week-stat-value" style="font-size:0.9rem;">{week_top["name"]}</div></div>'
+        f'<div class="week-stat-value" style="font-size:0.9rem;">{week_top["category"]}</div></div>'
         if week_top else ""
     )
 
     st.markdown(f"""
     <div class="week-card">
-      <div class="week-title">&#x1F4C5; {datetime.strptime(week_start, "%Y-%m-%d").strftime("%d %b")} &rarr; Today</div>
+      <div class="week-title">&#x1F4C5; {week_start.strftime("%d %b")} &rarr; Today</div>
       <div class="week-grid">
         <div class="week-stat">
           <div class="week-stat-label">Income</div>
@@ -1639,19 +1762,18 @@ elif current_page == "Dashboard":
     )
 
     if st.button("Generate Report", key="generate_report_btn", use_container_width=True):
-        r_start = f"{selected_report_month}-01"
-        r_end_dt = (datetime.strptime(selected_report_month, "%Y-%m").replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
-        r_end_s  = r_end_dt.strftime("%Y-%m-%d")
-        month_label = datetime.strptime(selected_report_month, "%Y-%m").strftime("%B %Y")
+        r_start_dt = datetime.strptime(selected_report_month, "%Y-%m").date().replace(day=1)
+        r_end_dt   = (r_start_dt.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+        month_label = r_start_dt.strftime("%B %Y")
 
         with get_db() as (conn, cursor):
             cursor.execute("""
-                SELECT e.created_at AS date, e.name AS category,
+                SELECT e.created_at AS date, e.category,
                        b.bank_name AS bank, e.amount
                 FROM expenses e JOIN banks b ON e.bank_id = b.id
                 WHERE b.user_id = %s AND e.created_at >= %s AND e.created_at <= %s
                 ORDER BY e.created_at
-            """, (user_id, r_start, r_end_s))
+            """, (user_id, r_start_dt, r_end_dt))
             exp_rows = cursor.fetchall()
 
             cursor.execute("""
@@ -1661,7 +1783,7 @@ elif current_page == "Dashboard":
                 FROM transactions t JOIN banks b ON t.bank_id = b.id
                 WHERE b.user_id = %s AND t.created_at >= %s AND t.created_at <= %s
                 ORDER BY t.created_at
-            """, (user_id, r_start, r_end_s))
+            """, (user_id, r_start_dt, r_end_dt))
             txn_rows = cursor.fetchall()
 
             cursor.execute("""
@@ -1669,7 +1791,7 @@ elif current_page == "Dashboard":
                        COALESCE(SUM(CASE WHEN t.type='debit'  THEN t.amount ELSE 0 END),0) AS total_spent
                 FROM transactions t JOIN banks b ON t.bank_id = b.id
                 WHERE b.user_id = %s AND t.created_at >= %s AND t.created_at <= %s
-            """, (user_id, r_start, r_end_s))
+            """, (user_id, r_start_dt, r_end_dt))
             summary_row = cursor.fetchone()
 
         total_income = int(summary_row["total_income"] or 0)
@@ -1722,13 +1844,12 @@ elif current_page == "Dashboard":
     }
     selected_period = st.selectbox("Select Period", list(period_map.keys()), key="period_select")
     start_date = (datetime.now() - period_map[selected_period]).date() if period_map[selected_period] else datetime(2000,1,1).date()
-    start_str  = start_date.strftime("%Y-%m-%d")
     with get_db() as (conn, cursor):
         cursor.execute("""
             SELECT t.created_at, t.type, t.amount FROM transactions t
             JOIN banks b ON t.bank_id = b.id
             WHERE b.user_id=%s AND t.created_at >= %s ORDER BY t.created_at
-        """, (user_id, start_str))
+        """, (user_id, start_date))
         rows = cursor.fetchall()
     if rows:
         df = pd.DataFrame([(r["created_at"], r["type"], r["amount"]) for r in rows], columns=["date","type","amount"])
@@ -1751,20 +1872,24 @@ elif current_page == "Dashboard":
     st.divider()
     st.subheader("Expense Breakdown by Category")
     with get_db() as (conn, cursor):
-        cursor.execute("SELECT name, SUM(amount) AS total FROM expenses WHERE user_id=%s GROUP BY name ORDER BY total DESC", (user_id,))
+        cursor.execute("""
+            SELECT COALESCE(e.category, e.name) AS cat, SUM(amount) AS total
+            FROM expenses WHERE user_id=%s
+            GROUP BY cat ORDER BY total DESC
+        """, (user_id,))
         pie_rows = cursor.fetchall()
     if pie_rows:
-        df_pie = pd.DataFrame([(r["name"], r["total"]) for r in pie_rows], columns=["Expense","Amount"])
+        df_pie = pd.DataFrame([(r["cat"], r["total"]) for r in pie_rows], columns=["Category", "Amount"])
         threshold    = df_pie["Amount"].sum() * 0.02
         df_pie_main  = df_pie[df_pie["Amount"] >= threshold]
         df_pie_other = df_pie[df_pie["Amount"] < threshold]
         if not df_pie_other.empty:
-            df_pie_main = pd.concat([df_pie_main, pd.DataFrame([{"Expense":"Others","Amount":df_pie_other["Amount"].sum()}])], ignore_index=True)
-        fig = px.pie(df_pie_main, names="Expense", values="Amount", title="All-time Expense Breakdown (NGN)",
+            df_pie_main = pd.concat([df_pie_main, pd.DataFrame([{"Category": "Others", "Amount": df_pie_other["Amount"].sum()}])], ignore_index=True)
+        fig = px.pie(df_pie_main, names="Category", values="Amount", title="All-time Expense Breakdown (NGN)",
                      color_discrete_sequence=px.colors.qualitative.Set3, hole=0.35)
         fig.update_traces(textposition="inside", textinfo="percent+label",
                           hovertemplate="<b>%{label}</b><br>NGN %{value:,.0f}<br>%{percent}<extra></extra>")
-        fig.update_layout(margin=dict(t=40,b=10,l=10,r=10), legend=dict(orientation="v",x=1.02,y=0.5))
+        fig.update_layout(margin=dict(t=40, b=10, l=10, r=10), legend=dict(orientation="v", x=1.02, y=0.5))
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.markdown("""
@@ -1849,7 +1974,7 @@ elif current_page == "Income":
                 with get_db() as (conn, cursor):
                     cursor.execute("UPDATE banks SET balance = balance + %s WHERE id=%s", (income_amount, bank_id))
                     cursor.execute("INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'credit', %s, %s, %s)",
-                                   (bank_id, income_amount, f"Income: {income_source}", datetime.now().strftime("%Y-%m-%d")))
+                                   (bank_id, income_amount, f"Income: {income_source}", datetime.now().date()))
                 st.success(f"Income of NGN {income_amount:,} added")
                 st.rerun()
     else:
@@ -1914,13 +2039,14 @@ elif current_page == "Expenses":
     if st.session_state.get("edit_exp_id"):
         edit_id = st.session_state.edit_exp_id
         with get_db() as (conn, cursor):
-            cursor.execute("SELECT name, amount, bank_id, tx_id FROM expenses WHERE id=%s AND user_id=%s", (edit_id, user_id))
+            cursor.execute("SELECT name, category, amount, bank_id, tx_id FROM expenses WHERE id=%s AND user_id=%s", (edit_id, user_id))
             exp_row = cursor.fetchone()
         if exp_row:
             st.info(f"Editing: {exp_row['name']} — NGN {exp_row['amount']:,.0f}")
             with st.form("edit_expense_form"):
-                new_name   = st.text_input("Expense Name", value=exp_row["name"])
-                new_amount = st.number_input("Amount (NGN)", min_value=1, value=int(exp_row["amount"]))
+                new_name     = st.text_input("Expense Name", value=exp_row["name"])
+                new_category = st.text_input("Category", value=exp_row["category"] or exp_row["name"])
+                new_amount   = st.number_input("Amount (NGN)", min_value=1, value=int(exp_row["amount"]))
                 save_col, cancel_col = st.columns(2)
                 save_clicked   = save_col.form_submit_button("Save Changes")
                 cancel_clicked = cancel_col.form_submit_button("Cancel")
@@ -1931,8 +2057,8 @@ elif current_page == "Expenses":
                     if exp_row["tx_id"]:
                         cursor.execute("UPDATE transactions SET amount=%s, description=%s WHERE id=%s",
                                        (new_amount, f"Expense: {new_name}", exp_row["tx_id"]))
-                    cursor.execute("UPDATE expenses SET name=%s, amount=%s WHERE id=%s AND user_id=%s",
-                                   (new_name, new_amount, edit_id, user_id))
+                    cursor.execute("UPDATE expenses SET name=%s, category=%s, amount=%s WHERE id=%s AND user_id=%s",
+                                   (new_name, new_category, new_amount, edit_id, user_id))
                 st.success("Expense updated!")
                 st.session_state.edit_exp_id = None
                 st.rerun()
@@ -2057,9 +2183,10 @@ elif current_page == "Expenses":
 
     if submitted_exp:
         if expense_name and expense_amount > 1:
-            bank_id = bank_map[selected_bank]
-            save_expense(user_id, bank_id, expense_name, int(expense_amount))
-            st.success(f"'{expense_name}' — NGN {int(expense_amount):,} added.")
+            bank_id  = bank_map[selected_bank]
+            category = selected_category if selected_category != "-- Type custom name --" else expense_name
+            save_expense(user_id, bank_id, expense_name, int(expense_amount), category=category)
+            st.success(f"'{expense_name}' ({category}) — NGN {int(expense_amount):,} added.")
             st.session_state.quick_add_name = ""
             st.rerun()
         else:
@@ -2069,7 +2196,8 @@ elif current_page == "Expenses":
     st.subheader("Expense Summary")
     with get_db() as (conn, cursor):
         cursor.execute("""
-            SELECT e.id, e.created_at, e.name, e.amount, e.bank_id, b.bank_name, b.account_number, e.tx_id
+            SELECT e.id, e.created_at, e.name, e.category, e.amount,
+                   e.bank_id, b.bank_name, b.account_number, e.tx_id
             FROM expenses e JOIN banks b ON e.bank_id = b.id
             WHERE e.user_id=%s ORDER BY e.created_at DESC
         """, (user_id,))
@@ -2078,11 +2206,12 @@ elif current_page == "Expenses":
     if expenses_data:
         for exp in expenses_data:
             card_col, edit_col, del_col = st.columns([5, 0.5, 0.5])
+            cat_display = exp['category'] if exp.get('category') and exp['category'] != exp['name'] else ""
             with card_col:
                 st.markdown(f"""
                 <div class="exp-card">
                   <div class="exp-card-left">
-                    <div class="exp-card-name">{exp['name']}</div>
+                    <div class="exp-card-name">{exp['name']}{f' <span style="background:#e8f5f0;color:#0e7c5b;border-radius:10px;padding:1px 8px;font-size:0.75rem;font-weight:600;margin-left:6px;">{cat_display}</span>' if cat_display else ''}</div>
                     <div class="exp-card-bank">Bank: {exp['bank_name']} (****{exp['account_number']})</div>
                     <div class="exp-card-date">Date: {exp['created_at']}</div>
                   </div>
@@ -2107,18 +2236,22 @@ elif current_page == "Expenses":
 
         st.divider()
         st.subheader("Your Expense Breakdown")
-        df_exp_pie = pd.DataFrame([(e["name"], e["amount"]) for e in expenses_data], columns=["Expense","Amount"])
-        df_grouped = df_exp_pie.groupby("Expense", as_index=False)["Amount"].sum().sort_values("Amount", ascending=False)
+        # Group by category (falls back to name for old records without category)
+        df_exp_pie = pd.DataFrame(
+            [(e["category"] or e["name"], e["amount"]) for e in expenses_data],
+            columns=["Category", "Amount"]
+        )
+        df_grouped = df_exp_pie.groupby("Category", as_index=False)["Amount"].sum().sort_values("Amount", ascending=False)
         threshold = df_grouped["Amount"].sum() * 0.02
-        df_main  = df_grouped[df_grouped["Amount"] >= threshold]
-        df_other = df_grouped[df_grouped["Amount"] < threshold]
+        df_main   = df_grouped[df_grouped["Amount"] >= threshold]
+        df_other  = df_grouped[df_grouped["Amount"] < threshold]
         if not df_other.empty:
-            df_main = pd.concat([df_main, pd.DataFrame([{"Expense":"Others","Amount":df_other["Amount"].sum()}])], ignore_index=True)
-        fig = px.pie(df_main, names="Expense", values="Amount", title="Expenses by Name (NGN)",
+            df_main = pd.concat([df_main, pd.DataFrame([{"Category": "Others", "Amount": df_other["Amount"].sum()}])], ignore_index=True)
+        fig = px.pie(df_main, names="Category", values="Amount", title="Expenses by Category (NGN)",
                      color_discrete_sequence=px.colors.qualitative.Pastel, hole=0.35)
         fig.update_traces(textposition="inside", textinfo="percent+label",
                           hovertemplate="<b>%{label}</b><br>NGN %{value:,.0f}<br>%{percent}<extra></extra>")
-        fig.update_layout(margin=dict(t=40,b=10,l=10,r=10), legend=dict(orientation="v",x=1.02,y=0.5))
+        fig.update_layout(margin=dict(t=40, b=10, l=10, r=10), legend=dict(orientation="v", x=1.02, y=0.5))
         st.plotly_chart(fig, use_container_width=True)
     else:
         # Empty state — no expenses yet
@@ -2227,13 +2360,13 @@ elif current_page == "Transfers":
                     if transfer_amount > from_balance:
                         st.error("Insufficient funds")
                     else:
-                        now = datetime.now().strftime("%Y-%m-%d")
+                        today = datetime.now().date()
                         cursor.execute("UPDATE banks SET balance = balance - %s WHERE id=%s", (transfer_amount, from_id))
                         cursor.execute("UPDATE banks SET balance = balance + %s WHERE id=%s", (transfer_amount, to_id))
                         cursor.execute("INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'debit', %s, %s, %s)",
-                                       (from_id, transfer_amount, f"Transfer to bank {to_id}", now))
+                                       (from_id, transfer_amount, f"Transfer to bank {to_id}", today))
                         cursor.execute("INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'credit', %s, %s, %s)",
-                                       (to_id, transfer_amount, f"Transfer from bank {from_id}", now))
+                                       (to_id, transfer_amount, f"Transfer from bank {from_id}", today))
                         st.success("Transfer completed")
                         st.rerun()
     else:
@@ -2337,7 +2470,7 @@ elif current_page == "Savings Goals":
                     cursor.execute(
                         "INSERT INTO goals (user_id, name, target_amount, created_at, current_amount, status) "
                         "VALUES (%s, %s, %s, %s, 0, 'active')",
-                        (user_id, goal_name, int(goal_target), datetime.now().strftime("%Y-%m-%d"))
+                        (user_id, goal_name, int(goal_target), datetime.now().date())
                     )
                 st.success(f"Goal '{goal_name}' created!")
                 st.session_state.goal_preset = ""
@@ -2384,7 +2517,7 @@ elif current_page == "Savings Goals":
                                 if amt > bank_balance:
                                     st.error(f"Insufficient funds. Bank balance is NGN {bank_balance:,}.")
                                 else:
-                                    now         = datetime.now().strftime("%Y-%m-%d")
+                                    today       = datetime.now().date()
                                     new_current = int(g["current_amount"]) + amt
                                     new_status  = "completed" if new_current >= int(g["target_amount"]) else "active"
                                     cursor.execute(
@@ -2398,7 +2531,13 @@ elif current_page == "Savings Goals":
                                     cursor.execute(
                                         "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
                                         "VALUES (%s, 'debit', %s, %s, %s)",
-                                        (bank_id, amt, f"Savings goal: {g['name']}", now)
+                                        (bank_id, amt, f"Savings goal: {g['name']}", today)
+                                    )
+                                    # Record in goal_contributions history table
+                                    cursor.execute(
+                                        "INSERT INTO goal_contributions (goal_id, user_id, bank_id, amount, contributed_at) "
+                                        "VALUES (%s, %s, %s, %s, %s)",
+                                        (goal_id, user_id, bank_id, amt, today)
                                     )
                             st.success(f"Added NGN {amt:,} to '{g['name']}'.")
                             st.session_state.show_goal_contribution = False
@@ -2483,6 +2622,39 @@ elif current_page == "Savings Goals":
             for goal in completed_goals:
                 render_goal(goal)
                 st.divider()
+
+        # ── Contribution history ──────────────────────────────────────────────
+        st.divider()
+        st.subheader("Contribution History")
+        with get_db() as (conn, cursor):
+            cursor.execute("""
+                SELECT gc.contributed_at, g.name AS goal_name, b.bank_name,
+                       gc.amount
+                FROM goal_contributions gc
+                JOIN goals g ON gc.goal_id = g.id
+                JOIN banks b ON gc.bank_id = b.id
+                WHERE gc.user_id = %s
+                ORDER BY gc.contributed_at DESC
+                LIMIT 50
+            """, (user_id,))
+            contrib_history = cursor.fetchall()
+
+        if contrib_history:
+            for c in contrib_history:
+                st.markdown(
+                    f'<div class="exp-card" style="border-left-color:#0e7c5b;">'
+                    f'<div class="exp-card-left">'
+                    f'<div class="exp-card-name">{c["goal_name"]}</div>'
+                    f'<div class="exp-card-bank">From: {c["bank_name"]}</div>'
+                    f'<div class="exp-card-date">Date: {c["contributed_at"]}</div>'
+                    f'</div>'
+                    f'<div class="exp-card-right">'
+                    f'<div class="exp-card-amount" style="color:#0e7c5b;">+NGN {c["amount"]:,}</div>'
+                    f'</div></div>',
+                    unsafe_allow_html=True
+                )
+        else:
+            st.caption("No contributions recorded yet. Add money to a goal to see the history here.")
 
 # ================= PAGE: IMPORT CSV =================
 elif current_page == "Import CSV":
