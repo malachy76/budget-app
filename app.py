@@ -1873,9 +1873,11 @@ elif current_page == "Dashboard":
     st.subheader("Expense Breakdown by Category")
     with get_db() as (conn, cursor):
         cursor.execute("""
-            SELECT COALESCE(e.category, e.name) AS cat, SUM(amount) AS total
-            FROM expenses WHERE user_id=%s
-            GROUP BY cat ORDER BY total DESC
+            SELECT COALESCE(category, name) AS cat, SUM(amount) AS total
+            FROM expenses
+            WHERE user_id = %s
+            GROUP BY COALESCE(category, name)
+            ORDER BY total DESC
         """, (user_id,))
         pie_rows = cursor.fetchall()
     if pie_rows:
