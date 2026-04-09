@@ -190,6 +190,7 @@ html, body { overflow-x: hidden !important; }
 
 import re
 import io
+import hashlib
 import psycopg2
 import psycopg2.extras
 import bcrypt
@@ -199,7 +200,6 @@ import secrets
 from contextlib import contextmanager
 from email.message import EmailMessage
 from datetime import datetime, timedelta
-import io
 import pandas as pd
 import plotly.express as px
 
@@ -264,9 +264,11 @@ def create_tables():
             password BYTEA NOT NULL,
             email_verified INTEGER DEFAULT 0,
             verification_code TEXT,
+            verification_code_expires_at TIMESTAMP,
             role TEXT DEFAULT 'user',
             monthly_spending_limit INTEGER DEFAULT 0,
             onboarding_complete INTEGER DEFAULT 0,
+            allow_overdraft INTEGER DEFAULT 0,
             created_at DATE,
             last_login DATE
         )
@@ -355,6 +357,16 @@ def create_tables():
         )
         """)
 
+        # ── rate_limit_log ────────────────────────────────────────────────────
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS rate_limit_log (
+            id SERIAL PRIMARY KEY,
+            identifier TEXT NOT NULL,
+            action TEXT NOT NULL,
+            attempted_at TIMESTAMP NOT NULL DEFAULT NOW()
+        )
+        """)
+
         # ── Migrate existing TEXT columns to proper date types ────────────────
         # These are safe to run repeatedly — IF NOT EXISTS / type checks protect them.
 
@@ -362,6 +374,14 @@ def create_tables():
         cursor.execute("""
             ALTER TABLE users
                 ADD COLUMN IF NOT EXISTS onboarding_complete INTEGER DEFAULT 0
+        """)
+        cursor.execute("""
+            ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS allow_overdraft INTEGER DEFAULT 0
+        """)
+        cursor.execute("""
+            ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS verification_code_expires_at TIMESTAMP
         """)
         cursor.execute("""
             DO $$ BEGIN
@@ -449,6 +469,7 @@ def create_tables():
             "CREATE INDEX IF NOT EXISTS idx_analytics_logins_login_date ON analytics_logins(login_date)",
             "CREATE INDEX IF NOT EXISTS idx_session_tokens_user_id ON session_tokens(user_id)",
             "CREATE INDEX IF NOT EXISTS idx_session_tokens_created_at ON session_tokens(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_rate_limit_identifier ON rate_limit_log(identifier, action, attempted_at)",
         ]
         for stmt in index_stmts:
             cursor.execute(stmt)
@@ -488,6 +509,56 @@ if "quick_add_name" not in st.session_state:
     st.session_state.quick_add_name = ""
 if "quick_add_amt" not in st.session_state:
     st.session_state.quick_add_amt = 0
+if "confirm_delete" not in st.session_state:
+    st.session_state.confirm_delete = {}   # {type_id: True}
+
+# ============================================================
+# SECURITY HELPERS
+# ============================================================
+
+CODE_EXPIRY_MINUTES = 12   # verification & reset codes expire after 12 minutes
+
+def _hash_token(raw_token: str) -> str:
+    """SHA-256 hash of a raw token — stored in DB, raw token given to user."""
+    return hashlib.sha256(raw_token.encode()).hexdigest()
+
+def _check_rate_limit(identifier: str, action: str, max_attempts: int = 5, window_minutes: int = 15) -> bool:
+    """
+    Returns True if the action is ALLOWED (under the rate limit).
+    Returns False if the limit has been exceeded.
+    identifier: IP substitute — username or email string.
+    """
+    try:
+        cutoff = datetime.now() - timedelta(minutes=window_minutes)
+        with get_db() as (conn, cursor):
+            cursor.execute("""
+                SELECT COUNT(*) AS n FROM rate_limit_log
+                WHERE identifier = %s AND action = %s AND attempted_at >= %s
+            """, (identifier, action, cutoff))
+            count = cursor.fetchone()["n"] or 0
+            if count >= max_attempts:
+                return False
+            cursor.execute(
+                "INSERT INTO rate_limit_log (identifier, action, attempted_at) VALUES (%s, %s, %s)",
+                (identifier, action, datetime.now())
+            )
+        return True
+    except Exception:
+        return True  # fail open — don't lock users out on DB error
+
+def _rate_limit_remaining(identifier: str, action: str, max_attempts: int = 5, window_minutes: int = 15) -> int:
+    """Returns how many attempts remain in the current window."""
+    try:
+        cutoff = datetime.now() - timedelta(minutes=window_minutes)
+        with get_db() as (conn, cursor):
+            cursor.execute("""
+                SELECT COUNT(*) AS n FROM rate_limit_log
+                WHERE identifier = %s AND action = %s AND attempted_at >= %s
+            """, (identifier, action, cutoff))
+            count = cursor.fetchone()["n"] or 0
+        return max(0, max_attempts - count)
+    except Exception:
+        return max_attempts
 
 # ---------------- AUTH FUNCTIONS ----------------
 def hash_password(password):
@@ -499,14 +570,17 @@ def check_password(password, hashed):
     return bcrypt.checkpw(password.encode(), hashed)
 
 def register_user(surname, other, email, username, password):
-    code = str(random.randint(100000, 999999))
+    code    = str(random.randint(100000, 999999))
+    expires = datetime.now() + timedelta(minutes=CODE_EXPIRY_MINUTES)
     try:
         hashed_pw = hash_password(password)
         with get_db() as (conn, cursor):
             cursor.execute("""
-                INSERT INTO users (surname, other_names, email, username, password, verification_code, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """, (surname, other, email, username, psycopg2.Binary(hashed_pw), code, datetime.now().date()))
+                INSERT INTO users (surname, other_names, email, username, password,
+                                   verification_code, verification_code_expires_at, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (surname, other, email, username, psycopg2.Binary(hashed_pw),
+                  code, expires, datetime.now().date()))
         return code, "User created"
     except psycopg2.errors.UniqueViolation:
         return None, "Username or email already exists"
@@ -514,6 +588,10 @@ def register_user(surname, other, email, username, password):
         return None, str(e)
 
 def login_user(username, password):
+    # Rate limit: 5 attempts per 15 minutes per username
+    if not _check_rate_limit(username.lower(), "login", max_attempts=5, window_minutes=15):
+        st.error("Too many login attempts. Please wait 15 minutes before trying again.")
+        return None
     with get_db() as (conn, cursor):
         cursor.execute("SELECT id, password, role, email_verified FROM users WHERE username=%s", (username,))
         user = cursor.fetchone()
@@ -533,7 +611,11 @@ def send_verification_email(email, code):
         msg["Subject"] = "Verify your Budget Smart account"
         msg["From"]    = st.secrets["EMAIL_SENDER"]
         msg["To"]      = email
-        msg.set_content(f"Your verification code is: {code}")
+        msg.set_content(
+            f"Your Budget Right verification code is: {code}\n\n"
+            f"This code expires in {CODE_EXPIRY_MINUTES} minutes.\n"
+            f"If you did not request this, please ignore this email."
+        )
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(st.secrets["EMAIL_SENDER"], st.secrets["EMAIL_APP_PASSWORD"])
             server.send_message(msg)
@@ -542,10 +624,17 @@ def send_verification_email(email, code):
         return False, str(e)
 
 def request_password_reset(email):
+    # Rate limit: 3 reset requests per 15 minutes per email
+    if not _check_rate_limit(email.lower(), "password_reset", max_attempts=3, window_minutes=15):
+        return False, "Too many reset requests. Please wait 15 minutes before trying again."
     try:
-        code = str(random.randint(100000, 999999))
+        code    = str(random.randint(100000, 999999))
+        expires = datetime.now() + timedelta(minutes=CODE_EXPIRY_MINUTES)
         with get_db() as (conn, cursor):
-            cursor.execute("UPDATE users SET verification_code=%s WHERE email=%s", (code, email))
+            cursor.execute(
+                "UPDATE users SET verification_code=%s, verification_code_expires_at=%s WHERE email=%s",
+                (code, expires, email)
+            )
             if cursor.rowcount == 0:
                 return False, "Email not found"
         return send_verification_email(email, code)
@@ -554,14 +643,21 @@ def request_password_reset(email):
 
 def reset_password(email, code, new_password):
     try:
+        now = datetime.now()
         with get_db() as (conn, cursor):
-            cursor.execute("SELECT id FROM users WHERE email=%s AND verification_code=%s", (email, code))
+            cursor.execute(
+                "SELECT id, verification_code_expires_at FROM users "
+                "WHERE email=%s AND verification_code=%s",
+                (email, code)
+            )
             user = cursor.fetchone()
             if not user:
-                return False, "Invalid reset code"
+                return False, "Invalid reset code. Please request a new one."
+            if user["verification_code_expires_at"] and now > user["verification_code_expires_at"]:
+                return False, f"This reset code has expired. Codes are only valid for {CODE_EXPIRY_MINUTES} minutes. Please request a new one."
             hashed_pw = hash_password(new_password)
             cursor.execute(
-                "UPDATE users SET password=%s, verification_code=NULL WHERE email=%s",
+                "UPDATE users SET password=%s, verification_code=NULL, verification_code_expires_at=NULL WHERE email=%s",
                 (psycopg2.Binary(hashed_pw), email)
             )
         return True, "Password reset successful"
@@ -569,15 +665,43 @@ def reset_password(email, code, new_password):
         return False, str(e)
 
 def resend_verification(email):
+    # Rate limit: 3 resends per 15 minutes per email
+    if not _check_rate_limit(email.lower(), "resend_verification", max_attempts=3, window_minutes=15):
+        return False, "Too many resend requests. Please wait 15 minutes."
     try:
-        code = str(random.randint(100000, 999999))
+        code    = str(random.randint(100000, 999999))
+        expires = datetime.now() + timedelta(minutes=CODE_EXPIRY_MINUTES)
         with get_db() as (conn, cursor):
-            cursor.execute("UPDATE users SET verification_code=%s WHERE email=%s", (code, email))
+            cursor.execute(
+                "UPDATE users SET verification_code=%s, verification_code_expires_at=%s WHERE email=%s",
+                (code, expires, email)
+            )
             if cursor.rowcount == 0:
                 return False, "Email not found"
         return send_verification_email(email, code)
     except Exception as e:
         return False, str(e)
+
+def verify_email_code(email, code):
+    """Check code validity including expiry, then mark verified."""
+    now = datetime.now()
+    with get_db() as (conn, cursor):
+        cursor.execute(
+            "SELECT id, verification_code_expires_at FROM users "
+            "WHERE email=%s AND verification_code=%s",
+            (email, code)
+        )
+        user = cursor.fetchone()
+        if not user:
+            return False, "Invalid email or code."
+        if user["verification_code_expires_at"] and now > user["verification_code_expires_at"]:
+            return False, f"This code has expired. Codes are only valid for {CODE_EXPIRY_MINUTES} minutes. Please request a new code."
+        cursor.execute(
+            "UPDATE users SET email_verified=1, verification_code=NULL, "
+            "verification_code_expires_at=NULL WHERE id=%s",
+            (user["id"],)
+        )
+    return True, "Email verified successfully."
 
 def change_password(user_id, current_pw, new_pw):
     with get_db() as (conn, cursor):
@@ -594,29 +718,51 @@ def change_password(user_id, current_pw, new_pw):
         return False, "Current password incorrect"
 
 def save_expense(user_id, bank_id, name, amount, category=None):
-    """Shared helper used by manual add and quick-add buttons.
-    category defaults to name when not provided (backward compatible).
-    Passes Python date objects — psycopg2 handles the DATE cast natively.
+    """
+    Inserts an expense + debit transaction, debits bank balance.
+    Checks overdraft: if the bank would go negative and user has not enabled
+    overdraft, raises ValueError so callers can show a clear error.
+    Returns (True, tx_id) on success, (False, reason_str) on failure.
     """
     today = datetime.now().date()
     amt   = int(amount)
-    cat   = category or name   # back-fill: if no category given, use name
-    with get_db() as (conn, cursor):
-        cursor.execute(
-            "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
-            "VALUES (%s, 'debit', %s, %s, %s) RETURNING id",
-            (bank_id, amt, f"Expense: {name}", today)
-        )
-        tx_id = cursor.fetchone()["id"]
-        cursor.execute(
-            "INSERT INTO expenses (user_id, bank_id, name, category, amount, created_at, tx_id) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (user_id, bank_id, name, cat, amt, today, tx_id)
-        )
-        cursor.execute(
-            "UPDATE banks SET balance = balance - %s WHERE id=%s",
-            (amt, bank_id)
-        )
+    cat   = category or name
+    try:
+        with get_db() as (conn, cursor):
+            # Check overdraft permission
+            cursor.execute("SELECT balance FROM banks WHERE id=%s AND user_id=%s", (bank_id, user_id))
+            bank_row = cursor.fetchone()
+            if not bank_row:
+                return False, "Bank account not found."
+            if bank_row["balance"] - amt < 0:
+                # Check if user has overdraft enabled
+                cursor.execute("SELECT allow_overdraft FROM users WHERE id=%s", (user_id,))
+                user_row = cursor.fetchone()
+                if not user_row or not user_row["allow_overdraft"]:
+                    shortfall = amt - bank_row["balance"]
+                    return False, (
+                        f"Insufficient funds. Your balance is NGN {bank_row['balance']:,} "
+                        f"but this expense is NGN {amt:,} — NGN {shortfall:,} short. "
+                        f"Enable overdraft in Settings if you want to allow this."
+                    )
+            cursor.execute(
+                "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
+                "VALUES (%s, 'debit', %s, %s, %s) RETURNING id",
+                (bank_id, amt, f"Expense: {name}", today)
+            )
+            tx_id = cursor.fetchone()["id"]
+            cursor.execute(
+                "INSERT INTO expenses (user_id, bank_id, name, category, amount, created_at, tx_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (user_id, bank_id, name, cat, amt, today, tx_id)
+            )
+            cursor.execute(
+                "UPDATE banks SET balance = balance - %s WHERE id=%s",
+                (amt, bank_id)
+            )
+        return True, tx_id
+    except Exception as e:
+        return False, str(e)
 
 def get_onboarding_status(user_id):
     """Returns dict with booleans for each onboarding step."""
@@ -668,30 +814,29 @@ def mark_onboarding_complete(user_id):
 SESSION_EXPIRY_DAYS = 30  # Sessions expire after 30 days
 
 def create_session_token(user_id):
-    token = secrets.token_urlsafe(48)
-    now   = datetime.now()
+    """Generate a raw token, store only its SHA-256 hash in the DB, give raw to user."""
+    raw_token  = secrets.token_urlsafe(48)
+    hashed_tok = _hash_token(raw_token)
+    now        = datetime.now()
     with get_db() as (conn, cursor):
         cursor.execute(
             "INSERT INTO session_tokens (user_id, token, created_at) VALUES (%s, %s, %s)",
-            (user_id, token, now)
+            (user_id, hashed_tok, now)
         )
-    cookies["session_token"] = token
+    cookies["session_token"] = raw_token   # raw token in cookie
     cookies.save()
-    return token
+    return raw_token
 
 def validate_session_token(token):
     """
-    Returns (user_id, role) if the token is valid and the user has been active
-    within the last SESSION_EXPIRY_DAYS days.
-
-    'created_at' on the session_tokens table is used as 'last_active_at':
-    it is refreshed to NOW on every successful validation, so the 30-day
-    window slides forward with each visit. Only a genuine absence of 30 days
-    will cause the session to expire.
+    Hash the incoming raw token, look up its hash in the DB.
+    Returns (user_id, role) if valid and within SESSION_EXPIRY_DAYS of last activity.
+    Refreshes last-active timestamp on every successful call (sliding window).
     """
     if not token:
         return None, None
     try:
+        hashed_tok    = _hash_token(token)
         now           = datetime.now()
         expiry_cutoff = now - timedelta(days=SESSION_EXPIRY_DAYS)
         with get_db() as (conn, cursor):
@@ -701,12 +846,12 @@ def validate_session_token(token):
                 WHERE s.token = %s
                   AND u.email_verified = 1
                   AND s.created_at >= %s
-            """, (token, expiry_cutoff))
+            """, (hashed_tok, expiry_cutoff))
             row = cursor.fetchone()
             if row:
                 cursor.execute(
                     "UPDATE session_tokens SET created_at = %s WHERE token = %s",
-                    (now, token)
+                    (now, hashed_tok)
                 )
                 return row["id"], row["role"]
     except Exception:
@@ -717,8 +862,9 @@ def revoke_session_token(token):
     if not token:
         return
     try:
+        hashed_tok = _hash_token(token)
         with get_db() as (conn, cursor):
-            cursor.execute("DELETE FROM session_tokens WHERE token=%s", (token,))
+            cursor.execute("DELETE FROM session_tokens WHERE token=%s", (hashed_tok,))
     except Exception:
         pass
     cookies["session_token"] = ""
@@ -1000,6 +1146,7 @@ if st.session_state.user_id is None:
 
             if st.session_state.show_forgot_password:
                 with st.expander("Reset Password", expanded=True):
+                    st.caption(f"A reset code will be sent to your email. It expires in {CODE_EXPIRY_MINUTES} minutes.")
                     email_input = st.text_input("Enter your email", key="reset_email_input")
                     if st.button("Send Reset Code", key="send_reset_btn"):
                         if email_input:
@@ -1022,6 +1169,7 @@ if st.session_state.user_id is None:
 
             if st.session_state.show_reset_form:
                 with st.expander("Enter Reset Code", expanded=True):
+                    st.caption(f"Enter the 6-digit code sent to your email. The code expires {CODE_EXPIRY_MINUTES} minutes after it was sent.")
                     reset_code   = st.text_input("Reset code", key="reset_code")
                     new_pass     = st.text_input("New password", type="password", key="new_pass")
                     confirm_pass = st.text_input("Confirm new password", type="password", key="confirm_pass")
@@ -1089,20 +1237,20 @@ if st.session_state.user_id is None:
                         st.error(msg)
 
         with tabs[2]:
+            st.caption(f"Verification codes expire {CODE_EXPIRY_MINUTES} minutes after they are sent. Request a new code if yours has expired.")
             verify_email = st.text_input("Registered Email", key="verify_email")
             verify_code  = st.text_input("Verification Code", key="verify_code")
             col1, col2   = st.columns(2)
             with col1:
                 if st.button("Verify Email", key="verify_btn"):
-                    with get_db() as (conn, cursor):
-                        cursor.execute("SELECT id FROM users WHERE email=%s AND verification_code=%s", (verify_email, verify_code))
-                        user = cursor.fetchone()
-                        if user:
-                            cursor.execute("UPDATE users SET email_verified=1, verification_code=NULL WHERE id=%s", (user["id"],))
-                    if user:
-                        st.success("Email verified. You can now log in.")
+                    if verify_email and verify_code:
+                        ok, msg = verify_email_code(verify_email, verify_code)
+                        if ok:
+                            st.success(f"{msg} You can now log in.")
+                        else:
+                            st.error(msg)
                     else:
-                        st.error("Invalid email or code.")
+                        st.warning("Enter your email and the verification code.")
             with col2:
                 if st.button("Resend Code", key="resend_btn"):
                     if verify_email:
@@ -1286,9 +1434,12 @@ if not _ob["already_done"]:
                 if ob_exp_submit:
                     if ob_exp_name and ob_exp_amount > 0:
                         bk_id = ob_bank_map2[ob_exp_bank]
-                        save_expense(user_id, bk_id, ob_exp_name, ob_exp_amount)
-                        st.success("Expense logged!")
-                        st.rerun()
+                        ok, result = save_expense(user_id, bk_id, ob_exp_name, ob_exp_amount)
+                        if ok:
+                            st.success("Expense logged!")
+                            st.rerun()
+                        else:
+                            st.error(result)
                     else:
                         st.warning("Please enter a name and amount.")
             elif not done1 and not done3:
@@ -2015,12 +2166,26 @@ elif current_page == "Income":
                     st.session_state.edit_income_id = inc["id"]
                     st.rerun()
             with del_col:
-                if st.button("🗑️", key=f"delete_inc_{inc['id']}", help="Delete income"):
-                    with get_db() as (conn, cursor):
-                        cursor.execute("UPDATE banks SET balance = balance - %s WHERE id=%s", (inc["amount"], inc["bank_id"]))
-                        cursor.execute("DELETE FROM transactions WHERE id=%s", (inc["id"],))
-                    st.success(f"'{source}' deleted & NGN {inc['amount']:,.0f} reversed.")
-                    st.rerun()
+                del_key = f"inc_{inc['id']}"
+                if st.session_state.confirm_delete.get(del_key):
+                    st.error(f"Delete '{source}'?")
+                    cc1, cc2 = st.columns(2)
+                    with cc1:
+                        if st.button("Yes, delete", key=f"confirm_yes_inc_{inc['id']}"):
+                            with get_db() as (conn, cursor):
+                                cursor.execute("UPDATE banks SET balance = balance - %s WHERE id=%s", (inc["amount"], inc["bank_id"]))
+                                cursor.execute("DELETE FROM transactions WHERE id=%s", (inc["id"],))
+                            st.session_state.confirm_delete.pop(del_key, None)
+                            st.success(f"Deleted & NGN {inc['amount']:,.0f} reversed.")
+                            st.rerun()
+                    with cc2:
+                        if st.button("Cancel", key=f"confirm_no_inc_{inc['id']}"):
+                            st.session_state.confirm_delete.pop(del_key, None)
+                            st.rerun()
+                else:
+                    if st.button("🗑️", key=f"delete_inc_{inc['id']}", help="Delete income"):
+                        st.session_state.confirm_delete[del_key] = True
+                        st.rerun()
     else:
         st.markdown("""
         <div style="background:#f0f7f4;border-radius:10px;padding:20px 22px;text-align:center;color:#4a6070;">
@@ -2187,10 +2352,13 @@ elif current_page == "Expenses":
         if expense_name and expense_amount > 1:
             bank_id  = bank_map[selected_bank]
             category = selected_category if selected_category != "-- Type custom name --" else expense_name
-            save_expense(user_id, bank_id, expense_name, int(expense_amount), category=category)
-            st.success(f"'{expense_name}' ({category}) — NGN {int(expense_amount):,} added.")
-            st.session_state.quick_add_name = ""
-            st.rerun()
+            ok, result = save_expense(user_id, bank_id, expense_name, int(expense_amount), category=category)
+            if ok:
+                st.success(f"'{expense_name}' ({category}) — NGN {int(expense_amount):,} added.")
+                st.session_state.quick_add_name = ""
+                st.rerun()
+            else:
+                st.error(result)
         else:
             st.warning("Please enter an expense name and an amount greater than 0.")
 
@@ -2227,14 +2395,28 @@ elif current_page == "Expenses":
                     st.session_state.edit_exp_id = exp["id"]
                     st.rerun()
             with del_col:
-                if st.button("🗑️", key=f"delete_exp_{exp['id']}", help="Delete expense"):
-                    with get_db() as (conn, cursor):
-                        cursor.execute("UPDATE banks SET balance = balance + %s WHERE id=%s", (exp["amount"], exp["bank_id"]))
-                        if exp["tx_id"]:
-                            cursor.execute("DELETE FROM transactions WHERE id=%s", (exp["tx_id"],))
-                        cursor.execute("DELETE FROM expenses WHERE id=%s AND user_id=%s", (exp["id"], user_id))
-                    st.success(f"'{exp['name']}' deleted & NGN {exp['amount']:,.0f} refunded.")
-                    st.rerun()
+                del_key = f"exp_{exp['id']}"
+                if st.session_state.confirm_delete.get(del_key):
+                    st.error(f"Delete '{exp['name']}'?")
+                    cc1, cc2 = st.columns(2)
+                    with cc1:
+                        if st.button("Yes, delete", key=f"confirm_yes_exp_{exp['id']}"):
+                            with get_db() as (conn, cursor):
+                                cursor.execute("UPDATE banks SET balance = balance + %s WHERE id=%s", (exp["amount"], exp["bank_id"]))
+                                if exp["tx_id"]:
+                                    cursor.execute("DELETE FROM transactions WHERE id=%s", (exp["tx_id"],))
+                                cursor.execute("DELETE FROM expenses WHERE id=%s AND user_id=%s", (exp["id"], user_id))
+                            st.session_state.confirm_delete.pop(del_key, None)
+                            st.success(f"Deleted & NGN {exp['amount']:,.0f} refunded.")
+                            st.rerun()
+                    with cc2:
+                        if st.button("Cancel", key=f"confirm_no_exp_{exp['id']}"):
+                            st.session_state.confirm_delete.pop(del_key, None)
+                            st.rerun()
+                else:
+                    if st.button("🗑️", key=f"delete_exp_{exp['id']}", help="Delete expense"):
+                        st.session_state.confirm_delete[del_key] = True
+                        st.rerun()
 
         st.divider()
         st.subheader("Your Expense Breakdown")
@@ -2302,14 +2484,28 @@ elif current_page == "Banks":
                 if st.button("✏️", key=f"edit_bank_{bank['id']}", help="Edit bank"):
                     st.session_state.edit_bank_id = bank["id"]
             with col3:
-                if st.button("🗑️", key=f"delete_bank_{bank['id']}", help="Delete bank"):
-                    with get_db() as (conn, cursor):
-                        cursor.execute("UPDATE expenses SET tx_id=NULL WHERE bank_id=%s", (bank["id"],))
-                        cursor.execute("DELETE FROM expenses WHERE bank_id=%s", (bank["id"],))
-                        cursor.execute("DELETE FROM transactions WHERE bank_id=%s", (bank["id"],))
-                        cursor.execute("DELETE FROM banks WHERE id=%s", (bank["id"],))
-                    st.success("Bank and all its transactions deleted.")
-                    st.rerun()
+                del_key = f"bank_{bank['id']}"
+                if st.session_state.confirm_delete.get(del_key):
+                    st.error(f"Delete {bank['bank_name']}? This will permanently erase all its transactions and expenses.")
+                    cc1, cc2 = st.columns(2)
+                    with cc1:
+                        if st.button("Yes, delete all", key=f"confirm_yes_bank_{bank['id']}"):
+                            with get_db() as (conn, cursor):
+                                cursor.execute("UPDATE expenses SET tx_id=NULL WHERE bank_id=%s", (bank["id"],))
+                                cursor.execute("DELETE FROM expenses WHERE bank_id=%s", (bank["id"],))
+                                cursor.execute("DELETE FROM transactions WHERE bank_id=%s", (bank["id"],))
+                                cursor.execute("DELETE FROM banks WHERE id=%s", (bank["id"],))
+                            st.session_state.confirm_delete.pop(del_key, None)
+                            st.success("Bank and all its data deleted.")
+                            st.rerun()
+                    with cc2:
+                        if st.button("Cancel", key=f"confirm_no_bank_{bank['id']}"):
+                            st.session_state.confirm_delete.pop(del_key, None)
+                            st.rerun()
+                else:
+                    if st.button("🗑️", key=f"delete_bank_{bank['id']}", help="Delete bank"):
+                        st.session_state.confirm_delete[del_key] = True
+                        st.rerun()
 
         if st.session_state.get("edit_bank_id"):
             edit_id = st.session_state.edit_bank_id
@@ -2607,11 +2803,25 @@ elif current_page == "Savings Goals":
                 else:
                     st.markdown("Completed")
             with col3:
-                if st.button("🗑️", key=f"delete_goal_{goal['id']}", help="Delete goal"):
-                    with get_db() as (conn, cursor):
-                        cursor.execute("DELETE FROM goals WHERE id=%s AND user_id=%s", (goal["id"], user_id))
-                    st.success(f"'{goal['name']}' deleted.")
-                    st.rerun()
+                del_key = f"goal_{goal['id']}"
+                if st.session_state.confirm_delete.get(del_key):
+                    st.error(f"Delete '{goal['name']}'?")
+                    cc1, cc2 = st.columns(2)
+                    with cc1:
+                        if st.button("Yes", key=f"confirm_yes_goal_{goal['id']}"):
+                            with get_db() as (conn, cursor):
+                                cursor.execute("DELETE FROM goals WHERE id=%s AND user_id=%s", (goal["id"], user_id))
+                            st.session_state.confirm_delete.pop(del_key, None)
+                            st.success(f"'{goal['name']}' deleted.")
+                            st.rerun()
+                    with cc2:
+                        if st.button("No", key=f"confirm_no_goal_{goal['id']}"):
+                            st.session_state.confirm_delete.pop(del_key, None)
+                            st.rerun()
+                else:
+                    if st.button("🗑️", key=f"delete_goal_{goal['id']}", help="Delete goal"):
+                        st.session_state.confirm_delete[del_key] = True
+                        st.rerun()
 
         if active_goals:
             st.subheader(f"Active Goals ({len(active_goals)})")
@@ -2700,19 +2910,46 @@ elif current_page == "Import CSV":
 # ================= PAGE: SETTINGS =================
 elif current_page == "Settings":
     st.markdown("## Settings")
+
+    with get_db() as (conn, cursor):
+        cursor.execute("SELECT monthly_spending_limit, allow_overdraft FROM users WHERE id=%s", (user_id,))
+        settings_row  = cursor.fetchone()
+        current_limit = settings_row["monthly_spending_limit"] or 0
+        current_od    = bool(settings_row["allow_overdraft"])
+
+    # ── Monthly spending budget ───────────────────────────────────────────────
     st.subheader("Monthly Spending Budget")
     st.caption(
         "Set a limit on how much you want to spend each month. "
         "Budget Right will alert you on the Dashboard at 50%, 80%, and 100% of your limit."
     )
-    with get_db() as (conn, cursor):
-        cursor.execute("SELECT monthly_spending_limit FROM users WHERE id=%s", (user_id,))
-        current_limit = cursor.fetchone()["monthly_spending_limit"] or 0
     new_limit = st.number_input("Monthly Budget (NGN) — set to 0 to disable alerts", min_value=0, value=current_limit, step=5000, key="monthly_limit")
     if st.button("Update Budget", key="update_limit_btn"):
         with get_db() as (conn, cursor):
             cursor.execute("UPDATE users SET monthly_spending_limit=%s WHERE id=%s", (new_limit, user_id))
         st.success("Monthly budget updated. Alerts will show on your Dashboard.")
+        st.rerun()
+
+    st.divider()
+
+    # ── Overdraft setting ─────────────────────────────────────────────────────
+    st.subheader("Bank Overdraft")
+    st.caption(
+        "By default, Budget Right will block any expense that would take your bank balance below zero. "
+        "Enable overdraft below if you want to allow spending beyond your balance — for example if you use a credit facility."
+    )
+    new_od = st.toggle(
+        "Allow overdraft (let balance go below zero)",
+        value=current_od,
+        key="overdraft_toggle"
+    )
+    if new_od != current_od:
+        with get_db() as (conn, cursor):
+            cursor.execute("UPDATE users SET allow_overdraft=%s WHERE id=%s", (1 if new_od else 0, user_id))
+        if new_od:
+            st.warning("Overdraft enabled. Expenses can now take your balance below zero.")
+        else:
+            st.success("Overdraft disabled. Expenses that exceed your balance will be blocked.")
         st.rerun()
 
     st.divider()
