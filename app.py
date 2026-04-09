@@ -512,6 +512,31 @@ if "quick_add_amt" not in st.session_state:
 if "confirm_delete" not in st.session_state:
     st.session_state.confirm_delete = {}   # {type_id: True}
 
+# --- Search / Filter / Sort state ---
+if "income_search" not in st.session_state:
+    st.session_state.income_search = ""
+if "income_filter_bank" not in st.session_state:
+    st.session_state.income_filter_bank = "All"
+if "income_filter_date_from" not in st.session_state:
+    st.session_state.income_filter_date_from = None
+if "income_filter_date_to" not in st.session_state:
+    st.session_state.income_filter_date_to = None
+if "income_sort" not in st.session_state:
+    st.session_state.income_sort = "Newest First"
+
+if "exp_search" not in st.session_state:
+    st.session_state.exp_search = ""
+if "exp_filter_bank" not in st.session_state:
+    st.session_state.exp_filter_bank = "All"
+if "exp_filter_category" not in st.session_state:
+    st.session_state.exp_filter_category = "All"
+if "exp_filter_date_from" not in st.session_state:
+    st.session_state.exp_filter_date_from = None
+if "exp_filter_date_to" not in st.session_state:
+    st.session_state.exp_filter_date_to = None
+if "exp_sort" not in st.session_state:
+    st.session_state.exp_sort = "Newest First"
+
 # ============================================================
 # SECURITY HELPERS
 # ============================================================
@@ -984,6 +1009,174 @@ def send_reengagement_email(email, name):
         return True, "Email sent"
     except Exception as e:
         return False, str(e)
+
+# ---------------- FILTER / SORT HELPERS ----------------
+
+def apply_income_filters(income_data):
+    """Apply search, bank filter, date range, and sort to income list."""
+    results = list(income_data)
+
+    search = st.session_state.income_search.strip().lower()
+    if search:
+        results = [r for r in results if search in r["description"].lower() or search in r["bank_name"].lower()]
+
+    bank_f = st.session_state.income_filter_bank
+    if bank_f and bank_f != "All":
+        results = [r for r in results if r["bank_name"] == bank_f]
+
+    if st.session_state.income_filter_date_from:
+        results = [r for r in results if r["created_at"] >= st.session_state.income_filter_date_from]
+    if st.session_state.income_filter_date_to:
+        results = [r for r in results if r["created_at"] <= st.session_state.income_filter_date_to]
+
+    sort_key = st.session_state.income_sort
+    if sort_key == "Newest First":
+        results = sorted(results, key=lambda r: r["created_at"], reverse=True)
+    elif sort_key == "Oldest First":
+        results = sorted(results, key=lambda r: r["created_at"])
+    elif sort_key == "Highest Amount":
+        results = sorted(results, key=lambda r: r["amount"], reverse=True)
+    elif sort_key == "Lowest Amount":
+        results = sorted(results, key=lambda r: r["amount"])
+
+    return results
+
+
+def apply_expense_filters(expenses_data):
+    """Apply search, bank, category, date range, and sort to expense list."""
+    results = list(expenses_data)
+
+    search = st.session_state.exp_search.strip().lower()
+    if search:
+        results = [r for r in results if
+                   search in (r["name"] or "").lower() or
+                   search in (r["category"] or "").lower() or
+                   search in r["bank_name"].lower()]
+
+    bank_f = st.session_state.exp_filter_bank
+    if bank_f and bank_f != "All":
+        results = [r for r in results if r["bank_name"] == bank_f]
+
+    cat_f = st.session_state.exp_filter_category
+    if cat_f and cat_f != "All":
+        results = [r for r in results if (r["category"] or r["name"]) == cat_f]
+
+    if st.session_state.exp_filter_date_from:
+        results = [r for r in results if r["created_at"] >= st.session_state.exp_filter_date_from]
+    if st.session_state.exp_filter_date_to:
+        results = [r for r in results if r["created_at"] <= st.session_state.exp_filter_date_to]
+
+    sort_key = st.session_state.exp_sort
+    if sort_key == "Newest First":
+        results = sorted(results, key=lambda r: r["created_at"], reverse=True)
+    elif sort_key == "Oldest First":
+        results = sorted(results, key=lambda r: r["created_at"])
+    elif sort_key == "Highest Amount":
+        results = sorted(results, key=lambda r: r["amount"], reverse=True)
+    elif sort_key == "Lowest Amount":
+        results = sorted(results, key=lambda r: r["amount"])
+
+    return results
+
+
+def render_filter_bar_income(banks):
+    """Render the search + filter + sort controls for Income History."""
+    st.markdown("""
+    <style>
+    .filter-bar-title {
+        font-size: 0.8rem; font-weight: 700; color: #1a3c5e;
+        text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    st.markdown('<div class="filter-bar-title">&#x1F50D; Search &amp; Filter</div>', unsafe_allow_html=True)
+    s_col, sort_col = st.columns([3, 1])
+    with s_col:
+        st.session_state.income_search = st.text_input(
+            "Search income", value=st.session_state.income_search,
+            placeholder="Search by source or bank name…",
+            label_visibility="collapsed", key="income_search_input"
+        )
+    with sort_col:
+        sort_opts = ["Newest First", "Oldest First", "Highest Amount", "Lowest Amount"]
+        st.session_state.income_sort = st.selectbox(
+            "Sort", sort_opts,
+            index=sort_opts.index(st.session_state.income_sort),
+            key="income_sort_select", label_visibility="collapsed"
+        )
+    f1, f2, f3 = st.columns(3)
+    bank_names = ["All"] + sorted(set(b["bank_name"] for b in banks))
+    with f1:
+        sel_bank = st.selectbox(
+            "Bank", bank_names,
+            index=bank_names.index(st.session_state.income_filter_bank) if st.session_state.income_filter_bank in bank_names else 0,
+            key="income_bank_filter"
+        )
+        st.session_state.income_filter_bank = sel_bank
+    with f2:
+        date_from = st.date_input("From date", value=st.session_state.income_filter_date_from, key="income_date_from")
+        st.session_state.income_filter_date_from = date_from if date_from else None
+    with f3:
+        date_to = st.date_input("To date", value=st.session_state.income_filter_date_to, key="income_date_to")
+        st.session_state.income_filter_date_to = date_to if date_to else None
+    if st.button("Clear filters", key="income_clear_filters"):
+        st.session_state.income_search = ""
+        st.session_state.income_filter_bank = "All"
+        st.session_state.income_filter_date_from = None
+        st.session_state.income_filter_date_to = None
+        st.session_state.income_sort = "Newest First"
+        st.rerun()
+
+
+def render_filter_bar_expenses(banks, all_categories):
+    """Render the search + filter + sort controls for Expense Summary."""
+    st.markdown('<div class="filter-bar-title">&#x1F50D; Search &amp; Filter</div>', unsafe_allow_html=True)
+    s_col, sort_col = st.columns([3, 1])
+    with s_col:
+        st.session_state.exp_search = st.text_input(
+            "Search expenses", value=st.session_state.exp_search,
+            placeholder="Search by name, category, or bank…",
+            label_visibility="collapsed", key="exp_search_input"
+        )
+    with sort_col:
+        sort_opts = ["Newest First", "Oldest First", "Highest Amount", "Lowest Amount"]
+        st.session_state.exp_sort = st.selectbox(
+            "Sort", sort_opts,
+            index=sort_opts.index(st.session_state.exp_sort),
+            key="exp_sort_select", label_visibility="collapsed"
+        )
+    f1, f2, f3, f4 = st.columns(4)
+    bank_names = ["All"] + sorted(set(b["bank_name"] for b in banks))
+    cat_names  = ["All"] + sorted(all_categories)
+    with f1:
+        sel_bank = st.selectbox(
+            "Bank", bank_names,
+            index=bank_names.index(st.session_state.exp_filter_bank) if st.session_state.exp_filter_bank in bank_names else 0,
+            key="exp_bank_filter"
+        )
+        st.session_state.exp_filter_bank = sel_bank
+    with f2:
+        sel_cat = st.selectbox(
+            "Category", cat_names,
+            index=cat_names.index(st.session_state.exp_filter_category) if st.session_state.exp_filter_category in cat_names else 0,
+            key="exp_cat_filter"
+        )
+        st.session_state.exp_filter_category = sel_cat
+    with f3:
+        date_from = st.date_input("From date", value=st.session_state.exp_filter_date_from, key="exp_date_from")
+        st.session_state.exp_filter_date_from = date_from if date_from else None
+    with f4:
+        date_to = st.date_input("To date", value=st.session_state.exp_filter_date_to, key="exp_date_to")
+        st.session_state.exp_filter_date_to = date_to if date_to else None
+    if st.button("Clear filters", key="exp_clear_filters"):
+        st.session_state.exp_search = ""
+        st.session_state.exp_filter_bank = "All"
+        st.session_state.exp_filter_category = "All"
+        st.session_state.exp_filter_date_from = None
+        st.session_state.exp_filter_date_to = None
+        st.session_state.exp_sort = "Newest First"
+        st.rerun()
+
 
 # ---------------- UI ----------------
 st.title("Budget Right")
@@ -2145,47 +2338,58 @@ elif current_page == "Income":
         income_data = cursor.fetchall()
 
     if income_data:
-        for inc in income_data:
-            source = inc["description"].replace("Income: ", "", 1)
-            card_col, edit_col, del_col = st.columns([5, 0.5, 0.5])
-            with card_col:
-                st.markdown(f"""
-                <div class="exp-card" style="border-left-color:#0e7c5b;">
-                  <div class="exp-card-left">
-                    <div class="exp-card-name">{source}</div>
-                    <div class="exp-card-bank">Bank: {inc['bank_name']} (****{inc['account_number']})</div>
-                    <div class="exp-card-date">Date: {inc['created_at']}</div>
-                  </div>
-                  <div class="exp-card-right">
-                    <div class="exp-card-amount" style="color:#0e7c5b;">+NGN {inc['amount']:,.0f}</div>
-                  </div>
-                </div>
-                """, unsafe_allow_html=True)
-            with edit_col:
-                if st.button("✏️", key=f"edit_inc_{inc['id']}", help="Edit income"):
-                    st.session_state.edit_income_id = inc["id"]
-                    st.rerun()
-            with del_col:
-                del_key = f"inc_{inc['id']}"
-                if st.session_state.confirm_delete.get(del_key):
-                    st.error(f"Delete '{source}'?")
-                    cc1, cc2 = st.columns(2)
-                    with cc1:
-                        if st.button("Yes, delete", key=f"confirm_yes_inc_{inc['id']}"):
-                            with get_db() as (conn, cursor):
-                                cursor.execute("UPDATE banks SET balance = balance - %s WHERE id=%s", (inc["amount"], inc["bank_id"]))
-                                cursor.execute("DELETE FROM transactions WHERE id=%s", (inc["id"],))
-                            st.session_state.confirm_delete.pop(del_key, None)
-                            st.success(f"Deleted & NGN {inc['amount']:,.0f} reversed.")
-                            st.rerun()
-                    with cc2:
-                        if st.button("Cancel", key=f"confirm_no_inc_{inc['id']}"):
-                            st.session_state.confirm_delete.pop(del_key, None)
-                            st.rerun()
-                else:
-                    if st.button("🗑️", key=f"delete_inc_{inc['id']}", help="Delete income"):
-                        st.session_state.confirm_delete[del_key] = True
+        render_filter_bar_income(banks)
+        filtered_income = apply_income_filters(income_data)
+
+        total_shown = sum(r["amount"] for r in filtered_income)
+        if len(filtered_income) != len(income_data):
+            st.caption(f"Showing {len(filtered_income)} of {len(income_data)} entries — NGN {total_shown:,.0f} total")
+        else:
+            st.caption(f"{len(income_data)} entries — NGN {total_shown:,.0f} total")
+
+        if not filtered_income:
+            st.info("No income entries match your search or filters.")
+        else:
+            for inc in filtered_income:
+                source = inc["description"].replace("Income: ", "", 1)
+                card_col, edit_col, del_col = st.columns([5, 0.5, 0.5])
+                with card_col:
+                    st.markdown(f"""
+                    <div class="exp-card" style="border-left-color:#0e7c5b;">
+                      <div class="exp-card-left">
+                        <div class="exp-card-name">{source}</div>
+                        <div class="exp-card-bank">Bank: {inc['bank_name']} (****{inc['account_number']})</div>
+                        <div class="exp-card-date">Date: {inc['created_at']}</div>
+                      </div>
+                      <div class="exp-card-right">
+                        <div class="exp-card-amount" style="color:#0e7c5b;">+NGN {inc['amount']:,.0f}</div>
+                      </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with edit_col:
+                    if st.button("✏️", key=f"edit_inc_{inc['id']}", help="Edit income"):
+                        st.session_state.edit_income_id = inc["id"]
                         st.rerun()
+                with del_col:
+                    del_key = f"inc_{inc['id']}"
+                    if st.session_state.confirm_delete.get(del_key):
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            if st.button("✓", key=f"confirm_yes_inc_{inc['id']}", help="Confirm delete", type="primary"):
+                                with get_db() as (conn, cursor):
+                                    cursor.execute("UPDATE banks SET balance = balance - %s WHERE id=%s", (inc["amount"], inc["bank_id"]))
+                                    cursor.execute("DELETE FROM transactions WHERE id=%s", (inc["id"],))
+                                st.session_state.confirm_delete.pop(del_key, None)
+                                st.toast(f"Deleted — NGN {inc['amount']:,.0f} reversed from {inc['bank_name']}", icon="🗑️")
+                                st.rerun()
+                        with c2:
+                            if st.button("✗", key=f"confirm_no_inc_{inc['id']}", help="Cancel"):
+                                st.session_state.confirm_delete.pop(del_key, None)
+                                st.rerun()
+                    else:
+                        if st.button("🗑️", key=f"delete_inc_{inc['id']}", help=f"Delete '{source}'"):
+                            st.session_state.confirm_delete[del_key] = True
+                            st.rerun()
     else:
         st.markdown("""
         <div style="background:#f0f7f4;border-radius:10px;padding:20px 22px;text-align:center;color:#4a6070;">
@@ -2374,53 +2578,67 @@ elif current_page == "Expenses":
         expenses_data = cursor.fetchall()
 
     if expenses_data:
-        for exp in expenses_data:
-            card_col, edit_col, del_col = st.columns([5, 0.5, 0.5])
-            cat_display = exp['category'] if exp.get('category') and exp['category'] != exp['name'] else ""
-            with card_col:
-                st.markdown(f"""
-                <div class="exp-card">
-                  <div class="exp-card-left">
-                    <div class="exp-card-name">{exp['name']}{f' <span style="background:#e8f5f0;color:#0e7c5b;border-radius:10px;padding:1px 8px;font-size:0.75rem;font-weight:600;margin-left:6px;">{cat_display}</span>' if cat_display else ''}</div>
-                    <div class="exp-card-bank">Bank: {exp['bank_name']} (****{exp['account_number']})</div>
-                    <div class="exp-card-date">Date: {exp['created_at']}</div>
-                  </div>
-                  <div class="exp-card-right">
-                    <div class="exp-card-amount">-NGN {exp['amount']:,.0f}</div>
-                  </div>
-                </div>
-                """, unsafe_allow_html=True)
-            with edit_col:
-                if st.button("✏️", key=f"edit_exp_{exp['id']}", help="Edit expense"):
-                    st.session_state.edit_exp_id = exp["id"]
-                    st.rerun()
-            with del_col:
-                del_key = f"exp_{exp['id']}"
-                if st.session_state.confirm_delete.get(del_key):
-                    st.error(f"Delete '{exp['name']}'?")
-                    cc1, cc2 = st.columns(2)
-                    with cc1:
-                        if st.button("Yes, delete", key=f"confirm_yes_exp_{exp['id']}"):
-                            with get_db() as (conn, cursor):
-                                cursor.execute("UPDATE banks SET balance = balance + %s WHERE id=%s", (exp["amount"], exp["bank_id"]))
-                                if exp["tx_id"]:
-                                    cursor.execute("DELETE FROM transactions WHERE id=%s", (exp["tx_id"],))
-                                cursor.execute("DELETE FROM expenses WHERE id=%s AND user_id=%s", (exp["id"], user_id))
-                            st.session_state.confirm_delete.pop(del_key, None)
-                            st.success(f"Deleted & NGN {exp['amount']:,.0f} refunded.")
-                            st.rerun()
-                    with cc2:
-                        if st.button("Cancel", key=f"confirm_no_exp_{exp['id']}"):
-                            st.session_state.confirm_delete.pop(del_key, None)
-                            st.rerun()
-                else:
-                    if st.button("🗑️", key=f"delete_exp_{exp['id']}", help="Delete expense"):
-                        st.session_state.confirm_delete[del_key] = True
+        all_expense_categories = sorted(set(
+            (e["category"] or e["name"]) for e in expenses_data if (e["category"] or e["name"])
+        ))
+
+        render_filter_bar_expenses(banks, all_expense_categories)
+        filtered_expenses = apply_expense_filters(expenses_data)
+
+        total_shown = sum(e["amount"] for e in filtered_expenses)
+        if len(filtered_expenses) != len(expenses_data):
+            st.caption(f"Showing {len(filtered_expenses)} of {len(expenses_data)} entries — NGN {total_shown:,.0f} total")
+        else:
+            st.caption(f"{len(expenses_data)} entries — NGN {total_shown:,.0f} total")
+
+        if not filtered_expenses:
+            st.info("No expenses match your search or filters.")
+        else:
+            for exp in filtered_expenses:
+                card_col, edit_col, del_col = st.columns([5, 0.5, 0.5])
+                cat_display = exp['category'] if exp.get('category') and exp['category'] != exp['name'] else ""
+                with card_col:
+                    st.markdown(f"""
+                    <div class="exp-card">
+                      <div class="exp-card-left">
+                        <div class="exp-card-name">{exp['name']}{f' <span style="background:#e8f5f0;color:#0e7c5b;border-radius:10px;padding:1px 8px;font-size:0.75rem;font-weight:600;margin-left:6px;">{cat_display}</span>' if cat_display else ''}</div>
+                        <div class="exp-card-bank">Bank: {exp['bank_name']} (****{exp['account_number']})</div>
+                        <div class="exp-card-date">Date: {exp['created_at']}</div>
+                      </div>
+                      <div class="exp-card-right">
+                        <div class="exp-card-amount">-NGN {exp['amount']:,.0f}</div>
+                      </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with edit_col:
+                    if st.button("✏️", key=f"edit_exp_{exp['id']}", help="Edit expense"):
+                        st.session_state.edit_exp_id = exp["id"]
                         st.rerun()
+                with del_col:
+                    del_key = f"exp_{exp['id']}"
+                    if st.session_state.confirm_delete.get(del_key):
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            if st.button("✓", key=f"confirm_yes_exp_{exp['id']}", help="Confirm delete", type="primary"):
+                                with get_db() as (conn, cursor):
+                                    cursor.execute("UPDATE banks SET balance = balance + %s WHERE id=%s", (exp["amount"], exp["bank_id"]))
+                                    if exp["tx_id"]:
+                                        cursor.execute("DELETE FROM transactions WHERE id=%s", (exp["tx_id"],))
+                                    cursor.execute("DELETE FROM expenses WHERE id=%s AND user_id=%s", (exp["id"], user_id))
+                                st.session_state.confirm_delete.pop(del_key, None)
+                                st.toast(f"Deleted — NGN {exp['amount']:,.0f} refunded to {exp['bank_name']}", icon="🗑️")
+                                st.rerun()
+                        with c2:
+                            if st.button("✗", key=f"confirm_no_exp_{exp['id']}", help="Cancel"):
+                                st.session_state.confirm_delete.pop(del_key, None)
+                                st.rerun()
+                    else:
+                        if st.button("🗑️", key=f"delete_exp_{exp['id']}", help=f"Delete '{exp['name']}'"):
+                            st.session_state.confirm_delete[del_key] = True
+                            st.rerun()
 
         st.divider()
         st.subheader("Your Expense Breakdown")
-        # Group by category (falls back to name for old records without category)
         df_exp_pie = pd.DataFrame(
             [(e["category"] or e["name"], e["amount"]) for e in expenses_data],
             columns=["Category", "Amount"]
@@ -2542,7 +2760,7 @@ elif current_page == "Transfers":
         banks = cursor.fetchall()
 
     if len(banks) >= 2:
-        bank_map_transfer = {f"{b['bank_name']} (****{b['account_number']}) - NGN {b['balance']:,}": b["id"] for b in banks}
+        bank_map_transfer = {f"{b['bank_name']} (****{b['account_number']}) - NGN {b['balance']:,}": b for b in banks}
         from_bank       = st.selectbox("From Bank", list(bank_map_transfer.keys()), key="from_bank")
         to_bank         = st.selectbox("To Bank",   list(bank_map_transfer.keys()), key="to_bank")
         transfer_amount = st.number_input("Amount to Transfer (NGN)", min_value=1, key="transfer_amt")
@@ -2550,23 +2768,70 @@ elif current_page == "Transfers":
             if from_bank == to_bank:
                 st.warning("Cannot transfer to the same bank")
             else:
-                from_id = bank_map_transfer[from_bank]
-                to_id   = bank_map_transfer[to_bank]
+                from_b    = bank_map_transfer[from_bank]
+                to_b      = bank_map_transfer[to_bank]
+                from_id   = from_b["id"]
+                to_id     = to_b["id"]
+                from_name = from_b["bank_name"]
+                to_name   = to_b["bank_name"]
                 with get_db() as (conn, cursor):
                     cursor.execute("SELECT balance FROM banks WHERE id=%s", (from_id,))
                     from_balance = cursor.fetchone()["balance"]
                     if transfer_amount > from_balance:
-                        st.error("Insufficient funds")
+                        st.error(f"Insufficient funds. {from_name} only has NGN {from_balance:,}.")
                     else:
                         today = datetime.now().date()
                         cursor.execute("UPDATE banks SET balance = balance - %s WHERE id=%s", (transfer_amount, from_id))
                         cursor.execute("UPDATE banks SET balance = balance + %s WHERE id=%s", (transfer_amount, to_id))
-                        cursor.execute("INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'debit', %s, %s, %s)",
-                                       (from_id, transfer_amount, f"Transfer to bank {to_id}", today))
-                        cursor.execute("INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'credit', %s, %s, %s)",
-                                       (to_id, transfer_amount, f"Transfer from bank {from_id}", today))
-                        st.success("Transfer completed")
+                        cursor.execute(
+                            "INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'debit', %s, %s, %s)",
+                            (from_id, transfer_amount, f"Transfer to {to_name}", today)
+                        )
+                        cursor.execute(
+                            "INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'credit', %s, %s, %s)",
+                            (to_id, transfer_amount, f"Transfer from {from_name}", today)
+                        )
+                        st.success(f"Transferred NGN {transfer_amount:,} from {from_name} to {to_name} ✓")
                         st.rerun()
+
+        # ── Transfer History ──────────────────────────────────────────────────
+        st.divider()
+        st.subheader("Transfer History")
+        with get_db() as (conn, cursor):
+            cursor.execute("""
+                SELECT t.id, t.created_at, t.description, t.amount, t.type,
+                       b.bank_name, b.account_number
+                FROM transactions t JOIN banks b ON t.bank_id = b.id
+                WHERE b.user_id = %s
+                  AND (t.description LIKE 'Transfer to %%' OR t.description LIKE 'Transfer from %%'
+                       OR t.description LIKE 'Transfer to bank %%' OR t.description LIKE 'Transfer from bank %%')
+                ORDER BY t.created_at DESC
+                LIMIT 50
+            """, (user_id,))
+            transfer_history = cursor.fetchall()
+
+        if transfer_history:
+            for tx in transfer_history:
+                color  = "#0e7c5b" if tx["type"] == "credit" else "#c0392b"
+                prefix = "+" if tx["type"] == "credit" else "-"
+                # Humanise legacy "Transfer to bank 12" descriptions
+                desc = tx["description"]
+                desc = re.sub(r"Transfer to bank \d+", "Transfer to another account", desc)
+                desc = re.sub(r"Transfer from bank \d+", "Transfer from another account", desc)
+                st.markdown(f"""
+                <div class="exp-card" style="border-left-color:{color};">
+                  <div class="exp-card-left">
+                    <div class="exp-card-name">{desc}</div>
+                    <div class="exp-card-bank">Account: {tx['bank_name']} (****{tx['account_number']})</div>
+                    <div class="exp-card-date">Date: {tx['created_at']}</div>
+                  </div>
+                  <div class="exp-card-right">
+                    <div class="exp-card-amount" style="color:{color};">{prefix}NGN {tx['amount']:,.0f}</div>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.caption("No transfers recorded yet.")
     else:
         st.markdown("""
         <div style="background:#f0f7f4;border-radius:10px;padding:20px 22px;text-align:center;color:#4a6070;">
