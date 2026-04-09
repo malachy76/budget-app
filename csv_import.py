@@ -1,14 +1,159 @@
 # csv_import.py
+# -*- coding: utf-8 -*-
+"""
+Safe CSV bank-statement importer for Budget Right.
+"""
+
 import re
+import hashlib
 import pandas as pd
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, date
+
+BANK_FORMATS = {
+    "GTB (Guaranty Trust Bank)": {
+        "amount_cols":   ["debit", "withdrawal", "dr"],
+        "date_cols":     ["date", "value date", "transaction date"],
+        "desc_cols":     ["description", "narration", "details", "remarks"],
+        "credit_cols":   ["credit", "deposit", "cr"],
+        "skip_keywords": ["opening balance", "closing balance", "brought forward"],
+    },
+    "Access Bank": {
+        "amount_cols":   ["debit amount", "debit", "withdrawal", "amount"],
+        "date_cols":     ["transaction date", "date", "value date"],
+        "desc_cols":     ["transaction details", "description", "narration"],
+        "credit_cols":   ["credit amount", "credit"],
+        "skip_keywords": ["balance b/f", "opening", "total"],
+    },
+    "Zenith Bank": {
+        "amount_cols":   ["dr amount", "debit", "dr"],
+        "date_cols":     ["posting date", "date", "value date"],
+        "desc_cols":     ["transaction description", "narration", "description"],
+        "credit_cols":   ["cr amount", "credit", "cr"],
+        "skip_keywords": ["balance", "total"],
+    },
+    "UBA (United Bank for Africa)": {
+        "amount_cols":   ["debit", "withdrawal", "dr amount"],
+        "date_cols":     ["transaction date", "date"],
+        "desc_cols":     ["transaction description", "narration", "description"],
+        "credit_cols":   ["credit", "deposit"],
+        "skip_keywords": ["balance b/f", "total", "brought forward"],
+    },
+    "First Bank": {
+        "amount_cols":   ["debit", "amount", "dr"],
+        "date_cols":     ["date", "transaction date", "posting date"],
+        "desc_cols":     ["description", "narration", "particulars"],
+        "credit_cols":   ["credit", "cr"],
+        "skip_keywords": ["opening", "closing", "b/f"],
+    },
+    "Opay": {
+        "amount_cols":   ["amount", "debit amount", "transaction amount"],
+        "date_cols":     ["date", "time", "created at", "transaction date"],
+        "desc_cols":     ["description", "narration", "transaction type", "remark"],
+        "credit_cols":   ["credit amount"],
+        "skip_keywords": [],
+    },
+    "Kuda Bank": {
+        "amount_cols":   ["amount", "debit"],
+        "date_cols":     ["date", "transaction date", "created at"],
+        "desc_cols":     ["description", "narration", "transaction description"],
+        "credit_cols":   ["credit"],
+        "skip_keywords": [],
+    },
+    "Moniepoint": {
+        "amount_cols":   ["amount", "debit amount"],
+        "date_cols":     ["date", "transaction date"],
+        "desc_cols":     ["description", "narration", "transaction description"],
+        "credit_cols":   ["credit amount"],
+        "skip_keywords": [],
+    },
+    "Fidelity Bank": {
+        "amount_cols":   ["debit", "dr", "amount"],
+        "date_cols":     ["transaction date", "value date", "date"],
+        "desc_cols":     ["narration", "description", "transaction details"],
+        "credit_cols":   ["credit", "cr"],
+        "skip_keywords": ["balance", "total"],
+    },
+    "FCMB": {
+        "amount_cols":   ["debit", "amount", "withdrawal"],
+        "date_cols":     ["date", "transaction date", "value date"],
+        "desc_cols":     ["description", "narration", "details"],
+        "credit_cols":   ["credit", "deposit"],
+        "skip_keywords": ["balance"],
+    },
+    "Stanbic IBTC": {
+        "amount_cols":   ["debit amount", "debit", "dr"],
+        "date_cols":     ["date", "posting date", "transaction date"],
+        "desc_cols":     ["transaction narrative", "description", "narration"],
+        "credit_cols":   ["credit amount", "credit", "cr"],
+        "skip_keywords": ["balance", "opening", "closing"],
+    },
+    "Polaris Bank": {
+        "amount_cols":   ["debit", "dr amount", "withdrawal"],
+        "date_cols":     ["date", "value date", "transaction date"],
+        "desc_cols":     ["description", "narration", "particulars"],
+        "credit_cols":   ["credit", "cr amount"],
+        "skip_keywords": ["balance", "b/f"],
+    },
+    "Generic (any bank)": {
+        "amount_cols":   ["amount", "debit", "dr", "withdrawal", "amt", "value"],
+        "date_cols":     ["date", "time", "posted", "value date", "txn date", "transaction date"],
+        "desc_cols":     ["description", "narration", "remark", "details",
+                          "merchant", "particulars", "reference", "memo", "narrative"],
+        "credit_cols":   ["credit", "cr", "deposit"],
+        "skip_keywords": [],
+    },
+}
+
+CATEGORY_KEYWORDS = {
+    "Transport":            ["bolt", "uber", "taxify", "okada", "danfo", "bus", "keke", "ride",
+                             "transport", "brt", "taxi", "bike", "lasgidi", "gokada"],
+    "Airtime/Data":         ["airtime", "data", "mtn", "airtel", "glo", "9mobile", "etisalat",
+                             "recharge", "vtu", "bundle", "data sub"],
+    "Foodstuff":            ["shoprite", "spar", "market", "grocery", "provision", "foodstuff",
+                             "rice", "beans", "yam", "garri", "palm oil", "tomato", "pepper",
+                             "chicken", "fish", "beef", "suya", "meat", "vegetable"],
+    "Food & Eating Out":    ["restaurant", "eatery", "cafe", "pizza", "chicken republic",
+                             "mr biggs", "tantalizers", "domino", "kfc", "fast food", "food court",
+                             "canteen", "lunch", "dinner", "breakfast", "snack", "buka", "mama put"],
+    "Fuel":                 ["fuel", "petrol", "diesel", "filling station", "nnpc", "total",
+                             "mobil", "conoil", "oando", "gas station", "litre", "liter"],
+    "Electricity (NEPA)":   ["nepa", "phcn", "eko electric", "ikeja electric", "abuja electric",
+                             "disco", "prepaid meter", "token", "electricity", "power", "light bill"],
+    "Rent":                 ["rent", "house", "apartment", "landlord", "caution fee", "agency fee",
+                             "tenancy", "leasehold"],
+    "School Fees":          ["school", "fees", "tuition", "university", "college", "academy",
+                             "polytechnic", "exam", "waec", "jamb", "neco", "school levy"],
+    "Hospital/Drugs":       ["hospital", "clinic", "pharmacy", "drug", "medicine", "health",
+                             "doctor", "lab", "scan", "test", "surgery", "chemist"],
+    "Internet":             ["internet", "isp", "spectranet", "smile", "swift", "ipnx", "wifi",
+                             "broadband", "fiber", "starlink", "subscription"],
+    "POS Charges":          ["pos charge", "pos fee", "withdrawal fee", "pos commission"],
+    "Transfer Fees":        ["transfer fee", "transaction fee", "service charge", "maintenance fee",
+                             "bank charge", "sms charge", "card maintenance"],
+    "Church/Mosque Giving": ["tithe", "offering", "church", "mosque", "giving", "donation",
+                             "crusade", "fellowship", "islamic", "juma"],
+    "Business Stock":       ["stock", "inventory", "wholesale", "goods", "merchandise", "restock",
+                             "supplier", "procurement", "raw material"],
+    "Family Support":       ["family", "mum", "dad", "mother", "father", "brother", "sister",
+                             "uncle", "aunt", "parents", "kin", "relative"],
+    "Subscription":         ["netflix", "spotify", "apple", "google play", "dstv", "gotv",
+                             "showmax", "prime video", "amazon", "canva", "chatgpt", "openai",
+                             "monthly", "annual", "renewal"],
+    "Hair/Beauty":          ["hair", "salon", "barber", "beauty", "makeup", "spa", "nail"],
+    "Clothing":             ["clothing", "cloth", "fashion", "shoe", "bag", "boutique",
+                             "tailoring", "sewing", "fabric", "ankara", "aso ebi"],
+    "Generator/Fuel":       ["generator", "gen", "diesel gen", "fuel gen", "servicing gen"],
+    "Water":                ["water", "borehole", "sachet water", "table water", "water board"],
+    "Betting":              ["bet", "sporty", "nairabet", "betking", "melbet", "1xbet",
+                             "betway", "bet9ja", "betting", "lottery"],
+    "Savings Deposit":      ["savings", "piggy", "cowrywise", "kuda save", "stash"],
+}
 
 
-# ── helpers ──────────────────────────────────────────────────────────────────
+# ── helpers ────────────────────────────────────────────────────────────────────
 
 def _clean_amount(x):
-    """Strip currency symbols / commas, return positive float or None."""
     if pd.isna(x):
         return None
     s = re.sub(r"[^0-9.\-]", "", str(x).replace(",", ""))
@@ -16,64 +161,197 @@ def _clean_amount(x):
         return None
     try:
         val = float(s)
-        return abs(val) if val != 0 else None   # expenses are always positive
+        return abs(val) if val != 0 else None
     except Exception:
         return None
 
 
 def _clean_date(x):
-    """Parse any date format -> 'YYYY-MM-DD' string, or today as fallback."""
     if pd.isna(x):
-        return datetime.now().strftime("%Y-%m-%d")
+        return date.today()
     dt = pd.to_datetime(x, errors="coerce", dayfirst=True)
     if pd.isna(dt):
-        return datetime.now().strftime("%Y-%m-%d")
-    return dt.strftime("%Y-%m-%d")
+        return date.today()
+    return dt.date()
 
 
-def _clean_text(x):
+def _clean_text(x, fallback="Imported expense"):
     if pd.isna(x):
-        return "Imported expense"
-    return str(x).strip() or "Imported expense"
+        return fallback
+    return str(x).strip() or fallback
+
+
+def _row_fingerprint(bank_id, txn_date, amount, description):
+    raw = f"{bank_id}|{txn_date}|{amount}|{description.strip().lower()}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _guess_category(description):
+    desc_lower = description.lower()
+    for category, keywords in CATEGORY_KEYWORDS.items():
+        if any(kw in desc_lower for kw in keywords):
+            return category
+    return "Other"
+
+
+def _detect_bank_format(columns):
+    cols_lower = [c.lower().strip() for c in columns]
+    best_name  = "Generic (any bank)"
+    best_score = 0
+    for bank_name, fmt in BANK_FORMATS.items():
+        if bank_name == "Generic (any bank)":
+            continue
+        score = 0
+        all_hints = fmt["amount_cols"] + fmt["date_cols"] + fmt["desc_cols"] + fmt["credit_cols"]
+        for hint in all_hints:
+            if any(hint in col for col in cols_lower):
+                score += 1
+        if score > best_score:
+            best_score = score
+            best_name  = bank_name
+    return best_name, BANK_FORMATS[best_name]
+
+
+def _auto_pick_col(columns, keywords):
+    cols_lower = [c.lower().strip() for c in columns]
+    for kw in keywords:
+        for i, col_low in enumerate(cols_lower):
+            if kw in col_low:
+                return columns[i]
+    return None
+
+
+def _load_existing_fingerprints(cur, bank_id):
+    cur.execute(
+        "SELECT amount, description, created_at FROM transactions WHERE bank_id = %s AND type = 'debit'",
+        (bank_id,)
+    )
+    rows = cur.fetchall()
+    fps  = set()
+    for r in rows:
+        fp = _row_fingerprint(bank_id, r["created_at"], int(r["amount"]), r["description"] or "")
+        fps.add(fp)
+    return fps
+
+
+def _ensure_import_tables(cur, conn):
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS import_batches (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            bank_id INTEGER NOT NULL REFERENCES banks(id) ON DELETE CASCADE,
+            filename TEXT,
+            row_count INTEGER DEFAULT 0,
+            total_amount INTEGER DEFAULT 0,
+            imported_at TIMESTAMP DEFAULT NOW(),
+            undone INTEGER DEFAULT 0
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS import_batch_items (
+            id SERIAL PRIMARY KEY,
+            batch_id INTEGER NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
+            expense_id INTEGER REFERENCES expenses(id) ON DELETE SET NULL,
+            tx_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
+            amount INTEGER NOT NULL,
+            bank_id INTEGER NOT NULL REFERENCES banks(id) ON DELETE CASCADE
+        )
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_import_batches_user_id
+            ON import_batches(user_id, imported_at DESC)
+    """)
+    conn.commit()
+
+
+def _get_last_batch(cur, user_id):
+    cur.execute("""
+        SELECT id, filename, row_count, total_amount, imported_at, bank_id
+        FROM import_batches
+        WHERE user_id = %s AND undone = 0
+        ORDER BY imported_at DESC LIMIT 1
+    """, (user_id,))
+    return cur.fetchone()
+
+
+def _undo_batch(cur, conn, batch_id, user_id):
+    cur.execute("""
+        SELECT ibi.expense_id, ibi.tx_id, ibi.amount, ibi.bank_id
+        FROM import_batch_items ibi WHERE ibi.batch_id = %s
+    """, (batch_id,))
+    items = cur.fetchall()
+    rows_reversed  = 0
+    total_reversed = 0
+    for item in items:
+        amt     = item["amount"]
+        bank_id = item["bank_id"]
+        cur.execute("UPDATE banks SET balance = balance + %s WHERE id = %s", (amt, bank_id))
+        if item["expense_id"]:
+            cur.execute("DELETE FROM expenses WHERE id = %s AND user_id = %s",
+                        (item["expense_id"], user_id))
+        if item["tx_id"]:
+            cur.execute("DELETE FROM transactions WHERE id = %s", (item["tx_id"],))
+        rows_reversed  += 1
+        total_reversed += amt
+    cur.execute("UPDATE import_batches SET undone = 1 WHERE id = %s", (batch_id,))
+    conn.commit()
+    return rows_reversed, total_reversed
 
 
 # ── main page ─────────────────────────────────────────────────────────────────
 
 def csv_import_page(conn, user_id: int):
-    st.header("Import Bank Statement (CSV)")
-    st.caption(
-        "Upload your bank statement CSV, map the columns, pick the bank "
-        "it belongs to, preview — then import. "
-        "Each row becomes an expense + a debit transaction exactly "
-        "like adding expenses manually."
-    )
-
-    # ── 1. Load user's banks ─────────────────────────────────────────────────
     cur = conn.cursor()
-    cur.execute(
-        "SELECT id, bank_name, account_number, balance FROM banks WHERE user_id = %s",
-        (user_id,)
-    )
-    banks = cur.fetchall()
+    _ensure_import_tables(cur, conn)
 
+    st.markdown("""
+    <style>
+    .import-badge      { display:inline-block; background:#e8f5f0; color:#0e7c5b;
+                         border-radius:20px; padding:2px 12px; font-size:0.78rem; font-weight:700; margin-left:6px; }
+    .import-badge-warn { background:#fff3e0; color:#e65100; }
+    .import-badge-dup  { background:#f3e5f5; color:#6a1b9a; }
+    .import-section    { background:#f0f7f4; border-radius:10px; padding:14px 18px; margin-bottom:12px; }
+    .format-chip       { display:inline-block; background:#1a3c5e; color:#a8d8c8;
+                         border-radius:8px; padding:4px 12px; font-size:0.82rem; font-weight:600; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # 1. Load banks
+    cur.execute("SELECT id, bank_name, account_number, balance FROM banks WHERE user_id = %s", (user_id,))
+    banks = cur.fetchall()
     if not banks:
         st.warning("You have no bank accounts yet. Add one on the Banks page first.")
         return
 
     bank_options = {
-        f"{b['bank_name']} (****{b['account_number']}) - NGN {b['balance']:,}": b["id"]
-        for b in banks
+        f"{b['bank_name']} (****{b['account_number']}) - NGN {b['balance']:,}": b for b in banks
     }
-    selected_bank_label = st.selectbox(
-        "Which bank does this statement belong to?",
-        list(bank_options.keys()),
-        key="csv_bank_select"
-    )
-    bank_id = bank_options[selected_bank_label]
+    sel_label    = st.selectbox("Which bank does this statement belong to?",
+                                list(bank_options.keys()), key="csv_bank_select")
+    selected_bank = bank_options[sel_label]
+    bank_id       = selected_bank["id"]
+
+    # 2. Undo last import
+    last_batch = _get_last_batch(cur, user_id)
+    if last_batch:
+        with st.expander(
+            f"Undo last import — {last_batch['row_count']} rows, "
+            f"NGN {last_batch['total_amount']:,} "
+            f"(imported {str(last_batch['imported_at'])[:16]})",
+            expanded=False
+        ):
+            st.warning(
+                f"This will reverse **{last_batch['row_count']} expenses** totalling "
+                f"**NGN {last_batch['total_amount']:,}** and restore your bank balance."
+            )
+            if st.button("Undo this import", key="csv_undo_btn", type="primary"):
+                rows_rev, total_rev = _undo_batch(cur, conn, last_batch["id"], user_id)
+                st.success(f"Reversed {rows_rev} expenses — NGN {total_rev:,} restored.")
+                st.rerun()
 
     st.divider()
 
-    # ── 2. File upload ───────────────────────────────────────────────────────
+    # 3. File upload
     file = st.file_uploader("Upload CSV file", type=["csv"], key="csv_file")
     if not file:
         return
@@ -91,131 +369,217 @@ def csv_import_page(conn, user_id: int):
         st.warning("The CSV file is empty.")
         return
 
-    st.subheader("Preview (first 10 rows)")
-    st.dataframe(df.head(10), use_container_width=True)
-
-    # ── 3. Column mapping ────────────────────────────────────────────────────
-    st.subheader("Map your columns")
+    filename = getattr(file, "name", "unknown.csv")
     csv_cols = list(df.columns)
 
-    def auto_pick(keywords):
-        """Return index of first column whose name contains any keyword."""
-        for i, c in enumerate(csv_cols):
-            if any(k in c.lower() for k in keywords):
-                return i + 1          # +1 because index 0 = "(none)"
-        return 0
-
-    amount_idx = auto_pick(["amount", "amt", "debit", "dr", "withdraw", "value"])
-    date_idx   = auto_pick(["date", "time", "posted", "value date", "txn date"])
-    desc_idx   = auto_pick(["description", "narration", "remark", "details",
-                             "merchant", "particulars", "reference", "memo"])
-
-    amount_col = st.selectbox(
-        "Amount column *",
-        ["(none)"] + csv_cols,
-        index=amount_idx,
-        key="csv_amount_col"
-    )
-    date_col = st.selectbox(
-        "Date column (optional — today used if blank)",
-        ["(none)"] + csv_cols,
-        index=date_idx,
-        key="csv_date_col"
-    )
-    desc_col = st.selectbox(
-        "Description / Narration column *",
-        ["(none)"] + csv_cols,
-        index=desc_idx,
-        key="csv_desc_col"
+    # 4. Bank format auto-detection
+    detected_bank, fmt = _detect_bank_format(csv_cols)
+    st.markdown(
+        f'<div class="import-section">&#x1F4CB; <strong>Detected format:</strong> '
+        f'<span class="format-chip">{detected_bank}</span></div>',
+        unsafe_allow_html=True
     )
 
-    if amount_col == "(none)" or desc_col == "(none)":
-        st.info("Please map at least the Amount and Description columns to continue.")
-        return
+    with st.expander("Raw CSV preview (first 8 rows)", expanded=False):
+        st.dataframe(df.head(8), use_container_width=True)
 
-    # ── 4. Build preview data ────────────────────────────────────────────────
-    working = pd.DataFrame()
-    working["amount"]      = df[amount_col].apply(_clean_amount)
-    working["description"] = df[desc_col].apply(_clean_text)
-    working["date"]        = (
-        df[date_col].apply(_clean_date)
-        if date_col != "(none)"
-        else datetime.now().strftime("%Y-%m-%d")
-    )
+    # 5. Smart column auto-selection
+    auto_amount = _auto_pick_col(csv_cols, fmt["amount_cols"])
+    auto_date   = _auto_pick_col(csv_cols, fmt["date_cols"])
+    auto_desc   = _auto_pick_col(csv_cols, fmt["desc_cols"])
 
-    # Drop rows with no valid amount
-    before  = len(working)
-    working = working[working["amount"].notna()].reset_index(drop=True)
-    dropped = before - len(working)
+    st.subheader("Column mapping")
+    st.caption("Budget Right pre-selected the most relevant columns for your bank. Adjust if needed.")
 
-    if working.empty:
-        st.error("No rows with a valid amount found. Check your Amount column mapping.")
-        return
-
-    st.divider()
-    st.subheader(f"Ready to import — {len(working)} rows")
-    if dropped:
-        st.caption(f"({dropped} rows skipped — no valid amount)")
-
-    st.dataframe(
-        working[["date", "description", "amount"]].rename(columns={
-            "date": "Date", "description": "Description", "amount": "Amount (NGN)"
-        }),
-        use_container_width=True
-    )
-
-    total = working["amount"].sum()
-    st.markdown(f"**Total debit: NGN {total:,.2f}**")
-
-    # ── 5. Bank balance check ────────────────────────────────────────────────
-    cur.execute("SELECT balance FROM banks WHERE id = %s", (bank_id,))
-    row = cur.fetchone()
-    current_balance = row["balance"] if row else 0
-
-    if total > current_balance:
-        st.warning(
-            f"Total import (NGN {total:,.0f}) exceeds current bank balance "
-            f"(NGN {current_balance:,.0f}). Import will still work but balance "
-            f"will go negative."
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        amount_col = st.selectbox(
+            "Amount column *", ["(none)"] + csv_cols,
+            index=(csv_cols.index(auto_amount) + 1) if auto_amount else 0,
+            key="csv_amount_col",
+            help="Column containing debit/expense amounts"
+        )
+    with c2:
+        date_col = st.selectbox(
+            "Date column", ["(none)"] + csv_cols,
+            index=(csv_cols.index(auto_date) + 1) if auto_date else 0,
+            key="csv_date_col",
+            help="Transaction date — today used if blank"
+        )
+    with c3:
+        desc_col = st.selectbox(
+            "Description column *", ["(none)"] + csv_cols,
+            index=(csv_cols.index(auto_desc) + 1) if auto_desc else 0,
+            key="csv_desc_col",
+            help="Narration used as the expense name"
         )
 
-    # ── 6. Import button ─────────────────────────────────────────────────────
-    if st.button("Import All into Expenses", use_container_width=True, key="csv_import_btn"):
-        imported = 0
-        errors   = 0
+    if amount_col == "(none)" or desc_col == "(none)":
+        st.info("Please map at least the **Amount** and **Description** columns to continue.")
+        return
+
+    # 6. Build and clean working data
+    skip_kws    = fmt.get("skip_keywords", [])
+    rows_raw    = []
+    broken_rows = []
+
+    for idx, row in df.iterrows():
         try:
-            for _, row in working.iterrows():
-                amt  = int(round(row["amount"]))
-                desc = row["description"]
-                date = row["date"]
+            raw_amount = row.get(amount_col)
+            raw_desc   = row.get(desc_col)  if desc_col  != "(none)" else None
+            raw_date   = row.get(date_col)  if date_col  != "(none)" else None
 
-                # — Insert transaction FIRST, use RETURNING id (PostgreSQL syntax) —
-                cur.execute("""
-                    INSERT INTO transactions (bank_id, type, amount, description, created_at)
-                    VALUES (%s, 'debit', %s, %s, %s)
-                    RETURNING id
-                """, (bank_id, amt, f"Expense: {desc}", date))
-                tx_id = cur.fetchone()["id"]  # replaces SQLite's lastrowid
+            desc = _clean_text(raw_desc)
+            if skip_kws and any(kw in desc.lower() for kw in skip_kws):
+                continue
 
-                # — Insert expense with tx_id linked —
-                cur.execute("""
-                    INSERT INTO expenses (user_id, bank_id, name, amount, created_at, tx_id)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                """, (user_id, bank_id, desc, amt, date, tx_id))
+            amt = _clean_amount(raw_amount)
+            if amt is None or amt <= 0:
+                continue
 
-                # — Debit the bank balance —
-                cur.execute(
-                    "UPDATE banks SET balance = balance - %s WHERE id = %s",
-                    (amt, bank_id)
-                )
-                imported += 1
+            txn_date = _clean_date(raw_date) if raw_date is not None else date.today()
+            category = _guess_category(desc)
 
-            conn.commit()
-            st.success(f"Imported {imported} expenses successfully!")
-            st.caption(
-                "All rows are now visible on the Expenses page and the "
-                "Dashboard charts. Your bank balance has been updated."
+            rows_raw.append({
+                "date": txn_date, "description": desc,
+                "amount": int(round(amt)), "category": category,
+                "_row_idx": idx,
+            })
+        except Exception as exc:
+            broken_rows.append({"row": idx + 2, "error": str(exc)})
+
+    if broken_rows:
+        with st.expander(f"{len(broken_rows)} broken row(s) skipped", expanded=False):
+            for br in broken_rows:
+                st.caption(f"Row {br['row']}: {br['error']}")
+
+    if not rows_raw:
+        st.error("No valid rows found. Check your column mapping.")
+        return
+
+    # 7. Duplicate detection
+    existing_fps = _load_existing_fingerprints(cur, bank_id)
+    new_rows, dup_rows = [], []
+    for r in rows_raw:
+        fp = _row_fingerprint(bank_id, r["date"], r["amount"], r["description"])
+        (dup_rows if fp in existing_fps else new_rows).append(r)
+
+    # 8. Preview
+    st.divider()
+    total_new = sum(r["amount"] for r in new_rows)
+    total_dup = sum(r["amount"] for r in dup_rows)
+
+    badge_new = f'<span class="import-badge">{len(new_rows)} new</span>'
+    badge_dup = (f'<span class="import-badge import-badge-dup">{len(dup_rows)} duplicates</span>'
+                 if dup_rows else "")
+    badge_brk = (f'<span class="import-badge import-badge-warn">{len(broken_rows)} broken</span>'
+                 if broken_rows else "")
+    st.markdown(f"### Import preview &nbsp; {badge_new} {badge_dup} {badge_brk}",
+                unsafe_allow_html=True)
+
+    if not new_rows:
+        st.success(
+            f"All {len(dup_rows)} rows in this file have already been imported. Nothing new to add."
+        )
+        return
+
+    preview_df = pd.DataFrame(new_rows)[["date", "description", "category", "amount"]].copy()
+    preview_df.columns = ["Date", "Description", "Category (auto-detected)", "Amount (NGN)"]
+    preview_df["Amount (NGN)"] = preview_df["Amount (NGN)"].apply(lambda v: f"{v:,}")
+    st.dataframe(preview_df, use_container_width=True, height=min(300, 40 + len(new_rows) * 35))
+
+    st.markdown(f"**Total to import: NGN {total_new:,.0f}**")
+    if dup_rows:
+        st.info(
+            f"{len(dup_rows)} duplicate row(s) — NGN {total_dup:,.0f} — already in your "
+            f"records and will be skipped automatically."
+        )
+
+    # 9. Balance / overdraft check
+    cur.execute("SELECT balance FROM banks WHERE id = %s", (bank_id,))
+    current_balance = (cur.fetchone() or {}).get("balance", 0)
+    cur.execute("SELECT allow_overdraft FROM users WHERE id = %s", (user_id,))
+    allow_overdraft = bool((cur.fetchone() or {}).get("allow_overdraft", 0))
+
+    if total_new > current_balance and not allow_overdraft:
+        st.error(
+            f"Import total (NGN {total_new:,.0f}) exceeds your "
+            f"{selected_bank['bank_name']} balance (NGN {current_balance:,.0f}) "
+            f"by NGN {total_new - current_balance:,.0f}. "
+            f"Enable overdraft in Settings to allow this."
+        )
+        return
+    elif total_new > current_balance:
+        st.warning(
+            f"Import (NGN {total_new:,.0f}) exceeds balance (NGN {current_balance:,.0f}). "
+            f"Overdraft is on — balance will go negative."
+        )
+
+    # 10. Final import
+    if st.button(
+        f"Import {len(new_rows)} expenses into Budget Right",
+        use_container_width=True, type="primary", key="csv_import_btn"
+    ):
+        imported      = 0
+        import_errors = []
+        try:
+            cur.execute("""
+                INSERT INTO import_batches
+                    (user_id, bank_id, filename, row_count, total_amount, imported_at)
+                VALUES (%s, %s, %s, %s, %s, NOW()) RETURNING id
+            """, (user_id, bank_id, filename, len(new_rows), total_new))
+            batch_id = cur.fetchone()["id"]
+
+            for r in new_rows:
+                try:
+                    amt      = r["amount"]
+                    desc     = r["description"]
+                    cat      = r["category"]
+                    txn_date = r["date"]
+
+                    cur.execute("""
+                        INSERT INTO transactions (bank_id, type, amount, description, created_at)
+                        VALUES (%s, 'debit', %s, %s, %s) RETURNING id
+                    """, (bank_id, amt, f"Expense: {desc}", txn_date))
+                    tx_id = cur.fetchone()["id"]
+
+                    cur.execute("""
+                        INSERT INTO expenses
+                            (user_id, bank_id, name, category, amount, created_at, tx_id)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+                    """, (user_id, bank_id, desc, cat, amt, txn_date, tx_id))
+                    expense_id = cur.fetchone()["id"]
+
+                    cur.execute("UPDATE banks SET balance = balance - %s WHERE id = %s",
+                                (amt, bank_id))
+
+                    cur.execute("""
+                        INSERT INTO import_batch_items
+                            (batch_id, expense_id, tx_id, amount, bank_id)
+                        VALUES (%s, %s, %s, %s, %s)
+                    """, (batch_id, expense_id, tx_id, amt, bank_id))
+
+                    imported += 1
+                except Exception as row_exc:
+                    import_errors.append(str(row_exc))
+
+            actual_total = sum(r["amount"] for r in new_rows[:imported])
+            cur.execute(
+                "UPDATE import_batches SET row_count=%s, total_amount=%s WHERE id=%s",
+                (imported, actual_total, batch_id)
             )
+            conn.commit()
+
+            if imported > 0:
+                st.success(
+                    f"Imported **{imported}** expenses from "
+                    f"**{selected_bank['bank_name']}** successfully! "
+                    f"Balance updated. To undo, reload and expand 'Undo last import' above."
+                )
+            if import_errors:
+                with st.expander(f"{len(import_errors)} row(s) failed"):
+                    for err in import_errors:
+                        st.caption(err)
 
         except Exception as e:
             conn.rollback()
