@@ -367,6 +367,28 @@ def create_tables():
         )
         """)
 
+        # ── category_budgets ─────────────────────────────────────────────────
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS category_budgets (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            category TEXT NOT NULL,
+            monthly_limit INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(user_id, category)
+        )
+        """)
+
+        # ── category_budgets ──────────────────────────────────────────────────
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS category_budgets (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            category TEXT NOT NULL,
+            monthly_limit INTEGER NOT NULL DEFAULT 0,
+            UNIQUE (user_id, category)
+        )
+        """)
+
         # ── Migrate existing TEXT columns to proper date types ────────────────
         # These are safe to run repeatedly — IF NOT EXISTS / type checks protect them.
 
@@ -470,6 +492,7 @@ def create_tables():
             "CREATE INDEX IF NOT EXISTS idx_session_tokens_user_id ON session_tokens(user_id)",
             "CREATE INDEX IF NOT EXISTS idx_session_tokens_created_at ON session_tokens(created_at)",
             "CREATE INDEX IF NOT EXISTS idx_rate_limit_identifier ON rate_limit_log(identifier, action, attempted_at)",
+            "CREATE INDEX IF NOT EXISTS idx_category_budgets_user_id ON category_budgets(user_id)",
         ]
         for stmt in index_stmts:
             cursor.execute(stmt)
@@ -1178,6 +1201,139 @@ def render_filter_bar_expenses(banks, all_categories):
         st.rerun()
 
 
+# ---------------- CATEGORY BUDGET HELPERS ----------------
+
+# Default categories users can budget for (pre-populated list)
+BUDGET_CATEGORIES = [
+    "Food & Eating Out",
+    "Foodstuff",
+    "Transport",
+    "Airtime/Data",
+    "Rent",
+    "Family Support",
+    "Electricity (NEPA)",
+    "Fuel",
+    "Internet",
+    "School Fees",
+    "Hospital/Drugs",
+    "Business Stock",
+    "Subscription",
+    "Church/Mosque Giving",
+    "Generator/Fuel",
+    "POS Charges",
+    "Transfer Fees",
+    "Betting",
+    "Hair/Beauty",
+    "Clothing",
+    "Water",
+    "Savings Deposit",
+]
+
+
+def get_category_budgets(user_id):
+    """
+    Load all category budgets for user and compute how much has been
+    spent in each category this month.
+
+    Returns a list of dicts:
+        category, monthly_limit, spent, remaining, pct_used
+    """
+    today = datetime.now().date()
+    month_start = today.replace(day=1)
+
+    with get_db() as (conn, cursor):
+        # All category budgets set by the user
+        cursor.execute(
+            "SELECT category, monthly_limit FROM category_budgets "
+            "WHERE user_id = %s ORDER BY category",
+            (user_id,)
+        )
+        budgets = {r["category"]: int(r["monthly_limit"]) for r in cursor.fetchall()}
+
+        if not budgets:
+            return []
+
+        # Spending per category this month
+        cursor.execute("""
+            SELECT COALESCE(e.category, e.name) AS cat, SUM(e.amount) AS total
+            FROM expenses e
+            JOIN banks b ON e.bank_id = b.id
+            WHERE b.user_id = %s AND e.created_at >= %s
+            GROUP BY cat
+        """, (user_id, month_start))
+        spent_map = {r["cat"]: int(r["total"]) for r in cursor.fetchall()}
+
+    result = []
+    for cat, limit in budgets.items():
+        spent     = spent_map.get(cat, 0)
+        remaining = max(limit - spent, 0)
+        pct_used  = round((spent / limit * 100), 1) if limit > 0 else 0
+        result.append({
+            "category":      cat,
+            "monthly_limit": limit,
+            "spent":         spent,
+            "remaining":     remaining,
+            "pct_used":      pct_used,
+        })
+
+    # Sort: most-used % first so urgent ones surface
+    result.sort(key=lambda r: r["pct_used"], reverse=True)
+    return result
+
+
+def compute_daily_safe_to_spend(user_id, spending_limit):
+    """
+    Daily safe-to-spend = (monthly_limit - spent_so_far) / days_remaining_in_month.
+    Returns (daily_amount, days_remaining, spent_so_far, monthly_limit).
+    Returns None if no monthly limit is set.
+    """
+    if not spending_limit:
+        return None
+
+    today       = datetime.now().date()
+    month_start = today.replace(day=1)
+
+    # Days remaining (including today)
+    import calendar
+    days_in_month   = calendar.monthrange(today.year, today.month)[1]
+    days_remaining  = days_in_month - today.day + 1
+
+    with get_db() as (conn, cursor):
+        cursor.execute("""
+            SELECT COALESCE(SUM(t.amount), 0) AS n FROM transactions t
+            JOIN banks b ON t.bank_id = b.id
+            WHERE b.user_id = %s AND t.type = 'debit' AND t.created_at >= %s
+        """, (user_id, month_start))
+        spent = int(cursor.fetchone()["n"] or 0)
+
+    budget_remaining = spending_limit - spent
+    daily            = max(budget_remaining, 0) // max(days_remaining, 1)
+    return {
+        "daily":           daily,
+        "days_remaining":  days_remaining,
+        "spent":           spent,
+        "monthly_limit":   spending_limit,
+        "budget_remaining": budget_remaining,
+    }
+
+
+def upsert_category_budget(user_id, category, monthly_limit):
+    """Insert or update a category budget. Deletes if limit is 0."""
+    with get_db() as (conn, cursor):
+        if monthly_limit <= 0:
+            cursor.execute(
+                "DELETE FROM category_budgets WHERE user_id = %s AND category = %s",
+                (user_id, category)
+            )
+        else:
+            cursor.execute("""
+                INSERT INTO category_budgets (user_id, category, monthly_limit)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id, category)
+                DO UPDATE SET monthly_limit = EXCLUDED.monthly_limit
+            """, (user_id, category, monthly_limit))
+
+
 # ---------------- UI ----------------
 st.title("Budget Right")
 
@@ -1821,7 +1977,222 @@ elif current_page == "Dashboard":
     elif spending_limit == 0:
         st.caption("Tip: Set a monthly spending limit in Settings to get budget alerts here.")
 
-    # ── NIGERIAN-STYLE INSIGHTS ──────────────────────────────────────────────
+    # ── DAILY SAFE-TO-SPEND ───────────────────────────────────────────────────
+    dss = compute_daily_safe_to_spend(user_id, spending_limit)
+    if dss:
+        dss_color  = "#0e7c5b" if dss["daily"] > 0 else "#c0392b"
+        dss_label  = f"NGN {dss['daily']:,}" if dss["daily"] > 0 else "Budget exceeded"
+        days_label = f"{dss['days_remaining']} day{'s' if dss['days_remaining'] != 1 else ''} left"
+        st.markdown(f"""
+        <div style="background:linear-gradient(90deg,#1a3c5e,#0e7c5b);border-radius:12px;
+                    padding:14px 20px;margin:10px 0;display:flex;
+                    justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+          <div>
+            <div style="color:#a8d8c8;font-size:0.78rem;font-weight:700;
+                        text-transform:uppercase;letter-spacing:0.05em;">
+              Daily safe-to-spend
+            </div>
+            <div style="color:#ffffff;font-size:1.6rem;font-weight:800;margin-top:2px;">
+              {dss_label}
+            </div>
+            <div style="color:#a8d8c8;font-size:0.82rem;margin-top:2px;">
+              {days_label} &nbsp;&middot;&nbsp;
+              NGN {dss['budget_remaining']:,} remaining of NGN {dss['monthly_limit']:,}
+            </div>
+          </div>
+          <div style="text-align:right;">
+            <div style="color:#a8d8c8;font-size:0.78rem;">Spent this month</div>
+            <div style="color:#ffffff;font-size:1.15rem;font-weight:700;">
+              NGN {dss['spent']:,}
+            </div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ── CATEGORY BUDGET CARDS ─────────────────────────────────────────────────
+    cat_budgets = get_category_budgets(user_id)
+    if cat_budgets:
+        st.divider()
+        st.subheader("Category Budgets")
+        st.caption("How you are tracking against each spending category this month.")
+
+        st.markdown("""
+        <style>
+        .cb-grid  { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr));
+                    gap:12px; margin-bottom:4px; }
+        .cb-card  { background:#ffffff; border:1px solid #d0e8df; border-radius:12px;
+                    padding:14px 16px; }
+        .cb-cat   { font-size:0.82rem; font-weight:700; color:#1a3c5e;
+                    text-transform:uppercase; letter-spacing:0.04em; margin-bottom:6px;
+                    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .cb-row   { display:flex; justify-content:space-between; font-size:0.88rem;
+                    color:#4a6070; margin-bottom:8px; }
+        .cb-spent { color:#c0392b; font-weight:700; }
+        .cb-rem   { color:#0e7c5b; font-weight:700; }
+        .cb-over  { color:#c0392b; font-style:italic; font-size:0.8rem; margin-top:4px; }
+        .cb-bar-bg{ background:#eef5f2; border-radius:6px; height:8px; overflow:hidden; }
+        .cb-bar-fg{ height:8px; border-radius:6px; transition:width 0.3s; }
+        @media(max-width:640px) { .cb-grid { grid-template-columns:1fr 1fr !important; gap:8px !important; } }
+        </style>
+        """, unsafe_allow_html=True)
+
+        cards_html = '<div class="cb-grid">'
+        for cb in cat_budgets:
+            pct       = min(cb["pct_used"], 100)
+            bar_color = "#e74c3c" if cb["pct_used"] >= 100 else (
+                        "#f39c12" if cb["pct_used"] >= 80 else "#0e7c5b")
+            over_html = (
+                f'<div class="cb-over">Over by NGN {cb["spent"] - cb["monthly_limit"]:,}</div>'
+                if cb["pct_used"] >= 100 else ""
+            )
+            cards_html += f"""
+            <div class="cb-card">
+              <div class="cb-cat">{cb['category']}</div>
+              <div class="cb-row">
+                <span>Spent: <span class="cb-spent">NGN {cb['spent']:,}</span></span>
+                <span>Left: <span class="cb-rem">NGN {cb['remaining']:,}</span></span>
+              </div>
+              <div class="cb-bar-bg">
+                <div class="cb-bar-fg"
+                     style="width:{pct}%;background:{bar_color};"></div>
+              </div>
+              <div style="font-size:0.75rem;color:#95a5a6;margin-top:4px;">
+                {cb['pct_used']:.0f}% of NGN {cb['monthly_limit']:,}
+              </div>
+              {over_html}
+            </div>"""
+        cards_html += "</div>"
+        st.markdown(cards_html, unsafe_allow_html=True)
+
+        if st.button("Manage category budgets", key="dash_goto_cat_budgets"):
+            st.session_state.nav_radio = pages_clean.index("Settings")
+            st.rerun()
+
+    # ── CATEGORY BUDGETS ─────────────────────────────────────────────────────
+    _today_dash      = datetime.now().date()
+    _month_start_dash = _today_dash.replace(day=1)
+    import calendar as _cal
+    _days_in_month   = _cal.monthrange(_today_dash.year, _today_dash.month)[1]
+    _days_elapsed    = _today_dash.day
+    _days_remaining  = _days_in_month - _today_dash.day + 1   # include today
+
+    with get_db() as (conn, cursor):
+        cursor.execute(
+            "SELECT category, monthly_limit FROM category_budgets WHERE user_id=%s AND monthly_limit > 0 ORDER BY category",
+            (user_id,)
+        )
+        cat_budgets = cursor.fetchall()
+
+        if cat_budgets:
+            # Fetch actual spend per budgeted category this month
+            budgeted_cats = [b["category"] for b in cat_budgets]
+            cursor.execute("""
+                SELECT COALESCE(e.category, e.name) AS cat, COALESCE(SUM(e.amount), 0) AS spent
+                FROM expenses e JOIN banks b ON e.bank_id = b.id
+                WHERE b.user_id = %s
+                  AND e.created_at >= %s
+                  AND COALESCE(e.category, e.name) = ANY(%s)
+                GROUP BY cat
+            """, (user_id, _month_start_dash, budgeted_cats))
+            cat_spent_rows = {r["cat"]: int(r["spent"]) for r in cursor.fetchall()}
+
+    if cat_budgets:
+        st.divider()
+        st.subheader("Category Budgets")
+
+        # Daily safe-to-spend across all budgeted categories
+        total_budget_all  = sum(int(b["monthly_limit"]) for b in cat_budgets)
+        total_spent_all   = sum(cat_spent_rows.get(b["category"], 0) for b in cat_budgets)
+        total_remain_all  = max(total_budget_all - total_spent_all, 0)
+        daily_safe        = int(total_remain_all / _days_remaining) if _days_remaining > 0 else 0
+
+        st.markdown(f"""
+        <div style="background:linear-gradient(90deg,#1a3c5e 0%,#0e7c5b 100%);
+                    border-radius:12px;padding:16px 20px;margin-bottom:14px;
+                    display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+          <div>
+            <div style="color:#a8d8c8;font-size:0.78rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">
+              Daily Safe-to-Spend
+            </div>
+            <div style="color:#ffffff;font-size:1.6rem;font-weight:800;margin-top:2px;">
+              NGN {daily_safe:,}
+            </div>
+            <div style="color:#a8d8c8;font-size:0.8rem;margin-top:2px;">
+              {_days_remaining} day{'s' if _days_remaining != 1 else ''} left in {_today_dash.strftime('%B')}
+            </div>
+          </div>
+          <div style="text-align:right;">
+            <div style="color:#a8d8c8;font-size:0.78rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">
+              Remaining (all categories)
+            </div>
+            <div style="color:#ffffff;font-size:1.4rem;font-weight:800;margin-top:2px;">
+              NGN {total_remain_all:,}
+            </div>
+            <div style="color:#a8d8c8;font-size:0.8rem;margin-top:2px;">
+              of NGN {total_budget_all:,} budgeted
+            </div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Per-category cards — 2 columns on desktop, 1 on mobile
+        _cols = st.columns(2)
+        for i, b in enumerate(cat_budgets):
+            cat        = b["category"]
+            limit      = int(b["monthly_limit"])
+            spent      = cat_spent_rows.get(cat, 0)
+            remaining  = limit - spent
+            pct        = min((spent / limit) * 100, 100) if limit > 0 else 0
+            daily_cat  = int(remaining / _days_remaining) if _days_remaining > 0 and remaining > 0 else 0
+
+            if pct >= 100:
+                bar_color  = "#e74c3c"
+                badge_bg   = "#fdf2f2"
+                badge_col  = "#c0392b"
+                status_txt = "Over budget"
+                overspend  = spent - limit
+                detail_txt = f"NGN {overspend:,} over limit"
+            elif pct >= 80:
+                bar_color  = "#f39c12"
+                badge_bg   = "#fffbea"
+                badge_col  = "#b7770d"
+                status_txt = f"{pct:.0f}% used"
+                detail_txt = f"NGN {remaining:,} left &bull; NGN {daily_cat:,}/day"
+            else:
+                bar_color  = "#0e7c5b"
+                badge_bg   = "#e8f5f0"
+                badge_col  = "#0e7c5b"
+                status_txt = f"{pct:.0f}% used"
+                detail_txt = f"NGN {remaining:,} left &bull; NGN {daily_cat:,}/day"
+
+            bar_pct = min(pct, 100)
+
+            with _cols[i % 2]:
+                st.markdown(f"""
+                <div style="background:#ffffff;border:1px solid #d0e8df;border-radius:12px;
+                            padding:14px 16px;margin-bottom:10px;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <div style="font-weight:700;color:#1a3c5e;font-size:0.96rem;">{cat}</div>
+                    <div style="background:{badge_bg};color:{badge_col};border-radius:20px;
+                                padding:2px 10px;font-size:0.75rem;font-weight:700;">
+                      {status_txt}
+                    </div>
+                  </div>
+                  <div style="background:#eef5f2;border-radius:6px;height:8px;margin-bottom:8px;overflow:hidden;">
+                    <div style="background:{bar_color};width:{bar_pct:.1f}%;height:8px;border-radius:6px;
+                                transition:width 0.3s;"></div>
+                  </div>
+                  <div style="display:flex;justify-content:space-between;font-size:0.8rem;color:#4a6070;">
+                    <span>NGN {spent:,} spent</span>
+                    <span>NGN {limit:,} limit</span>
+                  </div>
+                  <div style="font-size:0.78rem;color:#7a9aaa;margin-top:4px;">{detail_txt}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        if st.button("Manage category budgets", key="dash_cat_budget_link"):
+            st.session_state.nav_radio = pages_clean.index("Settings")
+            st.rerun()
     _today             = datetime.now().date()
     current_month_start = _today.replace(day=1)
     current_week_start  = _today - timedelta(days=_today.weekday())
@@ -3197,6 +3568,78 @@ elif current_page == "Settings":
 
     st.divider()
 
+    # ── Category Budgets ──────────────────────────────────────────────────────
+    st.subheader("Category Budgets")
+    st.caption(
+        "Set a monthly spending limit for individual categories. "
+        "Budget Right will track your spending against each limit and show "
+        "your remaining amount and daily safe-to-spend on the Dashboard."
+    )
+
+    # Preset categories + any custom ones the user already has
+    PRESET_CATEGORIES = [
+        "Foodstuff", "Food & Eating Out", "Transport", "Airtime/Data", "Fuel",
+        "Rent", "Electricity (NEPA)", "Internet", "Family Support", "School Fees",
+        "Hospital/Drugs", "Church/Mosque Giving", "Business Stock", "POS Charges",
+        "Transfer Fees", "Subscription", "Hair/Beauty", "Clothing",
+        "Generator/Fuel", "Water", "Betting", "Savings Deposit", "Other",
+    ]
+
+    with get_db() as (conn, cursor):
+        cursor.execute(
+            "SELECT category, monthly_limit FROM category_budgets WHERE user_id=%s ORDER BY category",
+            (user_id,)
+        )
+        existing_budgets = {r["category"]: int(r["monthly_limit"]) for r in cursor.fetchall()}
+
+    # Merge preset + existing custom categories
+    all_budget_cats = sorted(set(PRESET_CATEGORIES) | set(existing_budgets.keys()))
+
+    st.markdown("Set limit to **0** to disable tracking for that category.")
+
+    # Render in a form so all saves happen in one click
+    with st.form("category_budget_form"):
+        updated_budgets = {}
+        cols_per_row = 2
+        cat_rows = [all_budget_cats[i:i+cols_per_row] for i in range(0, len(all_budget_cats), cols_per_row)]
+        for cat_row in cat_rows:
+            form_cols = st.columns(cols_per_row)
+            for ci, cat in enumerate(cat_row):
+                with form_cols[ci]:
+                    current_val = existing_budgets.get(cat, 0)
+                    new_val = st.number_input(
+                        cat,
+                        min_value=0,
+                        value=current_val,
+                        step=5000,
+                        key=f"catbudget_{cat}",
+                        help=f"Monthly limit for {cat} (NGN). Set to 0 to disable."
+                    )
+                    updated_budgets[cat] = new_val
+
+        save_cat_budgets = st.form_submit_button("Save Category Budgets", use_container_width=True)
+
+    if save_cat_budgets:
+        with get_db() as (conn, cursor):
+            for cat, limit in updated_budgets.items():
+                if limit > 0:
+                    cursor.execute("""
+                        INSERT INTO category_budgets (user_id, category, monthly_limit)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (user_id, category)
+                        DO UPDATE SET monthly_limit = EXCLUDED.monthly_limit
+                    """, (user_id, cat, int(limit)))
+                else:
+                    # Remove the row if limit set to 0 — no point tracking zeroes
+                    cursor.execute(
+                        "DELETE FROM category_budgets WHERE user_id=%s AND category=%s",
+                        (user_id, cat)
+                    )
+        st.success("Category budgets saved! Check your Dashboard to see progress.")
+        st.rerun()
+
+    st.divider()
+
     # ── Overdraft setting ─────────────────────────────────────────────────────
     st.subheader("Bank Overdraft")
     st.caption(
@@ -3216,6 +3659,124 @@ elif current_page == "Settings":
         else:
             st.success("Overdraft disabled. Expenses that exceed your balance will be blocked.")
         st.rerun()
+
+    st.divider()
+
+    # ── Category Budgets ──────────────────────────────────────────────────────
+    st.subheader("Category Budgets")
+    st.caption(
+        "Set a monthly spending limit for each category. "
+        "Budget Right will show your remaining amount and alert you on the Dashboard "
+        "when you are close to or over the limit."
+    )
+
+    with get_db() as (conn, cursor):
+        cursor.execute(
+            "SELECT category, monthly_limit FROM category_budgets WHERE user_id = %s ORDER BY category",
+            (user_id,)
+        )
+        existing_cat_budgets = {r["category"]: int(r["monthly_limit"]) for r in cursor.fetchall()}
+
+    # Show all default categories plus any custom ones already set
+    all_settable = sorted(set(BUDGET_CATEGORIES) | set(existing_cat_budgets.keys()))
+
+    st.markdown("""
+    <style>
+    .cb-settings-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 10px; margin-bottom: 14px;
+    }
+    .cb-settings-row {
+        background: #f8fbf9; border: 1px solid #d0e8df;
+        border-radius: 10px; padding: 10px 14px;
+        display: flex; justify-content: space-between;
+        align-items: center; gap: 10px;
+    }
+    .cb-settings-label {
+        font-size: 0.88rem; font-weight: 700; color: #1a3c5e;
+        flex: 1; min-width: 0; white-space: nowrap;
+        overflow: hidden; text-overflow: ellipsis;
+    }
+    @media(max-width:640px) {
+        .cb-settings-grid { grid-template-columns: 1fr !important; }
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Use a form so all saves happen together
+    with st.form("category_budgets_form"):
+        st.markdown("Enter **0** to remove a category budget.", help=None)
+        new_cat_limits = {}
+        # Render in a 2-column grid using st.columns
+        cols_per_row = 2
+        cat_rows = [all_settable[i:i+cols_per_row] for i in range(0, len(all_settable), cols_per_row)]
+        for cat_row in cat_rows:
+            grid_cols = st.columns(len(cat_row))
+            for gc, cat in zip(grid_cols, cat_row):
+                with gc:
+                    current_val = existing_cat_budgets.get(cat, 0)
+                    new_val = st.number_input(
+                        cat,
+                        min_value=0,
+                        value=current_val,
+                        step=1000,
+                        key=f"cb_{cat}",
+                        help=f"Monthly budget for {cat} (NGN). Set to 0 to remove."
+                    )
+                    new_cat_limits[cat] = new_val
+
+        # Allow adding a custom category not in the default list
+        st.markdown("---")
+        custom_cat_col, custom_amt_col = st.columns([2, 1])
+        with custom_cat_col:
+            custom_cat = st.text_input(
+                "Add custom category (optional)",
+                placeholder="e.g. Wedding, Business Travel…",
+                key="cb_custom_cat"
+            )
+        with custom_amt_col:
+            custom_amt = st.number_input(
+                "Budget (NGN)",
+                min_value=0, step=1000, value=0,
+                key="cb_custom_amt"
+            )
+
+        save_btn = st.form_submit_button("Save Category Budgets", use_container_width=True, type="primary")
+
+    if save_btn:
+        saved_count  = 0
+        removed_count = 0
+        for cat, limit in new_cat_limits.items():
+            old_val = existing_cat_budgets.get(cat, 0)
+            if limit != old_val:
+                upsert_category_budget(user_id, cat, int(limit))
+                saved_count  += 1 if limit > 0 else 0
+                removed_count += 1 if limit == 0 and old_val > 0 else 0
+
+        # Custom category
+        if custom_cat.strip() and custom_amt > 0:
+            upsert_category_budget(user_id, custom_cat.strip(), int(custom_amt))
+            saved_count += 1
+
+        if saved_count > 0 or removed_count > 0:
+            parts = []
+            if saved_count:
+                parts.append(f"{saved_count} budget{'s' if saved_count != 1 else ''} saved")
+            if removed_count:
+                parts.append(f"{removed_count} removed")
+            st.success(f"Category budgets updated — {', '.join(parts)}.")
+            st.rerun()
+        else:
+            st.info("No changes to save.")
+
+    # Show current summary if any budgets exist
+    if existing_cat_budgets:
+        with st.expander("Current category budgets", expanded=False):
+            for cat, limit in sorted(existing_cat_budgets.items()):
+                st.markdown(
+                    f"**{cat}** — NGN {limit:,} / month"
+                )
 
     st.divider()
     st.subheader("Change Password")
