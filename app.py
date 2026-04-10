@@ -378,6 +378,60 @@ def create_tables():
         )
         """)
 
+        # ── recurring_items ──────────────────────────────────────────────────
+        # type: 'income' or 'expense'
+        # frequency: 'daily', 'weekly', 'monthly', 'yearly'
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS recurring_items (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            type TEXT NOT NULL CHECK(type IN ('income','expense')),
+            name TEXT NOT NULL,
+            category TEXT,
+            amount INTEGER NOT NULL,
+            frequency TEXT NOT NULL DEFAULT 'monthly'
+                CHECK(frequency IN ('daily','weekly','monthly','yearly')),
+            next_due DATE,
+            bank_id INTEGER REFERENCES banks(id) ON DELETE SET NULL,
+            auto_post INTEGER DEFAULT 0,
+            active INTEGER DEFAULT 1,
+            created_at DATE DEFAULT CURRENT_DATE
+        )
+        """)
+
+        # ── debts ─────────────────────────────────────────────────────────────
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS debts (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            type TEXT NOT NULL DEFAULT 'borrowed'
+                CHECK(type IN ('borrowed','lent')),
+            principal INTEGER NOT NULL,
+            balance_remaining INTEGER NOT NULL,
+            interest_rate NUMERIC(5,2) DEFAULT 0,
+            monthly_payment INTEGER DEFAULT 0,
+            due_date DATE,
+            counterparty TEXT,
+            notes TEXT,
+            status TEXT DEFAULT 'active' CHECK(status IN ('active','paid')),
+            created_at DATE DEFAULT CURRENT_DATE
+        )
+        """)
+
+        # ── emergency_fund_plan ───────────────────────────────────────────────
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS emergency_fund_plan (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE UNIQUE,
+            target_months INTEGER NOT NULL DEFAULT 6,
+            monthly_expenses_estimate INTEGER DEFAULT 0,
+            current_saved INTEGER DEFAULT 0,
+            goal_id INTEGER REFERENCES goals(id) ON DELETE SET NULL,
+            updated_at DATE DEFAULT CURRENT_DATE
+        )
+        """)
+
         # ── category_budgets ──────────────────────────────────────────────────
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS category_budgets (
@@ -493,6 +547,9 @@ def create_tables():
             "CREATE INDEX IF NOT EXISTS idx_session_tokens_created_at ON session_tokens(created_at)",
             "CREATE INDEX IF NOT EXISTS idx_rate_limit_identifier ON rate_limit_log(identifier, action, attempted_at)",
             "CREATE INDEX IF NOT EXISTS idx_category_budgets_user_id ON category_budgets(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_recurring_items_user_id ON recurring_items(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_recurring_items_next_due ON recurring_items(next_due)",
+            "CREATE INDEX IF NOT EXISTS idx_debts_user_id ON debts(user_id)",
         ]
         for stmt in index_stmts:
             cursor.execute(stmt)
@@ -1624,11 +1681,13 @@ with st.sidebar:
     pages = [
         "&#x1F4CA; Dashboard", "&#x1F4B0; Income", "&#x2795; Expenses",
         "&#x1F3E6; Banks", "&#x1F4B8; Transfers", "&#x1F3AF; Savings Goals",
+        "&#x1F501; Tracker", "&#x1F4CB; Summaries",
         "&#x1F4E5; Import CSV", "&#x2699;&#xFE0F; Settings",
     ]
     pages_clean = [
         "Dashboard", "Income", "Expenses",
         "Banks", "Transfers", "Savings Goals",
+        "Tracker", "Summaries",
         "Import CSV", "Settings",
     ]
     if st.session_state.user_role == "admin":
@@ -3503,6 +3562,690 @@ elif current_page == "Savings Goals":
                 )
         else:
             st.caption("No contributions recorded yet. Add money to a goal to see the history here.")
+
+# ================= PAGE: TRACKER =================
+elif current_page == "Tracker":
+    st.markdown("## Tracker")
+    st.caption("Manage recurring income and expenses, bill reminders, debts, and your emergency fund plan.")
+
+    with get_db() as (conn, cursor):
+        cursor.execute("SELECT id, bank_name, account_number, balance FROM banks WHERE user_id=%s", (user_id,))
+        tracker_banks = cursor.fetchall()
+
+    tracker_bank_map = {f"{b['bank_name']} (****{b['account_number']})": b["id"] for b in tracker_banks}
+    tracker_bank_opts = list(tracker_bank_map.keys())
+
+    FREQ_OPTIONS = ["monthly", "weekly", "daily", "yearly"]
+    FREQ_LABELS  = {"monthly": "Monthly", "weekly": "Weekly", "daily": "Daily", "yearly": "Yearly"}
+
+    def next_due_from_freq(freq):
+        from datetime import date as _d
+        today = _d.today()
+        if freq == "daily":   return today + timedelta(days=1)
+        if freq == "weekly":  return today + timedelta(weeks=1)
+        if freq == "yearly":  return today.replace(year=today.year + 1)
+        return today.replace(day=1).replace(month=today.month % 12 + 1) if today.month < 12 \
+               else today.replace(year=today.year + 1, month=1, day=1)
+
+    tab_ri, tab_re, tab_bill, tab_debt, tab_ef = st.tabs([
+        "&#x1F4B0; Recurring Income",
+        "&#x1F4B8; Recurring Expenses",
+        "&#x1F514; Bill Reminders",
+        "&#x1F4B3; Debt / Loan",
+        "&#x1F6E1; Emergency Fund",
+    ])
+
+    # ── TAB 1: Recurring Income ───────────────────────────────────────────────
+    with tab_ri:
+        st.subheader("Recurring Income")
+        st.caption("Track salary, freelance, rent income, or any money that arrives on a schedule.")
+
+        with st.expander("Add recurring income", expanded=False):
+            with st.form("add_rec_income"):
+                ri_name  = st.text_input("Income source (e.g. Salary, Rental income)")
+                ri_amt   = st.number_input("Expected amount (NGN)", min_value=1, step=1000)
+                ri_freq  = st.selectbox("Frequency", FREQ_OPTIONS, format_func=lambda x: FREQ_LABELS[x])
+                ri_due   = st.date_input("Next expected date")
+                ri_bank  = st.selectbox("Deposit to bank (optional)", ["— none —"] + tracker_bank_opts, key="ri_bank")
+                ri_auto  = st.checkbox("Auto-post when due (adds income automatically on due date)")
+                ri_sub   = st.form_submit_button("Add Recurring Income")
+            if ri_sub:
+                if ri_name and ri_amt > 0:
+                    bk_id = tracker_bank_map.get(ri_bank) if ri_bank != "— none —" else None
+                    with get_db() as (conn, cursor):
+                        cursor.execute("""
+                            INSERT INTO recurring_items
+                                (user_id, type, name, amount, frequency, next_due, bank_id, auto_post)
+                            VALUES (%s,'income',%s,%s,%s,%s,%s,%s)
+                        """, (user_id, ri_name, int(ri_amt), ri_freq, ri_due, bk_id, 1 if ri_auto else 0))
+                    st.success(f"Recurring income '{ri_name}' added.")
+                    st.rerun()
+                else:
+                    st.warning("Please enter a name and amount.")
+
+        with get_db() as (conn, cursor):
+            cursor.execute("""
+                SELECT r.id, r.name, r.amount, r.frequency, r.next_due,
+                       r.auto_post, r.active, b.bank_name
+                FROM recurring_items r
+                LEFT JOIN banks b ON r.bank_id = b.id
+                WHERE r.user_id=%s AND r.type='income'
+                ORDER BY r.next_due
+            """, (user_id,))
+            rec_incomes = cursor.fetchall()
+
+        today = datetime.now().date()
+        if rec_incomes:
+            for ri in rec_incomes:
+                days_to = (ri["next_due"] - today).days if ri["next_due"] else None
+                due_color = "#c0392b" if days_to is not None and days_to <= 3 else (
+                            "#f39c12" if days_to is not None and days_to <= 7 else "#1a3c5e")
+                due_label = (f"Due in {days_to}d" if days_to is not None and days_to >= 0
+                             else f"Overdue {abs(days_to)}d" if days_to is not None else "No date")
+                col_card, col_del = st.columns([6, 0.5])
+                with col_card:
+                    st.markdown(f"""
+                    <div class="exp-card" style="border-left-color:#0e7c5b;">
+                      <div class="exp-card-left">
+                        <div class="exp-card-name">{ri['name']}</div>
+                        <div class="exp-card-bank">
+                          {FREQ_LABELS.get(ri['frequency'],'Monthly')}
+                          {f" &nbsp;&#x2192;&nbsp; {ri['bank_name']}" if ri.get('bank_name') else ""}
+                          {"&nbsp; <em>auto-post</em>" if ri['auto_post'] else ""}
+                        </div>
+                        <div class="exp-card-date" style="color:{due_color};">{due_label} ({ri['next_due']})</div>
+                      </div>
+                      <div class="exp-card-right">
+                        <div class="exp-card-amount" style="color:#0e7c5b;">+NGN {ri['amount']:,}</div>
+                      </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with col_del:
+                    del_key = f"ri_{ri['id']}"
+                    if st.session_state.confirm_delete.get(del_key):
+                        if st.button("✓", key=f"ri_yes_{ri['id']}", type="primary"):
+                            with get_db() as (conn, cursor):
+                                cursor.execute("DELETE FROM recurring_items WHERE id=%s AND user_id=%s", (ri["id"], user_id))
+                            st.session_state.confirm_delete.pop(del_key, None)
+                            st.rerun()
+                        if st.button("✗", key=f"ri_no_{ri['id']}"):
+                            st.session_state.confirm_delete.pop(del_key, None); st.rerun()
+                    else:
+                        if st.button("🗑️", key=f"ri_del_{ri['id']}", help="Delete"):
+                            st.session_state.confirm_delete[del_key] = True; st.rerun()
+        else:
+            st.info("No recurring income yet. Use the form above to add salary, freelance, or rental income.")
+
+    # ── TAB 2: Recurring Expenses ─────────────────────────────────────────────
+    with tab_re:
+        st.subheader("Recurring Expenses")
+        st.caption("Track rent, subscriptions, school fees, or any expense that repeats on a schedule.")
+
+        from csv_import import CATEGORY_KEYWORDS as _CK
+        RE_CATEGORIES = ["— select category —"] + sorted(_CK.keys()) + ["Other"]
+
+        with st.expander("Add recurring expense", expanded=False):
+            with st.form("add_rec_expense"):
+                re_name  = st.text_input("Expense name (e.g. House rent, DSTV, School fees)")
+                re_amt   = st.number_input("Expected amount (NGN)", min_value=1, step=500)
+                re_cat   = st.selectbox("Category", RE_CATEGORIES, key="re_cat_sel")
+                re_freq  = st.selectbox("Frequency", FREQ_OPTIONS, format_func=lambda x: FREQ_LABELS[x], key="re_freq")
+                re_due   = st.date_input("Next due date", key="re_due")
+                re_bank  = st.selectbox("Pay from bank (optional)", ["— none —"] + tracker_bank_opts, key="re_bank")
+                re_sub   = st.form_submit_button("Add Recurring Expense")
+            if re_sub:
+                if re_name and re_amt > 0:
+                    bk_id = tracker_bank_map.get(re_bank) if re_bank != "— none —" else None
+                    cat   = None if re_cat == "— select category —" else re_cat
+                    with get_db() as (conn, cursor):
+                        cursor.execute("""
+                            INSERT INTO recurring_items
+                                (user_id, type, name, category, amount, frequency, next_due, bank_id)
+                            VALUES (%s,'expense',%s,%s,%s,%s,%s,%s)
+                        """, (user_id, re_name, cat, int(re_amt), re_freq, re_due, bk_id))
+                    st.success(f"Recurring expense '{re_name}' added.")
+                    st.rerun()
+                else:
+                    st.warning("Please enter a name and amount.")
+
+        with get_db() as (conn, cursor):
+            cursor.execute("""
+                SELECT r.id, r.name, r.category, r.amount, r.frequency, r.next_due, b.bank_name
+                FROM recurring_items r
+                LEFT JOIN banks b ON r.bank_id = b.id
+                WHERE r.user_id=%s AND r.type='expense'
+                ORDER BY r.next_due
+            """, (user_id,))
+            rec_expenses = cursor.fetchall()
+
+        if rec_expenses:
+            total_monthly = 0
+            for re in rec_expenses:
+                mult = {"daily": 30, "weekly": 4.33, "monthly": 1, "yearly": 1/12}
+                total_monthly += re["amount"] * mult.get(re["frequency"], 1)
+
+            st.caption(f"Estimated monthly recurring expense: NGN {int(total_monthly):,}")
+
+            for re in rec_expenses:
+                days_to = (re["next_due"] - today).days if re["next_due"] else None
+                due_color = "#c0392b" if days_to is not None and days_to <= 3 else (
+                            "#f39c12" if days_to is not None and days_to <= 7 else "#1a3c5e")
+                due_label = (f"Due in {days_to}d" if days_to is not None and days_to >= 0
+                             else f"Overdue {abs(days_to)}d" if days_to is not None else "No date")
+                col_card, col_del = st.columns([6, 0.5])
+                with col_card:
+                    st.markdown(f"""
+                    <div class="exp-card">
+                      <div class="exp-card-left">
+                        <div class="exp-card-name">{re['name']}
+                          {f'<span style="background:#e8f5f0;color:#0e7c5b;border-radius:10px;padding:1px 8px;font-size:0.75rem;font-weight:600;margin-left:6px;">{re["category"]}</span>' if re.get("category") else ''}
+                        </div>
+                        <div class="exp-card-bank">
+                          {FREQ_LABELS.get(re['frequency'],'Monthly')}
+                          {f" &nbsp;&#x2192;&nbsp; {re['bank_name']}" if re.get('bank_name') else ""}
+                        </div>
+                        <div class="exp-card-date" style="color:{due_color};">{due_label} ({re['next_due']})</div>
+                      </div>
+                      <div class="exp-card-right">
+                        <div class="exp-card-amount">-NGN {re['amount']:,}</div>
+                      </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with col_del:
+                    del_key = f"re_{re['id']}"
+                    if st.session_state.confirm_delete.get(del_key):
+                        if st.button("✓", key=f"re_yes_{re['id']}", type="primary"):
+                            with get_db() as (conn, cursor):
+                                cursor.execute("DELETE FROM recurring_items WHERE id=%s AND user_id=%s", (re["id"], user_id))
+                            st.session_state.confirm_delete.pop(del_key, None); st.rerun()
+                        if st.button("✗", key=f"re_no_{re['id']}"):
+                            st.session_state.confirm_delete.pop(del_key, None); st.rerun()
+                    else:
+                        if st.button("🗑️", key=f"re_del_{re['id']}", help="Delete"):
+                            st.session_state.confirm_delete[del_key] = True; st.rerun()
+        else:
+            st.info("No recurring expenses yet. Add rent, subscriptions, or regular bills above.")
+
+    # ── TAB 3: Bill Reminders ─────────────────────────────────────────────────
+    with tab_bill:
+        st.subheader("Bill Reminders")
+        st.caption("See every bill due within the next 30 days, pulled from your recurring items.")
+
+        with get_db() as (conn, cursor):
+            cursor.execute("""
+                SELECT r.id, r.name, r.type, r.category, r.amount, r.frequency,
+                       r.next_due, b.bank_name
+                FROM recurring_items r
+                LEFT JOIN banks b ON r.bank_id = b.id
+                WHERE r.user_id = %s AND r.active = 1
+                ORDER BY r.next_due
+            """, (user_id,))
+            all_recurring = cursor.fetchall()
+
+        upcoming = [r for r in all_recurring
+                    if r["next_due"] and (r["next_due"] - today).days <= 30]
+        overdue  = [r for r in upcoming if (r["next_due"] - today).days < 0]
+        due_soon = [r for r in upcoming if 0 <= (r["next_due"] - today).days <= 7]
+        due_later= [r for r in upcoming if 7 < (r["next_due"] - today).days <= 30]
+
+        if not upcoming:
+            st.info("No bills due in the next 30 days. Add recurring items on the other tabs.")
+        else:
+            def _bill_card(r):
+                days_to   = (r["next_due"] - today).days
+                is_income = r["type"] == "income"
+                color     = "#0e7c5b" if is_income else "#c0392b"
+                sign      = "+" if is_income else "-"
+                urgency   = "&#x1F534;" if days_to < 0 else ("&#x1F7E0;" if days_to <= 3 else "&#x1F7E2;")
+                label     = f"Overdue {abs(days_to)}d" if days_to < 0 else (
+                            f"Due today" if days_to == 0 else f"Due in {days_to}d")
+                st.markdown(f"""
+                <div class="exp-card" style="border-left-color:{color};">
+                  <div class="exp-card-left">
+                    <div class="exp-card-name">{urgency} {r['name']}</div>
+                    <div class="exp-card-bank">{FREQ_LABELS.get(r['frequency'],'')}
+                      {f" &nbsp;&#x2192;&nbsp; {r['bank_name']}" if r.get('bank_name') else ""}
+                    </div>
+                    <div class="exp-card-date">{label} — {r['next_due']}</div>
+                  </div>
+                  <div class="exp-card-right">
+                    <div class="exp-card-amount" style="color:{color};">{sign}NGN {r['amount']:,}</div>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            if overdue:
+                st.markdown("#### Overdue")
+                for r in overdue: _bill_card(r)
+
+            if due_soon:
+                st.markdown("#### Due within 7 days")
+                for r in due_soon: _bill_card(r)
+
+            if due_later:
+                st.markdown("#### Due in 8–30 days")
+                for r in due_later: _bill_card(r)
+
+            total_expense_bills = sum(r["amount"] for r in upcoming if r["type"] == "expense")
+            total_income_bills  = sum(r["amount"] for r in upcoming if r["type"] == "income")
+            st.divider()
+            c1, c2 = st.columns(2)
+            c1.metric("Bills to pay (30 days)", f"NGN {total_expense_bills:,}")
+            c2.metric("Income expected (30 days)", f"NGN {total_income_bills:,}")
+
+    # ── TAB 4: Debt / Loan Tracker ────────────────────────────────────────────
+    with tab_debt:
+        st.subheader("Debt & Loan Tracker")
+        st.caption("Track money you owe (borrowed) and money owed to you (lent).")
+
+        with st.expander("Add debt or loan", expanded=False):
+            with st.form("add_debt"):
+                d_name    = st.text_input("Name / Description (e.g. Bank loan, Owe Chike)")
+                d_type    = st.radio("Type", ["borrowed", "lent"],
+                                     format_func=lambda x: "I borrowed this money" if x=="borrowed" else "I lent this money")
+                d_col1, d_col2 = st.columns(2)
+                with d_col1:
+                    d_principal = st.number_input("Original amount (NGN)", min_value=1, step=1000)
+                    d_remaining = st.number_input("Balance still owed (NGN)", min_value=0, step=1000)
+                    d_monthly   = st.number_input("Monthly payment (NGN, 0 if none)", min_value=0, step=500)
+                with d_col2:
+                    d_rate    = st.number_input("Interest rate (% p.a., 0 if none)", min_value=0.0, step=0.5)
+                    d_due     = st.date_input("Due / expected repayment date")
+                    d_party   = st.text_input("Counterparty name (person / bank)")
+                d_notes = st.text_area("Notes (optional)", height=60)
+                d_sub   = st.form_submit_button("Add Debt / Loan")
+            if d_sub:
+                if d_name and d_principal > 0:
+                    with get_db() as (conn, cursor):
+                        cursor.execute("""
+                            INSERT INTO debts
+                                (user_id, name, type, principal, balance_remaining,
+                                 interest_rate, monthly_payment, due_date,
+                                 counterparty, notes)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        """, (user_id, d_name, d_type, int(d_principal), int(d_remaining),
+                              d_rate, int(d_monthly), d_due, d_party.strip() or None,
+                              d_notes.strip() or None))
+                    st.success("Debt / loan added.")
+                    st.rerun()
+                else:
+                    st.warning("Please enter a name and amount.")
+
+        with get_db() as (conn, cursor):
+            cursor.execute("""
+                SELECT id, name, type, principal, balance_remaining, interest_rate,
+                       monthly_payment, due_date, counterparty, notes, status
+                FROM debts WHERE user_id=%s ORDER BY status, due_date
+            """, (user_id,))
+            debts = cursor.fetchall()
+
+        if debts:
+            total_owe  = sum(d["balance_remaining"] for d in debts if d["type"]=="borrowed" and d["status"]=="active")
+            total_owed = sum(d["balance_remaining"] for d in debts if d["type"]=="lent"     and d["status"]=="active")
+            m1, m2 = st.columns(2)
+            m1.metric("Total you owe (borrowed)", f"NGN {total_owe:,}", delta=None)
+            m2.metric("Total owed to you (lent)", f"NGN {total_owed:,}", delta=None)
+            st.divider()
+
+            for d in debts:
+                pct_paid = round(((d["principal"] - d["balance_remaining"]) / d["principal"] * 100), 1) if d["principal"] > 0 else 0
+                is_lent  = d["type"] == "lent"
+                card_col, action_col = st.columns([5, 1])
+                with card_col:
+                    st.markdown(f"""
+                    <div class="exp-card" style="border-left-color:{'#0e7c5b' if is_lent else '#c0392b'};">
+                      <div class="exp-card-left">
+                        <div class="exp-card-name">{'&#x1F4E4; Lent' if is_lent else '&#x1F4E5; Borrowed'}: {d['name']}</div>
+                        <div class="exp-card-bank">
+                          {f"{d['counterparty']} &nbsp;&middot;&nbsp;" if d.get('counterparty') else ""}
+                          {f"{d['interest_rate']:.1f}% p.a." if d['interest_rate'] else "0% interest"}
+                          {f" &nbsp;&middot;&nbsp; NGN {d['monthly_payment']:,}/mo payment" if d['monthly_payment'] else ""}
+                        </div>
+                        <div class="exp-card-date">Due: {d['due_date'] or 'Not set'} &nbsp;&middot;&nbsp; Status: {d['status'].title()}</div>
+                      </div>
+                      <div class="exp-card-right">
+                        <div class="exp-card-amount" style="color:{'#0e7c5b' if is_lent else '#c0392b'};">
+                          NGN {d['balance_remaining']:,}
+                        </div>
+                        <div style="font-size:0.75rem;color:#95a5a6;">{pct_paid:.0f}% paid</div>
+                      </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with action_col:
+                    if d["status"] == "active":
+                        if st.button("Mark paid", key=f"debt_paid_{d['id']}"):
+                            with get_db() as (conn, cursor):
+                                cursor.execute("UPDATE debts SET status='paid', balance_remaining=0 WHERE id=%s AND user_id=%s",
+                                               (d["id"], user_id))
+                            st.rerun()
+                    del_key = f"debt_{d['id']}"
+                    if st.session_state.confirm_delete.get(del_key):
+                        if st.button("✓", key=f"debt_yes_{d['id']}", type="primary"):
+                            with get_db() as (conn, cursor):
+                                cursor.execute("DELETE FROM debts WHERE id=%s AND user_id=%s", (d["id"], user_id))
+                            st.session_state.confirm_delete.pop(del_key, None); st.rerun()
+                        if st.button("✗", key=f"debt_no_{d['id']}"):
+                            st.session_state.confirm_delete.pop(del_key, None); st.rerun()
+                    else:
+                        if st.button("🗑️", key=f"debt_del_{d['id']}", help="Delete"):
+                            st.session_state.confirm_delete[del_key] = True; st.rerun()
+        else:
+            st.info("No debts or loans tracked yet. Use the form above to add one.")
+
+    # ── TAB 5: Emergency Fund Planner ─────────────────────────────────────────
+    with tab_ef:
+        st.subheader("Emergency Fund Planner")
+        st.caption(
+            "An emergency fund covers 3–6 months of expenses in case of job loss, "
+            "medical emergencies, or unexpected events. Build yours here."
+        )
+
+        with get_db() as (conn, cursor):
+            cursor.execute("SELECT * FROM emergency_fund_plan WHERE user_id=%s", (user_id,))
+            ef_plan = cursor.fetchone()
+
+        with st.form("ef_plan_form"):
+            ef_months   = st.slider("Target: how many months of expenses to save?",
+                                    min_value=1, max_value=12,
+                                    value=int(ef_plan["target_months"]) if ef_plan else 6)
+            ef_monthly  = st.number_input("Your estimated monthly expenses (NGN)",
+                                          min_value=0, step=5000,
+                                          value=int(ef_plan["monthly_expenses_estimate"]) if ef_plan else 0)
+            ef_saved    = st.number_input("How much have you already saved towards this? (NGN)",
+                                          min_value=0, step=5000,
+                                          value=int(ef_plan["current_saved"]) if ef_plan else 0)
+            ef_save_btn = st.form_submit_button("Update Emergency Fund Plan")
+
+        if ef_save_btn:
+            with get_db() as (conn, cursor):
+                cursor.execute("""
+                    INSERT INTO emergency_fund_plan
+                        (user_id, target_months, monthly_expenses_estimate, current_saved, updated_at)
+                    VALUES (%s,%s,%s,%s,%s)
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        target_months = EXCLUDED.target_months,
+                        monthly_expenses_estimate = EXCLUDED.monthly_expenses_estimate,
+                        current_saved = EXCLUDED.current_saved,
+                        updated_at = EXCLUDED.updated_at
+                """, (user_id, ef_months, int(ef_monthly), int(ef_saved), datetime.now().date()))
+            st.success("Emergency fund plan updated.")
+            st.rerun()
+
+        if ef_plan or ef_save_btn:
+            _months  = ef_months  if ef_save_btn else int(ef_plan["target_months"])
+            _monthly = ef_monthly if ef_save_btn else int(ef_plan["monthly_expenses_estimate"])
+            _saved   = ef_saved   if ef_save_btn else int(ef_plan["current_saved"])
+        else:
+            _months, _monthly, _saved = 6, 0, 0
+
+        if _monthly > 0:
+            target   = _months * _monthly
+            shortfall = max(target - _saved, 0)
+            pct      = min(round(_saved / target * 100, 1), 100) if target > 0 else 0
+
+            st.divider()
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Target amount", f"NGN {target:,}", help=f"{_months} months × NGN {_monthly:,}/mo")
+            m2.metric("Already saved", f"NGN {_saved:,}")
+            m3.metric("Still needed", f"NGN {shortfall:,}")
+
+            st.progress(pct / 100, text=f"{pct:.0f}% of emergency fund target reached")
+
+            if shortfall > 0:
+                st.markdown("**How long will it take?**")
+                m3_col, m6_col, m12_col = st.columns(3)
+                for col, monthly_contribution in zip([m3_col, m6_col, m12_col], [
+                    max(shortfall // 3, 1), max(shortfall // 6, 1), max(shortfall // 12, 1)
+                ]):
+                    months_needed = -(-shortfall // monthly_contribution)  # ceiling division
+                    col.markdown(
+                        f'<div style="background:#f0f7f4;border-radius:8px;padding:10px 14px;text-align:center;">'
+                        f'<div style="font-size:0.78rem;color:#4a6070;font-weight:600;">Save NGN {monthly_contribution:,}/mo</div>'
+                        f'<div style="font-size:1.1rem;font-weight:800;color:#1a3c5e;">{months_needed} months</div>'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
+
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.info(
+                    f"Tip: Create a dedicated **Savings Goal** called 'Emergency Fund' "
+                    f"with a target of NGN {target:,} and contribute NGN {shortfall // 6:,} monthly "
+                    f"to reach it in 6 months."
+                )
+            else:
+                st.success(f"Your emergency fund target of NGN {target:,} is fully covered. Well done!")
+        else:
+            st.info("Enter your estimated monthly expenses above to see your emergency fund plan.")
+
+# ================= PAGE: SUMMARIES =================
+elif current_page == "Summaries":
+    st.markdown("## Weekly & Monthly Summaries")
+
+    _today      = datetime.now().date()
+    _month_start = _today.replace(day=1)
+    _week_start  = _today - timedelta(days=_today.weekday())
+
+    tab_week, tab_month = st.tabs(["&#x1F4C5; This Week", "&#x1F4CA; This Month"])
+
+    # ── WEEKLY SUMMARY TAB ────────────────────────────────────────────────────
+    with tab_week:
+        prev_week_start = _week_start - timedelta(days=7)
+        prev_week_end   = _week_start - timedelta(days=1)
+
+        with get_db() as (conn, cursor):
+            # This week totals
+            cursor.execute("""
+                SELECT COALESCE(SUM(CASE WHEN t.type='credit' THEN t.amount ELSE 0 END),0) AS income,
+                       COALESCE(SUM(CASE WHEN t.type='debit'  THEN t.amount ELSE 0 END),0) AS spent
+                FROM transactions t JOIN banks b ON t.bank_id=b.id
+                WHERE b.user_id=%s AND t.created_at>=%s
+            """, (user_id, _week_start))
+            w = cursor.fetchone()
+            week_income = int(w["income"] or 0)
+            week_spent  = int(w["spent"]  or 0)
+
+            # Last week totals
+            cursor.execute("""
+                SELECT COALESCE(SUM(CASE WHEN t.type='debit' THEN t.amount ELSE 0 END),0) AS spent
+                FROM transactions t JOIN banks b ON t.bank_id=b.id
+                WHERE b.user_id=%s AND t.created_at>=%s AND t.created_at<=%s
+            """, (user_id, prev_week_start, prev_week_end))
+            prev_week_spent = int(cursor.fetchone()["spent"] or 0)
+
+            # Top 5 categories this week
+            cursor.execute("""
+                SELECT COALESCE(e.category, e.name) AS cat, SUM(e.amount) AS total
+                FROM expenses e JOIN banks b ON e.bank_id=b.id
+                WHERE b.user_id=%s AND e.created_at>=%s
+                GROUP BY cat ORDER BY total DESC LIMIT 5
+            """, (user_id, _week_start))
+            week_top_cats = cursor.fetchall()
+
+            # Daily spending this week (Mon–today)
+            cursor.execute("""
+                SELECT t.created_at AS day, SUM(t.amount) AS total
+                FROM transactions t JOIN banks b ON t.bank_id=b.id
+                WHERE b.user_id=%s AND t.type='debit' AND t.created_at>=%s
+                GROUP BY t.created_at ORDER BY t.created_at
+            """, (user_id, _week_start))
+            daily_rows = cursor.fetchall()
+
+            # Transaction count
+            cursor.execute("""
+                SELECT COUNT(*) AS n FROM expenses e JOIN banks b ON e.bank_id=b.id
+                WHERE b.user_id=%s AND e.created_at>=%s
+            """, (user_id, _week_start))
+            week_tx_count = int(cursor.fetchone()["n"] or 0)
+
+        week_net   = week_income - week_spent
+        spend_diff = week_spent - prev_week_spent
+        spend_arrow = "&#x1F53C;" if spend_diff > 0 else ("&#x1F53D;" if spend_diff < 0 else "&#x27A1;")
+
+        # Summary card
+        st.markdown(f"""
+        <div class="week-card">
+          <div class="week-title">&#x1F4C5; Week of {_week_start.strftime('%d %b %Y')}</div>
+          <div class="week-grid">
+            <div class="week-stat">
+              <div class="week-stat-label">Income</div>
+              <div class="week-stat-value">NGN {week_income:,}</div>
+            </div>
+            <div class="week-stat">
+              <div class="week-stat-label">Spent</div>
+              <div class="week-stat-value">NGN {week_spent:,}</div>
+            </div>
+            <div class="week-stat">
+              <div class="week-stat-label">Net</div>
+              <div class="week-stat-value" style="color:{'#a8d8c8' if week_net>=0 else '#f1948a'};">
+                {"+" if week_net>=0 else ""}NGN {week_net:,}
+              </div>
+            </div>
+            <div class="week-stat">
+              <div class="week-stat-label">Transactions</div>
+              <div class="week-stat-value">{week_tx_count}</div>
+            </div>
+            <div class="week-stat">
+              <div class="week-stat-label">vs Last Week</div>
+              <div class="week-stat-value" style="font-size:0.85rem;">
+                {spend_arrow} NGN {abs(spend_diff):,}
+                {"more" if spend_diff > 0 else "less" if spend_diff < 0 else "same"}
+              </div>
+            </div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Top categories
+        if week_top_cats:
+            st.subheader("Top categories this week")
+            for cat_row in week_top_cats:
+                st.markdown(
+                    f'<div style="display:flex;justify-content:space-between;padding:8px 12px;'
+                    f'background:#f0f7f4;border-radius:8px;margin-bottom:6px;">'
+                    f'<span style="font-weight:600;color:#1a3c5e;">{cat_row["cat"] or "Uncategorised"}</span>'
+                    f'<span style="color:#c0392b;font-weight:700;">NGN {int(cat_row["total"]):,}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+        # Daily breakdown bar chart
+        if daily_rows:
+            st.subheader("Daily spending this week")
+            df_daily = pd.DataFrame(
+                [(str(r["day"]), int(r["total"])) for r in daily_rows],
+                columns=["Day", "Spent (NGN)"]
+            )
+            df_daily["Day"] = pd.to_datetime(df_daily["Day"]).dt.strftime("%a %d")
+            st.bar_chart(df_daily.set_index("Day")["Spent (NGN)"])
+
+    # ── MONTHLY SUMMARY TAB ───────────────────────────────────────────────────
+    with tab_month:
+        # Month selector
+        months_available = []
+        for i in range(12):
+            d = (_today.replace(day=1) - timedelta(days=i * 28)).replace(day=1)
+            months_available.append(d)
+        months_available = sorted(set(months_available), reverse=True)
+
+        sel_month_dt = st.selectbox(
+            "Select month",
+            months_available,
+            format_func=lambda d: d.strftime("%B %Y"),
+            key="summaries_month_select"
+        )
+        m_start = sel_month_dt
+        import calendar as _cal
+        m_end   = sel_month_dt.replace(
+            day=_cal.monthrange(sel_month_dt.year, sel_month_dt.month)[1]
+        )
+
+        with get_db() as (conn, cursor):
+            # Income and expenses
+            cursor.execute("""
+                SELECT COALESCE(SUM(CASE WHEN t.type='credit' THEN t.amount ELSE 0 END),0) AS income,
+                       COALESCE(SUM(CASE WHEN t.type='debit'  THEN t.amount ELSE 0 END),0) AS spent
+                FROM transactions t JOIN banks b ON t.bank_id=b.id
+                WHERE b.user_id=%s AND t.created_at>=%s AND t.created_at<=%s
+            """, (user_id, m_start, m_end))
+            mn = cursor.fetchone()
+            m_income = int(mn["income"] or 0)
+            m_spent  = int(mn["spent"]  or 0)
+
+            # Category breakdown
+            cursor.execute("""
+                SELECT COALESCE(e.category, e.name) AS cat, SUM(e.amount) AS total, COUNT(*) AS cnt
+                FROM expenses e JOIN banks b ON e.bank_id=b.id
+                WHERE b.user_id=%s AND e.created_at>=%s AND e.created_at<=%s
+                GROUP BY cat ORDER BY total DESC
+            """, (user_id, m_start, m_end))
+            m_cats = cursor.fetchall()
+
+            # Weekly breakdown within month
+            cursor.execute("""
+                SELECT DATE_TRUNC('week', t.created_at) AS wk, SUM(t.amount) AS total
+                FROM transactions t JOIN banks b ON t.bank_id=b.id
+                WHERE b.user_id=%s AND t.type='debit'
+                  AND t.created_at>=%s AND t.created_at<=%s
+                GROUP BY wk ORDER BY wk
+            """, (user_id, m_start, m_end))
+            m_weekly = cursor.fetchall()
+
+            # Transaction count
+            cursor.execute("""
+                SELECT COUNT(*) AS n FROM expenses e JOIN banks b ON e.bank_id=b.id
+                WHERE b.user_id=%s AND e.created_at>=%s AND e.created_at<=%s
+            """, (user_id, m_start, m_end))
+            m_tx_count = int(cursor.fetchone()["n"] or 0)
+
+            # Savings rate
+            cursor.execute("SELECT monthly_spending_limit FROM users WHERE id=%s", (user_id,))
+            m_limit = cursor.fetchone()["monthly_spending_limit"] or 0
+
+        m_net         = m_income - m_spent
+        savings_rate  = round(m_net / m_income * 100, 1) if m_income > 0 else 0
+
+        # Key metrics
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Income", f"NGN {m_income:,}")
+        c2.metric("Expenses", f"NGN {m_spent:,}")
+        c3.metric("Net saved", f"NGN {m_net:,}",
+                  delta=f"{savings_rate:.1f}% savings rate")
+        c4.metric("Transactions", str(m_tx_count))
+
+        if m_limit > 0:
+            pct = min(round(m_spent / m_limit * 100, 1), 100)
+            st.progress(pct / 100,
+                        text=f"Budget: {pct:.0f}% used — NGN {m_spent:,} of NGN {m_limit:,}")
+
+        # Category table
+        if m_cats:
+            st.subheader("Spending by category")
+            total_exp = sum(int(r["total"]) for r in m_cats) or 1
+            for cr in m_cats:
+                pct_cat = round(int(cr["total"]) / total_exp * 100, 1)
+                st.markdown(
+                    f'<div style="display:flex;justify-content:space-between;align-items:center;'
+                    f'padding:8px 12px;background:#f0f7f4;border-radius:8px;margin-bottom:6px;">'
+                    f'<div style="flex:1;">'
+                    f'  <span style="font-weight:600;color:#1a3c5e;">{cr["cat"] or "Uncategorised"}</span>'
+                    f'  <span style="font-size:0.78rem;color:#95a5a6;margin-left:8px;">{cr["cnt"]} transactions</span>'
+                    f'</div>'
+                    f'<div style="text-align:right;">'
+                    f'  <span style="color:#c0392b;font-weight:700;">NGN {int(cr["total"]):,}</span>'
+                    f'  <span style="font-size:0.78rem;color:#95a5a6;margin-left:8px;">{pct_cat:.0f}%</span>'
+                    f'</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+        # Weekly bar chart within month
+        if m_weekly:
+            st.subheader("Weekly spending breakdown")
+            df_wk = pd.DataFrame(
+                [(str(r["wk"])[:10], int(r["total"])) for r in m_weekly],
+                columns=["Week starting", "Spent (NGN)"]
+            )
+            st.bar_chart(df_wk.set_index("Week starting")["Spent (NGN)"])
 
 # ================= PAGE: IMPORT CSV =================
 elif current_page == "Import CSV":
