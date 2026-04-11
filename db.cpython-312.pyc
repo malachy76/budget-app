@@ -1,0 +1,6 @@
+# Rename this to secrets.toml and fill in your values
+SUPABASE_DB_URL    = "postgresql://postgres.YOUR_PROJECT:PASSWORD@aws-1-eu-west-1.pooler.supabase.com:6543/postgres"
+COOKIE_PASSWORD    = "BudgetRight-Cookie-2024-SecureKey!"
+EMAIL_SENDER       = "your@gmail.com"
+EMAIL_APP_PASSWORD = "your-gmail-app-password"
+ADMIN_EMAIL        = "your@gmail.com"

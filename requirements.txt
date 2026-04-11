@@ -1,6 +1,8 @@
 streamlit
-streamlit-cookies-manager
+psycopg2-binary
 bcrypt
+streamlit-cookies-manager
 pandas
 plotly
-psycopg2-binary
+python-dateutil
+reportlab
