@@ -194,6 +194,46 @@ def create_tables():
         )
         """)
 
+        # ── user_streaks ──────────────────────────────────────────────────────
+        # Tracks consecutive daily login/tracking streaks per user.
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_streaks (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE UNIQUE,
+            current_streak INTEGER NOT NULL DEFAULT 0,
+            longest_streak INTEGER NOT NULL DEFAULT 0,
+            last_active_date DATE,
+            streak_updated_at TIMESTAMP DEFAULT NOW()
+        )
+        """)
+
+        # ── notifications ─────────────────────────────────────────────────────
+        # In-app notification inbox. type: 'reminder'|'tip'|'milestone'|'alert'|'nudge'
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS notifications (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            type TEXT NOT NULL DEFAULT 'tip'
+                CHECK(type IN ('reminder','tip','milestone','alert','nudge')),
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            icon TEXT DEFAULT '&#x1F514;',
+            read INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+        """)
+
+        # ── onboarding_tips ───────────────────────────────────────────────────
+        # Tracks which tip sequence a new user is on (tip 1..N shown progressively).
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS onboarding_tips (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE UNIQUE,
+            tips_sent INTEGER NOT NULL DEFAULT 0,
+            last_tip_at DATE
+        )
+        """)
+
         # ── Migrate existing TEXT columns to proper date types ────────────────
         # These are safe to run repeatedly — IF NOT EXISTS / type checks protect them.
 
@@ -301,6 +341,9 @@ def create_tables():
             "CREATE INDEX IF NOT EXISTS idx_recurring_items_user_id ON recurring_items(user_id)",
             "CREATE INDEX IF NOT EXISTS idx_recurring_items_next_due ON recurring_items(next_due)",
             "CREATE INDEX IF NOT EXISTS idx_debts_user_id ON debts(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(user_id, read)",
+            "CREATE INDEX IF NOT EXISTS idx_user_streaks_user_id ON user_streaks(user_id)",
         ]
         for stmt in index_stmts:
             cursor.execute(stmt)
