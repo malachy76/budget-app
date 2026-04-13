@@ -6,6 +6,28 @@ from datetime import datetime
 
 from db import get_db
 
+CODE_EXPIRY_MINUTES = 12   # imported by auth.py — keep in sync
+
+
+def send_verification_email(email: str, code: str):
+    """Send a 6-digit verification code to the user's email."""
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = "Verify your Budget Right account"
+        msg["From"]    = st.secrets["EMAIL_SENDER"]
+        msg["To"]      = email
+        msg.set_content(
+            f"Your Budget Right verification code is: {code}\n\n"
+            f"This code expires in {CODE_EXPIRY_MINUTES} minutes.\n"
+            f"If you did not request this, please ignore this email."
+        )
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(st.secrets["EMAIL_SENDER"], st.secrets["EMAIL_APP_PASSWORD"])
+            server.send_message(msg)
+        return True, "Email sent"
+    except Exception as e:
+        return False, str(e)
+
 
 def notify_admin_new_signup(new_name, new_username, new_email):
     try:
@@ -45,5 +67,3 @@ def send_reengagement_email(email, name):
         return True, "Email sent"
     except Exception as e:
         return False, str(e)
-
-# ---------------- FILTER / SORT HELPERS ----------------

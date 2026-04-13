@@ -299,7 +299,52 @@ def revoke_session_token(token, cookies):
     cookies.save()
 
 
-# ── Analytics tracking & onboarding ──────────────────────────────────────────
+def get_onboarding_status(user_id):
+    """Returns dict with booleans for each onboarding step."""
+    with get_db() as (conn, cursor):
+        cursor.execute("SELECT onboarding_complete FROM users WHERE id=%s", (user_id,))
+        row          = cursor.fetchone()
+        already_done = bool(row["onboarding_complete"])
+
+        cursor.execute("SELECT COUNT(*) AS n FROM banks WHERE user_id=%s", (user_id,))
+        has_bank = cursor.fetchone()["n"] > 0
+
+        cursor.execute(
+            "SELECT COUNT(*) AS n FROM transactions t "
+            "JOIN banks b ON t.bank_id=b.id "
+            "WHERE b.user_id=%s AND t.type='credit'", (user_id,)
+        )
+        has_income = cursor.fetchone()["n"] > 0
+
+        cursor.execute(
+            "SELECT COUNT(*) AS n FROM expenses WHERE user_id=%s", (user_id,)
+        )
+        has_expense = cursor.fetchone()["n"] > 0
+
+        cursor.execute(
+            "SELECT monthly_spending_limit FROM users WHERE id=%s", (user_id,)
+        )
+        limit_row  = cursor.fetchone()
+        has_budget = bool(limit_row["monthly_spending_limit"])
+
+    return {
+        "already_done": already_done,
+        "has_bank":     has_bank,
+        "has_income":   has_income,
+        "has_expense":  has_expense,
+        "has_budget":   has_budget,
+        "all_done":     has_bank and has_income and has_expense and has_budget,
+    }
+
+
+def mark_onboarding_complete(user_id):
+    with get_db() as (conn, cursor):
+        cursor.execute(
+            "UPDATE users SET onboarding_complete=1 WHERE id=%s", (user_id,)
+        )
+
+
+# ── Analytics tracking ────────────────────────────────────────────────────────
 
 def track_login(user_id):
     try:
