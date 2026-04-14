@@ -21,6 +21,8 @@ from auth   import (
 )
 from db import get_db
 from retention import run_retention_engine, get_unread_count, get_streak
+from utils import save_expense
+from datetime import datetime
 
 inject_styles()
 create_tables()
@@ -60,7 +62,7 @@ if st.session_state.user_id is None:
 
 # ── Not logged in → landing page ──────────────────────────────────────────────
 if st.session_state.user_id is None:
-    from pages.landing import render_landing
+    from _pages.landing import render_landing
     render_landing(cookies)
     st.stop()
 
@@ -321,53 +323,53 @@ if not _ob["already_done"]:
 
 # ── Page routing ──────────────────────────────────────────────────────────────
 if current_page == "Admin Panel":
-    from pages.admin import render_admin
+    from _pages.admin import render_admin
     render_admin(user_id)
 
 elif current_page == "Analytics":
-    from pages.admin import render_analytics
+    from _pages.admin import render_analytics
     render_analytics(user_id)
 
 elif current_page == "Dashboard":
-    from pages.dashboard import render_dashboard
+    from _pages.dashboard import render_dashboard
     render_dashboard(user_id, pages_clean)
 
 elif current_page == "Income":
-    from pages.income import render_income
+    from _pages.income import render_income
     render_income(user_id)
 
 elif current_page == "Expenses":
-    from pages.expenses import render_expenses
+    from _pages.expenses import render_expenses
     render_expenses(user_id, pages_clean)
 
 elif current_page == "Banks":
-    from pages.banks import render_banks
+    from _pages.banks import render_banks
     render_banks(user_id)
 
 elif current_page == "Transfers":
-    from pages.transfers import render_transfers
+    from _pages.transfers import render_transfers
     render_transfers(user_id)
 
 elif current_page == "Savings Goals":
-    from pages.goals import render_goals
+    from _pages.goals import render_goals
     render_goals(user_id, pages_clean)
 
 elif current_page == "Tracker":
-    from pages.tracker import render_tracker
+    from _pages.tracker import render_tracker
     render_tracker(user_id)
 
 elif current_page == "Summaries":
-    from pages.summaries import render_summaries
+    from _pages.summaries import render_summaries
     render_summaries(user_id)
 
 elif current_page == "Notifications":
-    from pages.notifications import render_notifications
+    from _pages.notifications import render_notifications
     render_notifications(user_id)
 
 elif current_page == "Import CSV":
-    from pages.import_csv import render_import_csv
+    from _pages.import_csv import render_import_csv
     render_import_csv(user_id, pages_clean)
 
 elif current_page == "Settings":
-    from pages.settings import render_settings
+    from _pages.settings import render_settings
     render_settings(user_id)
