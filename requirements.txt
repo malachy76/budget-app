@@ -1,8 +1,0 @@
-streamlit
-psycopg2-binary
-bcrypt
-streamlit-cookies-manager
-pandas
-plotly
-python-dateutil
-reportlab
