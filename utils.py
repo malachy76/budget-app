@@ -287,15 +287,18 @@ def get_category_budgets(user_id):
     """
     Load all category budgets for user and compute how much has been
     spent in each category this month.
-
-    Returns a list of dicts:
-        category, monthly_limit, spent, remaining, pct_used
+    Cached for 60 seconds — re-fetches after any expense is added.
     """
+    return _get_category_budgets_cached(user_id, datetime.now().date().isoformat())
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _get_category_budgets_cached(user_id, _date_key):
+    """Inner cached version — _date_key forces daily cache invalidation."""
     today = datetime.now().date()
     month_start = today.replace(day=1)
 
     with get_db() as (conn, cursor):
-        # All category budgets set by the user
         cursor.execute(
             "SELECT category, monthly_limit FROM category_budgets "
             "WHERE user_id = %s ORDER BY category",
@@ -306,7 +309,6 @@ def get_category_budgets(user_id):
         if not budgets:
             return []
 
-        # Spending per category this month
         cursor.execute("""
             SELECT COALESCE(e.category, e.name) AS cat, SUM(e.amount) AS total
             FROM expenses e
@@ -328,8 +330,6 @@ def get_category_budgets(user_id):
             "remaining":     remaining,
             "pct_used":      pct_used,
         })
-
-    # Sort: most-used % first so urgent ones surface
     result.sort(key=lambda r: r["pct_used"], reverse=True)
     return result
 
@@ -337,19 +337,20 @@ def get_category_budgets(user_id):
 def compute_daily_safe_to_spend(user_id, spending_limit):
     """
     Daily safe-to-spend = (monthly_limit - spent_so_far) / days_remaining_in_month.
-    Returns (daily_amount, days_remaining, spent_so_far, monthly_limit).
     Returns None if no monthly limit is set.
     """
     if not spending_limit:
         return None
+    return _compute_daily_cached(user_id, spending_limit, datetime.now().date().isoformat())
 
-    today       = datetime.now().date()
-    month_start = today.replace(day=1)
 
-    # Days remaining (including today)
+@st.cache_data(ttl=60, show_spinner=False)
+def _compute_daily_cached(user_id, spending_limit, _date_key):
     import calendar
-    days_in_month   = calendar.monthrange(today.year, today.month)[1]
-    days_remaining  = days_in_month - today.day + 1
+    today          = datetime.now().date()
+    month_start    = today.replace(day=1)
+    days_in_month  = calendar.monthrange(today.year, today.month)[1]
+    days_remaining = days_in_month - today.day + 1
 
     with get_db() as (conn, cursor):
         cursor.execute("""
@@ -362,10 +363,10 @@ def compute_daily_safe_to_spend(user_id, spending_limit):
     budget_remaining = spending_limit - spent
     daily            = max(budget_remaining, 0) // max(days_remaining, 1)
     return {
-        "daily":           daily,
-        "days_remaining":  days_remaining,
-        "spent":           spent,
-        "monthly_limit":   spending_limit,
+        "daily":            daily,
+        "days_remaining":   days_remaining,
+        "spent":            spent,
+        "monthly_limit":    spending_limit,
         "budget_remaining": budget_remaining,
     }
 

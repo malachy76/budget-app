@@ -1,14 +1,13 @@
 # import_csv.py — CSV import page
 import streamlit as st
 
-from db import get_connection
+from db import get_db, get_connection
 from csv_import import csv_import_page
 
 
 def render_import_csv(user_id, pages):
     st.markdown("## Import Bank Statement (CSV)")
 
-    # Check if user has banks first
     with get_db() as (conn, cursor):
         cursor.execute("SELECT COUNT(*) AS n FROM banks WHERE user_id=%s", (user_id,))
         csv_bank_count = cursor.fetchone()["n"]
@@ -25,22 +24,20 @@ def render_import_csv(user_id, pages):
         </div>
         """, unsafe_allow_html=True)
         if st.button("Go to Banks page", key="csv_goto_banks"):
-            st.session_state.nav_radio = pages_clean.index("Banks")
+            st.session_state.nav_radio = pages.index("Banks")
             st.rerun()
     else:
         with st.expander("How does CSV import work?", expanded=False):
             st.markdown("""
             1. **Download your bank statement** as a CSV from your bank's app or internet banking portal.
             2. **Upload it here** using the file uploader below.
-            3. **Map the columns** — tell Budget Right which column is the amount, date, and description.
+            3. **Map the columns** — Budget Right auto-detects your bank format.
             4. **Preview and import** — every row becomes an expense and debits your bank balance.
 
-            **Supported banks:** GTB, Access, Zenith, UBA, First Bank, Opay, Kuda, and any bank that exports CSV.
+            **Supported:** GTB, Access, Zenith, UBA, First Bank, Opay, Kuda, Moniepoint, and more.
             """)
         conn_csv = get_connection()
         try:
             csv_import_page(conn_csv, user_id)
         finally:
             conn_csv.close()
-
-# ================= PAGE: SETTINGS =================
