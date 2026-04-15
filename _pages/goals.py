@@ -31,7 +31,7 @@ def render_goals(user_id, pages):
         </div>
         """, unsafe_allow_html=True)
         if st.button("Go to Banks page", key="goals_goto_banks"):
-            st.session_state.nav_radio = pages_clean.index("Banks")
+            st.session_state.nav_radio = pages.index("Banks")
             st.rerun()
         st.stop()
 
