@@ -932,7 +932,7 @@ def render_dashboard(user_id, pages):
         </div>
         """, unsafe_allow_html=True)
         if st.button("Add my first bank account", key="dash_goto_banks"):
-            st.session_state.nav_radio = pages_clean.index("Banks")
+            st.session_state.nav_radio = pages.index("Banks")
             st.rerun()
         st.stop()
 
@@ -1057,7 +1057,7 @@ def render_dashboard(user_id, pages):
         st.markdown(cards_html, unsafe_allow_html=True)
 
         if st.button("Manage category budgets", key="dash_goto_cat_budgets"):
-            st.session_state.nav_radio = pages_clean.index("Settings")
+            st.session_state.nav_radio = pages.index("Settings")
             st.rerun()
 
     # ── CATEGORY BUDGETS ─────────────────────────────────────────────────────
