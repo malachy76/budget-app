@@ -170,6 +170,20 @@ def create_tables():
         )
         """)
 
+        # ── debt_payments ─────────────────────────────────────────────────────
+        # NEW: tracks individual payments made against a debt record
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS debt_payments (
+            id SERIAL PRIMARY KEY,
+            debt_id INTEGER NOT NULL REFERENCES debts(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            bank_id INTEGER REFERENCES banks(id) ON DELETE SET NULL,
+            amount INTEGER NOT NULL,
+            note TEXT,
+            paid_at DATE DEFAULT CURRENT_DATE
+        )
+        """)
+
         # ── emergency_fund_plan ───────────────────────────────────────────────
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS emergency_fund_plan (
@@ -183,19 +197,7 @@ def create_tables():
         )
         """)
 
-        # ── category_budgets ──────────────────────────────────────────────────
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS category_budgets (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            category TEXT NOT NULL,
-            monthly_limit INTEGER NOT NULL DEFAULT 0,
-            UNIQUE (user_id, category)
-        )
-        """)
-
         # ── user_streaks ──────────────────────────────────────────────────────
-        # Tracks consecutive daily login/tracking streaks per user.
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS user_streaks (
             id SERIAL PRIMARY KEY,
@@ -208,7 +210,6 @@ def create_tables():
         """)
 
         # ── notifications ─────────────────────────────────────────────────────
-        # In-app notification inbox. type: 'reminder'|'tip'|'milestone'|'alert'|'nudge'
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS notifications (
             id SERIAL PRIMARY KEY,
@@ -224,7 +225,6 @@ def create_tables():
         """)
 
         # ── onboarding_tips ───────────────────────────────────────────────────
-        # Tracks which tip sequence a new user is on (tip 1..N shown progressively).
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS onboarding_tips (
             id SERIAL PRIMARY KEY,
@@ -234,10 +234,8 @@ def create_tables():
         )
         """)
 
-        # ── Migrate existing TEXT columns to proper date types ────────────────
-        # These are safe to run repeatedly — IF NOT EXISTS / type checks protect them.
+        # ── Migrations ────────────────────────────────────────────────────────
 
-        # users
         cursor.execute("""
             ALTER TABLE users
                 ADD COLUMN IF NOT EXISTS onboarding_complete INTEGER DEFAULT 0
@@ -264,8 +262,6 @@ def create_tables():
                                THEN last_login::DATE ELSE NULL END;
             EXCEPTION WHEN others THEN NULL; END $$;
         """)
-
-        # transactions
         cursor.execute("""
             DO $$ BEGIN
                 ALTER TABLE transactions ALTER COLUMN created_at TYPE DATE
@@ -273,8 +269,6 @@ def create_tables():
                                THEN created_at::DATE ELSE CURRENT_DATE END;
             EXCEPTION WHEN others THEN NULL; END $$;
         """)
-
-        # expenses — also add category column
         cursor.execute("""
             ALTER TABLE expenses
                 ADD COLUMN IF NOT EXISTS category TEXT
@@ -286,12 +280,9 @@ def create_tables():
                                THEN created_at::DATE ELSE CURRENT_DATE END;
             EXCEPTION WHEN others THEN NULL; END $$;
         """)
-        # Back-fill category from name for existing rows
         cursor.execute("""
             UPDATE expenses SET category = name WHERE category IS NULL
         """)
-
-        # goals
         cursor.execute("""
             DO $$ BEGIN
                 ALTER TABLE goals ALTER COLUMN created_at TYPE DATE
@@ -299,8 +290,6 @@ def create_tables():
                                THEN created_at::DATE ELSE CURRENT_DATE END;
             EXCEPTION WHEN others THEN NULL; END $$;
         """)
-
-        # analytics_logins
         cursor.execute("""
             DO $$ BEGIN
                 ALTER TABLE analytics_logins ALTER COLUMN login_date TYPE DATE
@@ -308,8 +297,6 @@ def create_tables():
                                THEN login_date::DATE ELSE CURRENT_DATE END;
             EXCEPTION WHEN others THEN NULL; END $$;
         """)
-
-        # session_tokens
         cursor.execute("""
             DO $$ BEGIN
                 ALTER TABLE session_tokens ALTER COLUMN created_at TYPE TIMESTAMP
@@ -318,7 +305,7 @@ def create_tables():
             EXCEPTION WHEN others THEN NULL; END $$;
         """)
 
-        # ── Indexes for fast queries ──────────────────────────────────────────
+        # ── Indexes ───────────────────────────────────────────────────────────
         index_stmts = [
             "CREATE INDEX IF NOT EXISTS idx_banks_user_id ON banks(user_id)",
             "CREATE INDEX IF NOT EXISTS idx_transactions_bank_id ON transactions(bank_id)",
@@ -341,6 +328,8 @@ def create_tables():
             "CREATE INDEX IF NOT EXISTS idx_recurring_items_user_id ON recurring_items(user_id)",
             "CREATE INDEX IF NOT EXISTS idx_recurring_items_next_due ON recurring_items(next_due)",
             "CREATE INDEX IF NOT EXISTS idx_debts_user_id ON debts(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_debt_payments_debt_id ON debt_payments(debt_id)",
+            "CREATE INDEX IF NOT EXISTS idx_debt_payments_user_id ON debt_payments(user_id)",
             "CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(user_id, read)",
             "CREATE INDEX IF NOT EXISTS idx_user_streaks_user_id ON user_streaks(user_id)",
