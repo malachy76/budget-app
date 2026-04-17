@@ -1,668 +1,741 @@
-# _pages/tracker.py
-# Tabs: Recurring Items | Bill Reminders | Debt / Loan Tracker | Emergency Fund
+# tracker.py — Tracker page
+# Tabs: Recurring Income | Recurring Expenses | Bill Reminders | Debt/Loan | Emergency Fund
 import streamlit as st
-from datetime import datetime, date, timedelta
+from datetime import datetime, timedelta
+
 from db import get_db
 
-# ── helpers ───────────────────────────────────────────────────────────────────
 
-FREQ_LABELS   = ["daily", "weekly", "monthly", "yearly"]
-FREQ_DELTAS   = {"daily": 1, "weekly": 7, "monthly": 30, "yearly": 365}
-
-def _advance_due(current_due: date, frequency: str) -> date:
-    """Return the next due date after current_due based on frequency."""
-    today = date.today()
-    d = current_due or today
-    if frequency == "daily":
-        d += timedelta(days=1)
-    elif frequency == "weekly":
-        d += timedelta(weeks=1)
-    elif frequency == "yearly":
-        try:
-            d = d.replace(year=d.year + 1)
-        except ValueError:
-            d = d + timedelta(days=365)
-    else:  # monthly
-        month = d.month + 1
-        year  = d.year + (month - 1) // 12
-        month = ((month - 1) % 12) + 1
-        import calendar
-        last_day = calendar.monthrange(year, month)[1]
-        d = d.replace(year=year, month=month, day=min(d.day, last_day))
-    return d
+FREQ_OPTIONS = ["monthly", "weekly", "daily", "yearly"]
+FREQ_LABELS  = {"monthly": "Monthly", "weekly": "Weekly",
+                "daily": "Daily",   "yearly": "Yearly"}
+FREQ_MULT    = {"daily": 30, "weekly": 4.33, "monthly": 1, "yearly": 1/12}
 
 
-def _auto_post_due_items(user_id: int):
-    """Post any auto_post=1 recurring items that are due today or overdue."""
-    today = date.today()
+def _next_due(freq):
+    today = datetime.now().date()
+    if freq == "daily":  return today + timedelta(days=1)
+    if freq == "weekly": return today + timedelta(weeks=1)
+    if freq == "yearly": return today.replace(year=today.year + 1)
+    # monthly
+    if today.month == 12:
+        return today.replace(year=today.year + 1, month=1, day=1)
+    return today.replace(month=today.month + 1, day=1)
+
+
+def _due_badge(next_due, today):
+    if next_due is None:
+        return "No date", "#95a5a6"
+    days = (next_due - today).days
+    if days < 0:
+        return f"Overdue {abs(days)}d", "#c0392b"
+    if days == 0:
+        return "Due today", "#e67e22"
+    if days <= 3:
+        return f"Due in {days}d", "#c0392b"
+    if days <= 7:
+        return f"Due in {days}d", "#f39c12"
+    return f"Due in {days}d", "#1a3c5e"
+
+
+def render_tracker(user_id):
+    st.markdown("## Tracker")
+    st.caption("Recurring income & expenses, bill reminders, debts, and your emergency fund.")
+
+    today = datetime.now().date()
+
+    # Load banks once for all tabs
     with get_db() as (conn, cursor):
-        cursor.execute("""
-            SELECT * FROM recurring_items
-            WHERE user_id=%s AND active=1 AND auto_post=1
-              AND next_due IS NOT NULL AND next_due <= %s
-        """, (user_id, today))
-        due_items = cursor.fetchall()
+        cursor.execute(
+            "SELECT id, bank_name, account_number FROM banks WHERE user_id=%s ORDER BY bank_name",
+            (user_id,)
+        )
+        banks = cursor.fetchall()
 
-        for item in due_items:
-            bank_id = item["bank_id"]
-            if not bank_id:
-                continue
-            amt  = int(item["amount"])
-            name = item["name"]
-            itype = item["type"]
-            cat  = item["category"] or name
+    bank_map  = {f"{b['bank_name']} (****{b['account_number']})": b["id"] for b in banks}
+    bank_opts = list(bank_map.keys())
 
-            if itype == "expense":
-                cursor.execute("SELECT balance FROM banks WHERE id=%s AND user_id=%s", (bank_id, user_id))
-                bank = cursor.fetchone()
-                if not bank or bank["balance"] - amt < 0:
-                    continue  # skip — not enough balance, let user handle manually
-                cursor.execute(
-                    "INSERT INTO transactions (bank_id,type,amount,description,created_at) VALUES (%s,'debit',%s,%s,%s) RETURNING id",
-                    (bank_id, amt, f"Recurring: {name}", today)
-                )
-                tx_id = cursor.fetchone()["id"]
-                cursor.execute(
-                    "INSERT INTO expenses (user_id,bank_id,name,category,amount,created_at,tx_id) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                    (user_id, bank_id, name, cat, amt, today, tx_id)
-                )
-                cursor.execute("UPDATE banks SET balance=balance-%s WHERE id=%s", (amt, bank_id))
-            else:  # income
-                cursor.execute(
-                    "INSERT INTO transactions (bank_id,type,amount,description,created_at) VALUES (%s,'credit',%s,%s,%s)",
-                    (bank_id, amt, f"Recurring income: {name}", today)
-                )
-                cursor.execute("UPDATE banks SET balance=balance+%s WHERE id=%s", (amt, bank_id))
-
-            # advance next_due
-            new_due = _advance_due(item["next_due"], item["frequency"])
-            cursor.execute("UPDATE recurring_items SET next_due=%s WHERE id=%s", (new_due, item["id"]))
-
-
-# ── main render ───────────────────────────────────────────────────────────────
-
-def render_tracker(user_id: int):
-    st.title("📋 Tracker")
-
-    # Auto-post anything due
-    try:
-        _auto_post_due_items(user_id)
-    except Exception:
-        pass
-
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "🔁 Recurring Items",
-        "🔔 Bill Reminders",
-        "💳 Debts & Loans",
-        "🛡️ Emergency Fund",
+    tab_ri, tab_re, tab_bill, tab_debt, tab_ef = st.tabs([
+        "&#x1F4B0; Recurring Income",
+        "&#x1F4B8; Recurring Expenses",
+        "&#x1F514; Bill Reminders",
+        "&#x1F4B3; Debt / Loan",
+        "&#x1F6E1; Emergency Fund",
     ])
 
-    with tab1:
-        _render_recurring(user_id)
-    with tab2:
-        _render_bill_reminders(user_id)
-    with tab3:
-        _render_debts(user_id)
-    with tab4:
-        _render_emergency_fund(user_id)
+    # ─────────────────────────────────────────────────────────────────────────
+    # TAB 1 — RECURRING INCOME
+    # ─────────────────────────────────────────────────────────────────────────
+    with tab_ri:
+        st.subheader("Recurring Income")
+        st.caption("Salary, freelance, rent — any money that arrives on a schedule.")
 
+        with st.expander("➕ Add recurring income", expanded=False):
+            with st.form("add_rec_income"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    ri_name = st.text_input("Income source", placeholder="e.g. Salary, Freelance")
+                    ri_freq = st.selectbox("Frequency", FREQ_OPTIONS,
+                                           format_func=lambda x: FREQ_LABELS[x], key="ri_freq")
+                with c2:
+                    ri_amt  = st.number_input("Expected amount (NGN)", min_value=1, step=1000)
+                    ri_due  = st.date_input("Next expected date", value=_next_due("monthly"))
+                ri_bank = st.selectbox("Deposit to bank (optional)", ["— none —"] + bank_opts)
+                ri_auto = st.checkbox("Auto-post when due")
+                if st.form_submit_button("Add Recurring Income", type="primary"):
+                    if ri_name and ri_amt > 0:
+                        bk_id = bank_map.get(ri_bank) if ri_bank != "— none —" else None
+                        with get_db() as (conn, cursor):
+                            cursor.execute("""
+                                INSERT INTO recurring_items
+                                    (user_id, type, name, amount, frequency, next_due, bank_id, auto_post)
+                                VALUES (%s,'income',%s,%s,%s,%s,%s,%s)
+                            """, (user_id, ri_name, int(ri_amt), ri_freq, ri_due,
+                                  bk_id, 1 if ri_auto else 0))
+                        st.success(f"'{ri_name}' added.")
+                        st.rerun()
+                    else:
+                        st.warning("Please enter a name and amount.")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 1 — RECURRING ITEMS
-# ─────────────────────────────────────────────────────────────────────────────
+        # Load + display
+        with get_db() as (conn, cursor):
+            cursor.execute("""
+                SELECT r.id, r.name, r.amount, r.frequency, r.next_due,
+                       r.auto_post, b.bank_name
+                FROM recurring_items r
+                LEFT JOIN banks b ON r.bank_id = b.id
+                WHERE r.user_id=%s AND r.type='income'
+                ORDER BY r.next_due NULLS LAST
+            """, (user_id,))
+            rec_incomes = cursor.fetchall()
 
-def _render_recurring(user_id: int):
-    st.subheader("Recurring Income & Expenses")
-    st.caption("Add bills, subscriptions, salary, or any amount that repeats on a schedule.")
+        if not rec_incomes:
+            st.info("No recurring income yet. Use the form above to add salary, freelance, or rental income.")
+        else:
+            # Summary metric
+            total_monthly_income = sum(
+                r["amount"] * FREQ_MULT.get(r["frequency"], 1) for r in rec_incomes
+            )
+            st.caption(f"Estimated monthly recurring income: **NGN {int(total_monthly_income):,}**")
 
-    with get_db() as (conn, cursor):
-        cursor.execute("SELECT id, bank_name, account_number FROM banks WHERE user_id=%s ORDER BY bank_name", (user_id,))
-        banks = cursor.fetchall()
-        cursor.execute("""
-            SELECT r.*, b.bank_name FROM recurring_items r
-            LEFT JOIN banks b ON r.bank_id = b.id
-            WHERE r.user_id=%s ORDER BY r.next_due ASC NULLS LAST, r.name
-        """, (user_id,))
-        items = cursor.fetchall()
+            for ri in rec_incomes:
+                due_label, due_color = _due_badge(ri["next_due"], today)
+                col_card, col_del = st.columns([6, 0.5])
+                with col_card:
+                    st.markdown(f"""
+                    <div class="exp-card" style="border-left-color:#0e7c5b;">
+                      <div class="exp-card-left">
+                        <div class="exp-card-name">{ri['name']}</div>
+                        <div class="exp-card-bank">
+                          {FREQ_LABELS.get(ri['frequency'], 'Monthly')}
+                          {f" &rarr; {ri['bank_name']}" if ri.get('bank_name') else ""}
+                          {"&nbsp;&nbsp;<em style='font-size:0.75rem;'>auto-post</em>" if ri['auto_post'] else ""}
+                        </div>
+                        <div class="exp-card-date" style="color:{due_color};">
+                          {due_label} &mdash; {ri['next_due'] or 'No date'}
+                        </div>
+                      </div>
+                      <div class="exp-card-right">
+                        <div class="exp-card-amount" style="color:#0e7c5b;">+NGN {ri['amount']:,}</div>
+                      </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with col_del:
+                    dk = f"ri_{ri['id']}"
+                    if st.session_state.confirm_delete.get(dk):
+                        if st.button("✓", key=f"ri_y_{ri['id']}", type="primary"):
+                            with get_db() as (conn, cursor):
+                                cursor.execute("DELETE FROM recurring_items WHERE id=%s AND user_id=%s",
+                                               (ri["id"], user_id))
+                            st.session_state.confirm_delete.pop(dk, None)
+                            st.rerun()
+                        if st.button("✗", key=f"ri_n_{ri['id']}"):
+                            st.session_state.confirm_delete.pop(dk, None); st.rerun()
+                    else:
+                        if st.button("🗑️", key=f"ri_d_{ri['id']}", help="Delete"):
+                            st.session_state.confirm_delete[dk] = True; st.rerun()
 
-    bank_map = {f"{b['bank_name']} (****{b['account_number']})": b["id"] for b in banks}
-    bank_options = ["(none / manual)"] + list(bank_map.keys())
+    # ─────────────────────────────────────────────────────────────────────────
+    # TAB 2 — RECURRING EXPENSES
+    # ─────────────────────────────────────────────────────────────────────────
+    with tab_re:
+        st.subheader("Recurring Expenses")
+        st.caption("Rent, DSTV, school fees — any expense that repeats on a schedule.")
 
-    # ── Add new form ──────────────────────────────────────────────────────────
-    with st.expander("➕ Add Recurring Item", expanded=not items):
-        with st.form("add_recurring_form"):
+        EXPENSE_CATS = [
+            "— select —", "Rent", "Electricity (NEPA)", "School Fees", "Internet",
+            "Subscription", "Transport", "Fuel", "Generator/Fuel", "Water",
+            "Airtime/Data", "Hospital/Drugs", "Family Support", "Church/Mosque Giving",
+            "Business Stock", "Savings Deposit", "Other",
+        ]
+
+        with st.expander("➕ Add recurring expense", expanded=False):
+            with st.form("add_rec_expense"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    re_name = st.text_input("Expense name", placeholder="e.g. House rent, DSTV")
+                    re_freq = st.selectbox("Frequency", FREQ_OPTIONS,
+                                           format_func=lambda x: FREQ_LABELS[x], key="re_freq")
+                with c2:
+                    re_amt  = st.number_input("Expected amount (NGN)", min_value=1, step=500, key="re_amt")
+                    re_due  = st.date_input("Next due date", key="re_due")
+                re_cat  = st.selectbox("Category", EXPENSE_CATS)
+                re_bank = st.selectbox("Pay from bank (optional)", ["— none —"] + bank_opts, key="re_bank")
+                if st.form_submit_button("Add Recurring Expense", type="primary"):
+                    if re_name and re_amt > 0:
+                        bk_id = bank_map.get(re_bank) if re_bank != "— none —" else None
+                        cat   = None if re_cat == "— select —" else re_cat
+                        with get_db() as (conn, cursor):
+                            cursor.execute("""
+                                INSERT INTO recurring_items
+                                    (user_id, type, name, category, amount, frequency, next_due, bank_id)
+                                VALUES (%s,'expense',%s,%s,%s,%s,%s,%s)
+                            """, (user_id, re_name, cat, int(re_amt), re_freq, re_due, bk_id))
+                        st.success(f"'{re_name}' added.")
+                        st.rerun()
+                    else:
+                        st.warning("Please enter a name and amount.")
+
+        with get_db() as (conn, cursor):
+            cursor.execute("""
+                SELECT r.id, r.name, r.category, r.amount, r.frequency, r.next_due, b.bank_name
+                FROM recurring_items r
+                LEFT JOIN banks b ON r.bank_id = b.id
+                WHERE r.user_id=%s AND r.type='expense'
+                ORDER BY r.next_due NULLS LAST
+            """, (user_id,))
+            rec_expenses = cursor.fetchall()
+
+        if not rec_expenses:
+            st.info("No recurring expenses yet. Add rent, subscriptions, or regular bills above.")
+        else:
+            total_monthly = sum(r["amount"] * FREQ_MULT.get(r["frequency"], 1) for r in rec_expenses)
+            st.caption(f"Estimated monthly recurring cost: **NGN {int(total_monthly):,}**")
+
+            for re in rec_expenses:
+                due_label, due_color = _due_badge(re["next_due"], today)
+                col_card, col_del = st.columns([6, 0.5])
+                with col_card:
+                    cat_badge = (
+                        f'<span style="background:#e8f5f0;color:#0e7c5b;border-radius:10px;'
+                        f'padding:1px 8px;font-size:0.75rem;font-weight:600;margin-left:6px;">'
+                        f'{re["category"]}</span>'
+                        if re.get("category") else ""
+                    )
+                    st.markdown(f"""
+                    <div class="exp-card">
+                      <div class="exp-card-left">
+                        <div class="exp-card-name">{re['name']}{cat_badge}</div>
+                        <div class="exp-card-bank">
+                          {FREQ_LABELS.get(re['frequency'], 'Monthly')}
+                          {f" &rarr; {re['bank_name']}" if re.get('bank_name') else ""}
+                        </div>
+                        <div class="exp-card-date" style="color:{due_color};">
+                          {due_label} &mdash; {re['next_due'] or 'No date'}
+                        </div>
+                      </div>
+                      <div class="exp-card-right">
+                        <div class="exp-card-amount">-NGN {re['amount']:,}</div>
+                      </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with col_del:
+                    dk = f"re_{re['id']}"
+                    if st.session_state.confirm_delete.get(dk):
+                        if st.button("✓", key=f"re_y_{re['id']}", type="primary"):
+                            with get_db() as (conn, cursor):
+                                cursor.execute("DELETE FROM recurring_items WHERE id=%s AND user_id=%s",
+                                               (re["id"], user_id))
+                            st.session_state.confirm_delete.pop(dk, None); st.rerun()
+                        if st.button("✗", key=f"re_n_{re['id']}"):
+                            st.session_state.confirm_delete.pop(dk, None); st.rerun()
+                    else:
+                        if st.button("🗑️", key=f"re_d_{re['id']}", help="Delete"):
+                            st.session_state.confirm_delete[dk] = True; st.rerun()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # TAB 3 — BILL REMINDERS
+    # ─────────────────────────────────────────────────────────────────────────
+    with tab_bill:
+        st.subheader("Bill Reminders")
+        st.caption("All recurring items due within the next 30 days.")
+
+        with get_db() as (conn, cursor):
+            cursor.execute("""
+                SELECT r.id, r.name, r.type, r.category, r.amount, r.frequency,
+                       r.next_due, b.bank_name
+                FROM recurring_items r
+                LEFT JOIN banks b ON r.bank_id = b.id
+                WHERE r.user_id = %s AND r.active = 1
+                  AND r.next_due IS NOT NULL
+                ORDER BY r.next_due
+            """, (user_id,))
+            all_items = cursor.fetchall()
+
+        upcoming  = [r for r in all_items if (r["next_due"] - today).days <= 30]
+        overdue   = [r for r in upcoming   if (r["next_due"] - today).days <  0]
+        due_7     = [r for r in upcoming   if 0 <= (r["next_due"] - today).days <= 7]
+        due_30    = [r for r in upcoming   if 7 <  (r["next_due"] - today).days <= 30]
+
+        if not upcoming:
+            st.info("No items due in the next 30 days. Add recurring income or expenses on the other tabs.")
+        else:
+            def _bill_card(r):
+                days   = (r["next_due"] - today).days
+                income = r["type"] == "income"
+                color  = "#0e7c5b" if income else "#c0392b"
+                sign   = "+" if income else "-"
+                icon   = "🔴" if days < 0 else ("🟠" if days <= 3 else "🟢")
+                label  = (f"Overdue {abs(days)}d" if days < 0
+                          else "Due today" if days == 0 else f"Due in {days}d")
+                st.markdown(f"""
+                <div class="exp-card" style="border-left-color:{color};">
+                  <div class="exp-card-left">
+                    <div class="exp-card-name">{icon} {r['name']}</div>
+                    <div class="exp-card-bank">
+                      {FREQ_LABELS.get(r['frequency'],'')}
+                      {f" &rarr; {r['bank_name']}" if r.get('bank_name') else ""}
+                    </div>
+                    <div class="exp-card-date">{label} &mdash; {r['next_due']}</div>
+                  </div>
+                  <div class="exp-card-right">
+                    <div class="exp-card-amount" style="color:{color};">
+                      {sign}NGN {r['amount']:,}
+                    </div>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            if overdue:
+                st.markdown("#### 🔴 Overdue")
+                for r in overdue: _bill_card(r)
+
+            if due_7:
+                st.markdown("#### 🟠 Due within 7 days")
+                for r in due_7: _bill_card(r)
+
+            if due_30:
+                st.markdown("#### 🟢 Due in 8–30 days")
+                for r in due_30: _bill_card(r)
+
+            st.divider()
+            exp_total = sum(r["amount"] for r in upcoming if r["type"] == "expense")
+            inc_total = sum(r["amount"] for r in upcoming if r["type"] == "income")
             c1, c2 = st.columns(2)
-            with c1:
-                r_name  = st.text_input("Name *", placeholder="e.g. DSTV, Rent, Salary")
-                r_type  = st.selectbox("Type *", ["expense", "income"])
-                r_amt   = st.number_input("Amount (NGN) *", min_value=1, step=500)
-            with c2:
-                r_freq  = st.selectbox("Frequency *", FREQ_LABELS, index=2)
-                r_due   = st.date_input("Next Due Date *", value=date.today())
-                r_cat   = st.text_input("Category", placeholder="e.g. Subscription, Salary")
-            r_bank  = st.selectbox("Bank account (optional)", bank_options)
-            r_auto  = st.checkbox("Auto-post when due (deduct/credit automatically)", value=False)
-            submitted = st.form_submit_button("Add Recurring Item", use_container_width=True)
+            c1.metric("Bills to pay (30 days)", f"NGN {exp_total:,}")
+            c2.metric("Income expected (30 days)", f"NGN {inc_total:,}")
 
-        if submitted:
-            if not r_name or r_amt < 1:
-                st.warning("Name and amount are required.")
-            else:
-                bid = bank_map.get(r_bank) if r_bank != "(none / manual)" else None
-                with get_db() as (conn, cursor):
-                    cursor.execute("""
-                        INSERT INTO recurring_items
-                            (user_id, type, name, category, amount, frequency, next_due, bank_id, auto_post, active)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,1)
-                    """, (user_id, r_type, r_name, r_cat or r_name, r_amt, r_freq,
-                          r_due, bid, 1 if r_auto else 0))
-                st.success(f"'{r_name}' added as a recurring {r_type}.")
-                st.rerun()
+    # ─────────────────────────────────────────────────────────────────────────
+    # TAB 4 — DEBT / LOAN TRACKER
+    # ─────────────────────────────────────────────────────────────────────────
+    with tab_debt:
+        st.subheader("Debt & Loan Tracker")
+        st.caption("Track money you owe (borrowed) and money owed to you (lent) — personal or business.")
 
-    if not items:
-        st.info("No recurring items yet. Add one above to get started.")
-        return
+        DEBT_CATEGORIES = [
+            "Personal", "Business", "Bank Loan", "Credit Card",
+            "Family / Friend", "BNPL / Hire Purchase", "Mortgage", "Other",
+        ]
 
-    # ── List ──────────────────────────────────────────────────────────────────
-    today = date.today()
-    income_items  = [i for i in items if i["type"] == "income"]
-    expense_items = [i for i in items if i["type"] == "expense"]
-
-    for section_label, section_items, icon in [
-        ("💰 Recurring Income", income_items, "income"),
-        ("💸 Recurring Expenses", expense_items, "expense"),
-    ]:
-        if not section_items:
-            continue
-        st.markdown(f"**{section_label}**")
-        for item in section_items:
-            next_due = item["next_due"]
-            days_away = (next_due - today).days if next_due else None
-            active = bool(item["active"])
-
-            if days_away is not None:
-                if days_away < 0:
-                    due_label = f"🔴 Overdue by {abs(days_away)}d"
-                elif days_away == 0:
-                    due_label = "🟠 Due today"
-                elif days_away <= 3:
-                    due_label = f"🟡 Due in {days_away}d"
-                else:
-                    due_label = f"🟢 Due {next_due}"
-            else:
-                due_label = "No date set"
-
-            with st.container():
-                col1, col2, col3, col4 = st.columns([3, 2, 1, 1])
-                with col1:
-                    auto_badge = " ⚡auto" if item["auto_post"] else ""
-                    inactive_badge = " (paused)" if not active else ""
-                    st.markdown(
-                        f"**{item['name']}**{auto_badge}{inactive_badge}  \n"
-                        f"<small style='color:#666'>{item['frequency'].capitalize()} · "
-                        f"{item['category'] or ''} · "
-                        f"{item['bank_name'] or 'manual'}</small>",
-                        unsafe_allow_html=True
+        # ── Add form ─────────────────────────────────────────────────────────
+        with st.expander("➕ Add debt or loan", expanded=False):
+            with st.form("add_debt"):
+                c_top1, c_top2 = st.columns(2)
+                with c_top1:
+                    d_name = st.text_input("Name / Description",
+                                           placeholder="e.g. GTB loan, Owe Chike ₦50k")
+                    d_cat  = st.selectbox("Category", DEBT_CATEGORIES)
+                with c_top2:
+                    d_type = st.radio(
+                        "Type", ["borrowed", "lent"],
+                        format_func=lambda x: "📥 I borrowed this" if x == "borrowed" else "📤 I lent this"
                     )
-                with col2:
-                    color = "#0e7c5b" if item["type"] == "income" else "#c0392b"
-                    st.markdown(
-                        f"<span style='font-weight:700;font-size:1rem;color:{color}'>"
-                        f"NGN {int(item['amount']):,}</span>  \n"
-                        f"<small>{due_label}</small>",
-                        unsafe_allow_html=True
-                    )
-                with col3:
-                    toggle_label = "Pause" if active else "Resume"
-                    if st.button(toggle_label, key=f"rec_toggle_{item['id']}"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    d_principal = st.number_input("Original amount (NGN)", min_value=1, step=1000)
+                    d_remaining = st.number_input("Balance still owed (NGN)", min_value=0, step=1000,
+                                                  help="How much is left to pay/receive right now")
+                    d_monthly   = st.number_input("Monthly payment (NGN, 0 if none)", min_value=0, step=500,
+                                                  help="Regular monthly repayment amount")
+                with c2:
+                    d_rate  = st.number_input("Interest rate (% p.a., 0 if none)", min_value=0.0, step=0.5)
+                    d_due   = st.date_input("Due / repayment date")
+                    d_party = st.text_input("Counterparty (person or bank name)")
+                d_notes = st.text_area("Notes (optional)", height=60,
+                                       placeholder="e.g. Collateral, loan purpose, agreement terms")
+                if st.form_submit_button("Add Debt / Loan", type="primary"):
+                    if d_name and d_principal > 0:
                         with get_db() as (conn, cursor):
-                            cursor.execute(
-                                "UPDATE recurring_items SET active=%s WHERE id=%s AND user_id=%s",
-                                (0 if active else 1, item["id"], user_id)
-                            )
+                            # Add category to notes since debts table has no category column
+                            full_notes = f"[{d_cat}] {d_notes.strip()}".strip()
+                            cursor.execute("""
+                                INSERT INTO debts
+                                    (user_id, name, type, principal, balance_remaining,
+                                     interest_rate, monthly_payment, due_date, counterparty, notes)
+                                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                            """, (user_id, d_name, d_type, int(d_principal), int(d_remaining),
+                                  d_rate, int(d_monthly), d_due,
+                                  d_party.strip() or None, full_notes or None))
+                        st.success(f"'{d_name}' added.")
                         st.rerun()
-                with col4:
-                    if st.button("Delete", key=f"rec_del_{item['id']}"):
-                        with get_db() as (conn, cursor):
-                            cursor.execute(
-                                "DELETE FROM recurring_items WHERE id=%s AND user_id=%s",
-                                (item["id"], user_id)
-                            )
-                        st.rerun()
+                    else:
+                        st.warning("Please enter a name and amount.")
+
+        # ── Load all debts ────────────────────────────────────────────────────
+        with get_db() as (conn, cursor):
+            cursor.execute("""
+                SELECT id, name, type, principal, balance_remaining, interest_rate,
+                       monthly_payment, due_date, counterparty, notes, status
+                FROM debts WHERE user_id=%s ORDER BY status, due_date NULLS LAST
+            """, (user_id,))
+            debts = cursor.fetchall()
+
+        if not debts:
+            st.info("No debts or loans tracked yet. Use the form above to add one.")
+        else:
+            # ── Summary metrics ───────────────────────────────────────────────
+            active_debts  = [d for d in debts if d["status"] == "active"]
+            total_owe     = sum(d["balance_remaining"] for d in active_debts if d["type"] == "borrowed")
+            total_owed    = sum(d["balance_remaining"] for d in active_debts if d["type"] == "lent")
+            total_monthly = sum(d["monthly_payment"] for d in active_debts if d["type"] == "borrowed")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("You owe (total)",      f"NGN {total_owe:,}")
+            c2.metric("Owed to you (total)",  f"NGN {total_owed:,}")
+            c3.metric("Monthly repayments",   f"NGN {total_monthly:,}",
+                      help="Sum of all your active monthly debt payments")
             st.divider()
 
+            for d in debts:
+                is_lent   = d["type"] == "lent"
+                principal = int(d["principal"])
+                balance   = int(d["balance_remaining"])
+                paid      = principal - balance
+                pct_paid  = round(paid / principal * 100, 1) if principal > 0 else 0
+                color     = "#0e7c5b" if is_lent else "#c0392b"
+                direction = "📤 Lent" if is_lent else "📥 Borrowed"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 2 — BILL REMINDERS (upcoming in next 30 days)
-# ─────────────────────────────────────────────────────────────────────────────
+                # Extract category from notes prefix [Category]
+                import re as _re
+                notes_raw = d["notes"] or ""
+                cat_match = _re.match(r'^\[([^\]]+)\]', notes_raw)
+                debt_cat  = cat_match.group(1) if cat_match else ""
+                clean_notes = notes_raw[len(f"[{debt_cat}]"):].strip() if debt_cat else notes_raw
 
-def _render_bill_reminders(user_id: int):
-    st.subheader("Upcoming Bills (Next 30 Days)")
-    st.caption("All recurring expenses with a due date in the next 30 days, sorted by urgency.")
+                # Payoff timeline
+                monthly_pmt = int(d["monthly_payment"] or 0)
+                if monthly_pmt > 0 and balance > 0 and d["status"] == "active":
+                    months_left = -(-balance // monthly_pmt)  # ceiling division
+                    payoff_str  = f"{months_left} month{'s' if months_left != 1 else ''} at NGN {monthly_pmt:,}/mo"
+                else:
+                    payoff_str  = None
 
-    today  = date.today()
-    cutoff = today + timedelta(days=30)
-
-    with get_db() as (conn, cursor):
-        cursor.execute("""
-            SELECT r.*, b.bank_name, b.balance AS bank_balance
-            FROM recurring_items r
-            LEFT JOIN banks b ON r.bank_id = b.id
-            WHERE r.user_id=%s AND r.active=1 AND r.type='expense'
-              AND r.next_due IS NOT NULL AND r.next_due <= %s
-            ORDER BY r.next_due ASC
-        """, (user_id, cutoff))
-        bills = cursor.fetchall()
-
-        # Also include income so the user can see expected inflows
-        cursor.execute("""
-            SELECT r.*, b.bank_name, b.balance AS bank_balance
-            FROM recurring_items r
-            LEFT JOIN banks b ON r.bank_id = b.id
-            WHERE r.user_id=%s AND r.active=1 AND r.type='income'
-              AND r.next_due IS NOT NULL AND r.next_due <= %s
-            ORDER BY r.next_due ASC
-        """, (user_id, cutoff))
-        income_due = cursor.fetchall()
-
-    all_due = sorted(list(bills) + list(income_due), key=lambda r: r["next_due"])
-
-    if not all_due:
-        st.success("No upcoming bills or income in the next 30 days.")
-        st.info("Add recurring items on the **Recurring Items** tab to see them here.")
-        return
-
-    total_bills   = sum(int(r["amount"]) for r in bills)
-    total_income  = sum(int(r["amount"]) for r in income_due)
-
-    mc1, mc2, mc3 = st.columns(3)
-    mc1.metric("Bills Due (30d)", f"NGN {total_bills:,}")
-    mc2.metric("Income Expected (30d)", f"NGN {total_income:,}")
-    mc3.metric("Net", f"NGN {total_income - total_bills:,}")
-    st.divider()
-
-    for r in all_due:
-        days_away = (r["next_due"] - today).days
-        is_income = r["type"] == "income"
-
-        if days_away < 0:
-            status_color = "#c0392b"
-            status_icon  = "🔴"
-            status_text  = f"Overdue by {abs(days_away)} day(s)"
-        elif days_away == 0:
-            status_color = "#e67e22"
-            status_icon  = "🟠"
-            status_text  = "Due TODAY"
-        elif days_away <= 3:
-            status_color = "#f39c12"
-            status_icon  = "🟡"
-            status_text  = f"Due in {days_away} day(s)"
-        elif days_away <= 7:
-            status_color = "#2980b9"
-            status_icon  = "🔵"
-            status_text  = f"Due in {days_away} day(s)"
-        else:
-            status_color = "#27ae60"
-            status_icon  = "🟢"
-            status_text  = f"Due {r['next_due']}"
-
-        amount_color = "#0e7c5b" if is_income else "#c0392b"
-        amount_sign  = "+" if is_income else "-"
-        bank_info    = f" · {r['bank_name']}" if r["bank_name"] else ""
-
-        # Warn if bank balance might be too low
-        balance_warn = ""
-        if not is_income and r["bank_balance"] is not None:
-            if int(r["bank_balance"]) < int(r["amount"]):
-                shortfall = int(r["amount"]) - int(r["bank_balance"])
-                balance_warn = f" ⚠️ Balance short by NGN {shortfall:,}"
-
-        st.markdown(
-            f"""<div style='background:#f8f9fa;border-left:4px solid {status_color};
-            border-radius:8px;padding:12px 16px;margin-bottom:8px;'>
-            <div style='display:flex;justify-content:space-between;align-items:center;'>
-            <div>
-              <span style='font-weight:700;font-size:0.97rem'>{status_icon} {r['name']}</span>
-              <span style='font-size:0.8rem;color:#666;margin-left:8px'>{r['frequency'].capitalize()}{bank_info}</span>
-              {f"<span style='font-size:0.78rem;color:#c0392b'>{balance_warn}</span>" if balance_warn else ""}
-            </div>
-            <div style='text-align:right'>
-              <span style='font-weight:800;font-size:1.05rem;color:{amount_color}'>{amount_sign}NGN {int(r['amount']):,}</span><br>
-              <span style='font-size:0.78rem;color:{status_color};font-weight:600'>{status_text}</span>
-            </div>
-            </div></div>""",
-            unsafe_allow_html=True
-        )
-
-    st.divider()
-    st.caption("💡 Bills auto-post to your expense log when they are due if **auto-post** is enabled on that recurring item.")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 3 — DEBTS & LOANS
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _render_debts(user_id: int):
-    st.subheader("Debt & Loan Tracker")
-    st.caption("Track money you borrowed or lent, record repayments, and see your payoff timeline.")
-
-    with get_db() as (conn, cursor):
-        cursor.execute("SELECT id, bank_name, account_number, balance FROM banks WHERE user_id=%s ORDER BY bank_name", (user_id,))
-        banks = cursor.fetchall()
-        cursor.execute("""
-            SELECT d.*,
-              (SELECT COALESCE(SUM(amount),0) FROM debt_payments WHERE debt_id=d.id) AS total_paid
-            FROM debts d WHERE d.user_id=%s ORDER BY d.status, d.due_date ASC NULLS LAST
-        """, (user_id,))
-        debts = cursor.fetchall()
-
-    bank_map = {f"{b['bank_name']} (****{b['account_number']})": b for b in banks}
-
-    # ── Summary metrics ───────────────────────────────────────────────────────
-    active_debts = [d for d in debts if d["status"] == "active"]
-    if active_debts:
-        total_owed  = sum(int(d["balance_remaining"]) for d in active_debts if d["type"] == "borrowed")
-        total_lent  = sum(int(d["balance_remaining"]) for d in active_debts if d["type"] == "lent")
-        mc1, mc2, mc3 = st.columns(3)
-        mc1.metric("Total You Owe", f"NGN {total_owed:,}")
-        mc2.metric("Total Owed to You", f"NGN {total_lent:,}")
-        mc3.metric("Active Debts/Loans", str(len(active_debts)))
-        st.divider()
-
-    # ── Add new debt ──────────────────────────────────────────────────────────
-    with st.expander("➕ Add Debt / Loan", expanded=not debts):
-        with st.form("add_debt_form"):
-            c1, c2 = st.columns(2)
-            with c1:
-                d_name    = st.text_input("Label *", placeholder="e.g. GTB Loan, Lent to Kemi")
-                d_type    = st.selectbox("Type *", ["borrowed", "lent"],
-                                         help="'borrowed' = you owe someone; 'lent' = they owe you")
-                d_principal = st.number_input("Principal Amount (NGN) *", min_value=1, step=1000)
-                d_balance   = st.number_input("Current Balance Remaining (NGN) *", min_value=0, step=1000)
-            with c2:
-                d_rate     = st.number_input("Interest Rate (% per annum, 0 if none)", min_value=0.0, step=0.5, format="%.2f")
-                d_monthly  = st.number_input("Monthly Payment (NGN, 0 if flexible)", min_value=0, step=500)
-                d_due      = st.date_input("Due / End Date (optional)", value=None)
-                d_counter  = st.text_input("Counterparty (person/bank name)", placeholder="e.g. GTB, Mama, John")
-            d_notes = st.text_area("Notes (optional)", height=60)
-            submitted = st.form_submit_button("Add Debt/Loan", use_container_width=True)
-
-        if submitted:
-            if not d_name or d_principal < 1:
-                st.warning("Label and principal amount are required.")
-            else:
-                with get_db() as (conn, cursor):
-                    cursor.execute("""
-                        INSERT INTO debts
-                            (user_id, name, type, principal, balance_remaining,
-                             interest_rate, monthly_payment, due_date, counterparty, notes)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    """, (user_id, d_name, d_type, int(d_principal), int(d_balance),
-                          d_rate, int(d_monthly), d_due, d_counter or None, d_notes or None))
-                st.success(f"'{d_name}' added to your debt tracker.")
-                st.rerun()
-
-    if not debts:
-        st.info("No debts or loans tracked yet.")
-        return
-
-    # ── Debt list ─────────────────────────────────────────────────────────────
-    today = date.today()
-    for section, section_debts, section_icon in [
-        ("Active", [d for d in debts if d["status"] == "active"], "🔴"),
-        ("Paid Off", [d for d in debts if d["status"] == "paid"], "✅"),
-    ]:
-        if not section_debts:
-            continue
-        st.markdown(f"**{section_icon} {section} Debts & Loans**")
-
-        for d in section_debts:
-            principal  = int(d["principal"])
-            balance    = int(d["balance_remaining"])
-            total_paid = int(d["total_paid"] or 0)
-            pct_paid   = round((principal - balance) / principal * 100, 1) if principal else 0
-            due_date   = d["due_date"]
-            is_overdue = due_date and due_date < today and d["status"] == "active"
-            label_color = "#c0392b" if d["type"] == "borrowed" else "#0e7c5b"
-
-            with st.expander(
-                f"{'🔴' if is_overdue else ('💸' if d['type']=='borrowed' else '💰')} "
-                f"**{d['name']}** — NGN {balance:,} remaining"
-                f"{' ⚠️ OVERDUE' if is_overdue else ''}",
-                expanded=False
-            ):
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown(f"**Type:** {'You borrowed' if d['type']=='borrowed' else 'You lent'}")
-                    st.markdown(f"**Principal:** NGN {principal:,}")
-                    st.markdown(f"**Remaining:** NGN {balance:,}")
-                    if d["interest_rate"]:
-                        st.markdown(f"**Interest rate:** {float(d['interest_rate']):.2f}% p.a.")
-                    if d["monthly_payment"]:
-                        st.markdown(f"**Monthly payment:** NGN {int(d['monthly_payment']):,}")
-                with col2:
-                    st.markdown(f"**Counterparty:** {d['counterparty'] or '—'}")
-                    st.markdown(f"**Due date:** {due_date or '—'}")
-                    st.markdown(f"**Total paid so far:** NGN {total_paid:,}")
-                    if d["notes"]:
-                        st.markdown(f"**Notes:** {d['notes']}")
-
-                # Progress bar
-                bar_color = "#0e7c5b" if pct_paid >= 75 else ("#f39c12" if pct_paid >= 40 else "#c0392b")
-                filled = int(pct_paid / 5)
-                st.markdown(
-                    f"<div style='margin:8px 0 4px'>"
-                    f"<span style='font-size:0.8rem;color:#666'>Paid off: {pct_paid}%</span><br>"
-                    f"<span style='color:{bar_color};font-size:1.1rem'>{'█'*filled}"
-                    f"<span style='color:#ddd'>{'░'*(20-filled)}</span></span></div>",
-                    unsafe_allow_html=True
+                status_badge = (
+                    '<span style="background:#e8f5f0;color:#0e7c5b;border-radius:10px;'
+                    'padding:1px 8px;font-size:0.72rem;font-weight:600;">Paid ✓</span>'
+                    if d["status"] == "paid" else ""
+                )
+                cat_badge = (
+                    f'<span style="background:#e8f0f7;color:#6a1b9a;border-radius:10px;'
+                    f'padding:1px 8px;font-size:0.72rem;font-weight:600;">{debt_cat}</span>'
+                    if debt_cat else ""
+                )
+                # Progress bar HTML
+                bar_pct  = min(pct_paid, 100)
+                bar_color = "#0e7c5b" if pct_paid >= 100 else ("#f39c12" if pct_paid >= 50 else color)
+                progress_html = (
+                    f'<div style="background:#eef5f2;border-radius:6px;height:7px;margin-top:6px;overflow:hidden;">'
+                    f'<div style="background:{bar_color};width:{bar_pct:.1f}%;height:7px;border-radius:6px;"></div>'
+                    f'</div>'
+                    f'<div style="font-size:0.72rem;color:#95a5a6;margin-top:3px;">'
+                    f'NGN {paid:,} paid of NGN {principal:,} ({pct_paid:.0f}%)'
+                    f'</div>'
                 )
 
-                # Payoff estimate
-                if d["status"] == "active" and d["monthly_payment"] and balance > 0:
-                    months_left = -(-balance // int(d["monthly_payment"]))  # ceiling div
-                    st.caption(f"⏱️ At NGN {int(d['monthly_payment']):,}/month, payoff in ~{months_left} month(s).")
+                col_card, col_act = st.columns([5, 1])
+                with col_card:
+                    st.markdown(f"""
+                    <div class="exp-card" style="border-left-color:{color};">
+                      <div class="exp-card-left" style="width:100%;">
+                        <div class="exp-card-name">
+                          {direction}: {d['name']} {status_badge} {cat_badge}
+                        </div>
+                        <div class="exp-card-bank">
+                          {f"{d['counterparty']} &middot; " if d.get('counterparty') else ""}
+                          {f"{d['interest_rate']:.1f}% p.a." if d['interest_rate'] else "0% interest"}
+                          {f" &middot; {payoff_str}" if payoff_str else ""}
+                        </div>
+                        <div class="exp-card-date">
+                          Due: {d['due_date'] or 'Not set'}
+                          {f" &middot; {clean_notes}" if clean_notes else ""}
+                        </div>
+                        {progress_html}
+                      </div>
+                      <div class="exp-card-right">
+                        <div class="exp-card-amount" style="color:{color};">
+                          NGN {balance:,}
+                        </div>
+                        <div style="font-size:0.72rem;color:#95a5a6;">remaining</div>
+                      </div>
+                    </div>
+                    """, unsafe_allow_html=True)
 
-                st.markdown("---")
-
-                # Record payment
-                if d["status"] == "active":
-                    with st.form(f"debt_payment_{d['id']}"):
-                        pc1, pc2 = st.columns(2)
-                        with pc1:
-                            pay_amt  = st.number_input("Payment amount (NGN)", min_value=1, step=500, key=f"pamt_{d['id']}")
-                        with pc2:
-                            pay_bank = st.selectbox("Pay from bank (optional)", ["(none)"] + list(bank_map.keys()), key=f"pbnk_{d['id']}")
-                        pay_note = st.text_input("Note (optional)", key=f"pnote_{d['id']}")
-                        pay_date = st.date_input("Payment date", value=today, key=f"pdate_{d['id']}")
-                        pay_submitted = st.form_submit_button("Record Payment")
-
-                    if pay_submitted and pay_amt > 0:
-                        bid = bank_map[pay_bank]["id"] if pay_bank != "(none)" else None
-                        new_balance = max(balance - pay_amt, 0)
-                        new_status  = "paid" if new_balance == 0 else "active"
-                        with get_db() as (conn, cursor):
-                            cursor.execute("""
-                                INSERT INTO debt_payments (debt_id, user_id, bank_id, amount, note, paid_at)
-                                VALUES (%s,%s,%s,%s,%s,%s)
-                            """, (d["id"], user_id, bid, pay_amt, pay_note or None, pay_date))
-                            cursor.execute("""
-                                UPDATE debts SET balance_remaining=%s, status=%s WHERE id=%s AND user_id=%s
-                            """, (new_balance, new_status, d["id"], user_id))
-                            if bid:
-                                cursor.execute(
-                                    "INSERT INTO transactions (bank_id,type,amount,description,created_at) VALUES (%s,'debit',%s,%s,%s)",
-                                    (bid, pay_amt, f"Debt payment: {d['name']}", pay_date)
-                                )
-                                cursor.execute("UPDATE banks SET balance=balance-%s WHERE id=%s", (pay_amt, bid))
-                        msg = "🎉 Debt fully paid off!" if new_status == "paid" else f"Payment recorded. NGN {new_balance:,} remaining."
-                        st.success(msg)
-                        st.rerun()
-
-                # Mark as paid / delete
-                cc1, cc2 = st.columns(2)
-                with cc1:
+                with col_act:
                     if d["status"] == "active":
-                        if st.button("✅ Mark as Paid Off", key=f"debt_paid_{d['id']}"):
+                        # Mark fully paid
+                        if st.button("✅ Paid", key=f"dp_{d['id']}", use_container_width=True,
+                                     help="Mark as fully paid"):
                             with get_db() as (conn, cursor):
                                 cursor.execute(
-                                    "UPDATE debts SET status='paid', balance_remaining=0 WHERE id=%s AND user_id=%s",
-                                    (d["id"], user_id)
+                                    "UPDATE debts SET status='paid', balance_remaining=0 "
+                                    "WHERE id=%s AND user_id=%s", (d["id"], user_id)
                                 )
-                            st.success("Marked as paid!")
                             st.rerun()
-                with cc2:
-                    if st.button("🗑️ Delete", key=f"debt_del_{d['id']}"):
-                        with get_db() as (conn, cursor):
-                            cursor.execute("DELETE FROM debts WHERE id=%s AND user_id=%s", (d["id"], user_id))
-                        st.rerun()
 
+                        # Record a partial payment
+                        pay_key = f"show_pay_{d['id']}"
+                        if st.button("💳 Pay", key=f"pp_{d['id']}", use_container_width=True,
+                                     help="Record a partial payment"):
+                            st.session_state[pay_key] = not st.session_state.get(pay_key, False)
+                            st.rerun()
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 4 — EMERGENCY FUND PLANNER
-# ─────────────────────────────────────────────────────────────────────────────
+                        if st.session_state.get(pay_key, False):
+                            with st.form(f"partial_pay_{d['id']}"):
+                                amt_paid = st.number_input(
+                                    "Payment amount (NGN)",
+                                    min_value=1,
+                                    max_value=balance,
+                                    step=500,
+                                    key=f"pay_amt_{d['id']}"
+                                )
+                                if st.form_submit_button("Record payment"):
+                                    new_balance = max(balance - int(amt_paid), 0)
+                                    new_status  = "paid" if new_balance == 0 else "active"
+                                    with get_db() as (conn, cursor):
+                                        cursor.execute(
+                                            "UPDATE debts SET balance_remaining=%s, status=%s "
+                                            "WHERE id=%s AND user_id=%s",
+                                            (new_balance, new_status, d["id"], user_id)
+                                        )
+                                    st.session_state.pop(pay_key, None)
+                                    st.success(f"NGN {int(amt_paid):,} recorded. "
+                                               f"{'Debt fully cleared!' if new_balance == 0 else f'NGN {new_balance:,} remaining.'}")
+                                    st.rerun()
 
-def _render_emergency_fund(user_id: int):
-    st.subheader("Emergency Fund Planner")
-    st.caption(
-        "An emergency fund should cover 3–6 months of essential expenses. "
-        "Set your target, link it to a savings goal, and track your progress here."
-    )
+                    dk = f"debt_{d['id']}"
+                    if st.session_state.confirm_delete.get(dk):
+                        if st.button("✓", key=f"dy_{d['id']}", type="primary"):
+                            with get_db() as (conn, cursor):
+                                cursor.execute("DELETE FROM debts WHERE id=%s AND user_id=%s",
+                                               (d["id"], user_id))
+                            st.session_state.confirm_delete.pop(dk, None); st.rerun()
+                        if st.button("✗", key=f"dn_{d['id']}"):
+                            st.session_state.confirm_delete.pop(dk, None); st.rerun()
+                    else:
+                        if st.button("🗑️", key=f"dd_{d['id']}", help="Delete"):
+                            st.session_state.confirm_delete[dk] = True; st.rerun()
 
-    today = date.today()
+    # ─────────────────────────────────────────────────────────────────────────
+    # TAB 5 — EMERGENCY FUND PLANNER
+    # ─────────────────────────────────────────────────────────────────────────
+    with tab_ef:
+        st.subheader("Emergency Fund Planner")
+        st.caption(
+            "An emergency fund covers 3–6 months of living expenses. "
+            "It protects you from job loss, medical bills, or unexpected crises."
+        )
 
-    with get_db() as (conn, cursor):
-        cursor.execute("SELECT * FROM emergency_fund_plan WHERE user_id=%s", (user_id,))
-        plan = cursor.fetchone()
+        # ── Pull actual avg monthly spending from last 3 months ──────────────
+        with get_db() as (conn, cursor):
+            cursor.execute("SELECT * FROM emergency_fund_plan WHERE user_id=%s", (user_id,))
+            ef = cursor.fetchone()
 
-        # Auto-compute monthly expenses from last 3 months
-        cursor.execute("""
-            SELECT COALESCE(AVG(monthly_total),0) AS avg_monthly
-            FROM (
-                SELECT DATE_TRUNC('month', e.created_at) AS mo, SUM(e.amount) AS monthly_total
-                FROM expenses e JOIN banks b ON e.bank_id=b.id
-                WHERE b.user_id=%s
-                  AND e.created_at >= CURRENT_DATE - INTERVAL '90 days'
-                GROUP BY mo
-            ) sub
-        """, (user_id,))
-        avg_monthly = int(cursor.fetchone()["avg_monthly"] or 0)
+            three_months_ago = today.replace(day=1)
+            for _ in range(2):
+                three_months_ago = (three_months_ago - timedelta(days=1)).replace(day=1)
 
-        cursor.execute("SELECT id, name, current_amount, status FROM goals WHERE user_id=%s AND status='active' ORDER BY name", (user_id,))
-        goals = cursor.fetchall()
+            cursor.execute("""
+                SELECT COALESCE(SUM(t.amount), 0) AS total
+                FROM transactions t JOIN banks b ON t.bank_id = b.id
+                WHERE b.user_id = %s AND t.type = 'debit'
+                  AND t.created_at >= %s AND t.created_at < %s
+            """, (user_id, three_months_ago, today.replace(day=1)))
+            three_mo_total = int(cursor.fetchone()["total"] or 0)
+            actual_avg_monthly = three_mo_total // 3 if three_mo_total > 0 else 0
 
-    goal_map = {"(none / manual tracking)": None}
-    goal_map.update({f"{g['name']} — NGN {int(g['current_amount']):,} saved": g["id"] for g in goals})
+            cursor.execute("""
+                SELECT COALESCE(SUM(t.amount), 0) AS total
+                FROM transactions t JOIN banks b ON t.bank_id = b.id
+                WHERE b.user_id = %s AND t.type = 'credit'
+                  AND t.created_at >= %s
+            """, (user_id, today.replace(day=1)))
+            income_this_month = int(cursor.fetchone()["total"] or 0)
 
-    # ── Setup / edit plan ─────────────────────────────────────────────────────
-    with st.expander("⚙️ Configure Emergency Fund Plan", expanded=plan is None):
-        with st.form("ef_plan_form"):
-            default_months  = int(plan["target_months"])     if plan else 6
-            default_exp     = int(plan["monthly_expenses_estimate"]) if plan and plan["monthly_expenses_estimate"] else avg_monthly
-            default_saved   = int(plan["current_saved"])     if plan else 0
-
-            ef_months   = st.slider("Target months of expenses to cover", 1, 12, default_months)
-            ef_expenses = st.number_input(
-                "Monthly expenses estimate (NGN)",
-                min_value=0, step=5000, value=default_exp,
-                help=f"Your 3-month average is NGN {avg_monthly:,}. You can override this."
+        # ── Auto-populate hint ────────────────────────────────────────────────
+        if actual_avg_monthly > 0:
+            st.info(
+                f"📊 Based on your last 3 months of spending, your average monthly expenses are "
+                f"**NGN {actual_avg_monthly:,}**. We've used this as the default below — adjust if needed."
             )
-            ef_saved    = st.number_input("Currently saved in emergency fund (NGN)", min_value=0, step=5000, value=default_saved)
 
-            # Goal linkage
-            current_goal_key = "(none / manual tracking)"
-            if plan and plan["goal_id"]:
-                for k, v in goal_map.items():
-                    if v == plan["goal_id"]:
-                        current_goal_key = k
-                        break
-            ef_goal = st.selectbox("Link to a Savings Goal (optional)", list(goal_map.keys()),
-                                   index=list(goal_map.keys()).index(current_goal_key))
+        # ── Input form ────────────────────────────────────────────────────────
+        with st.form("ef_form"):
+            st.markdown("#### Step 1 — Set your target")
+            c1, c2 = st.columns(2)
+            with c1:
+                ef_months = st.slider(
+                    "How many months of expenses to save?",
+                    min_value=1, max_value=12,
+                    value=int(ef["target_months"]) if ef else 3,
+                    help="3 months is the minimum recommended; 6 months is ideal"
+                )
+            with c2:
+                default_monthly = (
+                    int(ef["monthly_expenses_estimate"]) if ef and ef["monthly_expenses_estimate"]
+                    else actual_avg_monthly
+                )
+                ef_monthly = st.number_input(
+                    "Your monthly expenses (NGN)",
+                    min_value=0, step=1000,
+                    value=default_monthly,
+                    help="Your average monthly spend on essentials — rent, food, transport, bills"
+                )
 
-            submitted = st.form_submit_button("Save Plan", use_container_width=True)
+            st.markdown("#### Step 2 — Where are you now?")
+            ef_saved = st.number_input(
+                "Amount already saved towards emergency fund (NGN)",
+                min_value=0, step=1000,
+                value=int(ef["current_saved"]) if ef else 0
+            )
 
-        if submitted:
-            linked_goal_id = goal_map.get(ef_goal)
+            st.markdown("#### Step 3 — How much can you save monthly?")
+            suggested = max(-(-max(ef_months * (ef_monthly or 0) - (ef_saved or 0), 0) // 6), 1000)
+            ef_contribution = st.number_input(
+                "Monthly contribution towards emergency fund (NGN)",
+                min_value=0, step=500,
+                value=suggested,
+                help="How much you plan to set aside each month specifically for this fund"
+            )
+
+            ef_saved_btn = st.form_submit_button("Calculate & Save Plan", type="primary")
+
+        if ef_saved_btn:
             with get_db() as (conn, cursor):
                 cursor.execute("""
                     INSERT INTO emergency_fund_plan
-                        (user_id, target_months, monthly_expenses_estimate, current_saved, goal_id, updated_at)
-                    VALUES (%s,%s,%s,%s,%s,%s)
+                        (user_id, target_months, monthly_expenses_estimate, current_saved, updated_at)
+                    VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (user_id) DO UPDATE SET
-                        target_months=%s, monthly_expenses_estimate=%s,
-                        current_saved=%s, goal_id=%s, updated_at=%s
-                """, (user_id, ef_months, ef_expenses, ef_saved, linked_goal_id, today,
-                      ef_months, ef_expenses, ef_saved, linked_goal_id, today))
-            st.success("Emergency fund plan saved!")
+                        target_months             = EXCLUDED.target_months,
+                        monthly_expenses_estimate = EXCLUDED.monthly_expenses_estimate,
+                        current_saved             = EXCLUDED.current_saved,
+                        updated_at                = EXCLUDED.updated_at
+                """, (user_id, ef_months, int(ef_monthly), int(ef_saved), today))
+            st.success("Plan saved.")
             st.rerun()
 
-    if not plan:
-        st.info("Set up your emergency fund plan above to get started.")
-        return
+        # ── Resolve working values ────────────────────────────────────────────
+        _months       = ef_months       if ef_saved_btn else (int(ef["target_months"])             if ef else 3)
+        _monthly      = ef_monthly      if ef_saved_btn else (int(ef["monthly_expenses_estimate"]) if ef and ef["monthly_expenses_estimate"] else actual_avg_monthly)
+        _saved        = ef_saved        if ef_saved_btn else (int(ef["current_saved"])             if ef else 0)
+        _contribution = ef_contribution if ef_saved_btn else suggested
 
-    # ── Display plan ──────────────────────────────────────────────────────────
-    target_months = int(plan["target_months"])
-    monthly_exp   = int(plan["monthly_expenses_estimate"] or avg_monthly or 0)
-    fund_target   = target_months * monthly_exp
+        if _monthly > 0:
+            import math as _math
+            from datetime import date as _date
 
-    # If linked to a goal, use goal's current_amount
-    current_saved = int(plan["current_saved"])
-    if plan["goal_id"]:
-        with get_db() as (conn, cursor):
-            cursor.execute("SELECT current_amount, name FROM goals WHERE id=%s", (plan["goal_id"],))
-            grow = cursor.fetchone()
-            if grow:
-                current_saved = int(grow["current_amount"])
-                goal_name = grow["name"]
+            target    = _months * _monthly
+            shortfall = max(target - _saved, 0)
+            pct       = min(round(_saved / target * 100, 1), 100) if target > 0 else 0
+
+            # ── Key metrics ───────────────────────────────────────────────────
+            st.divider()
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric(
+                f"Target ({_months}-month fund)",
+                f"NGN {target:,}",
+                help=f"{_months} months × NGN {_monthly:,}/mo"
+            )
+            c2.metric("Saved so far",   f"NGN {_saved:,}")
+            c3.metric("Still needed",   f"NGN {shortfall:,}")
+            if income_this_month > 0 and _monthly > 0:
+                savings_pct = round(_contribution / income_this_month * 100, 1)
+                c4.metric("% of income",  f"{savings_pct:.1f}%",
+                          help="Monthly contribution as % of this month's income")
             else:
-                goal_name = None
-    else:
-        goal_name = None
+                c4.metric("Monthly contribution", f"NGN {_contribution:,}")
 
-    shortfall   = max(fund_target - current_saved, 0)
-    pct_done    = min(current_saved / fund_target * 100, 100) if fund_target else 0
-    months_done = current_saved / monthly_exp if monthly_exp else 0
+            # ── Progress bar ──────────────────────────────────────────────────
+            st.progress(
+                pct / 100,
+                text=f"{pct:.0f}% complete — NGN {_saved:,} of NGN {target:,}"
+            )
 
-    mc1, mc2, mc3, mc4 = st.columns(4)
-    mc1.metric("Target", f"NGN {fund_target:,}", help=f"{target_months} months × NGN {monthly_exp:,}/month")
-    mc2.metric("Saved", f"NGN {current_saved:,}", delta=f"{pct_done:.0f}% funded")
-    mc3.metric("Shortfall", f"NGN {shortfall:,}")
-    mc4.metric("Months Covered", f"{months_done:.1f} / {target_months}")
+            if shortfall > 0 and _contribution > 0:
+                # ── Completion date calculator ────────────────────────────────
+                months_needed = _math.ceil(shortfall / _contribution)
+                completion    = today.replace(day=1)
+                for _ in range(months_needed):
+                    if completion.month == 12:
+                        completion = completion.replace(year=completion.year + 1, month=1)
+                    else:
+                        completion = completion.replace(month=completion.month + 1)
 
-    bar_color = "#0e7c5b" if pct_done >= 100 else ("#f39c12" if pct_done >= 50 else "#c0392b")
-    filled = int(pct_done / 5)
-    st.markdown(
-        f"<div style='margin:12px 0 8px'>"
-        f"<span style='font-size:0.85rem;color:#444;font-weight:600'>Progress: {pct_done:.1f}%</span><br>"
-        f"<span style='color:{bar_color};font-size:1.25rem;letter-spacing:1px'>{'█'*filled}"
-        f"<span style='color:#ddd'>{'░'*(20-filled)}</span></span></div>",
-        unsafe_allow_html=True
-    )
+                st.markdown(
+                    f'<div style="background:linear-gradient(90deg,#1a3c5e,#0e7c5b);'
+                    f'border-radius:12px;padding:16px 20px;margin:12px 0;color:#fff;">'
+                    f'<div style="font-size:0.8rem;color:#a8d8c8;font-weight:600;'
+                    f'text-transform:uppercase;letter-spacing:0.05em;">Completion estimate</div>'
+                    f'<div style="font-size:1.5rem;font-weight:800;margin:4px 0;">'
+                    f'{completion.strftime("%B %Y")}</div>'
+                    f'<div style="font-size:0.88rem;color:#d4eee6;">'
+                    f'Save NGN {_contribution:,}/month &rarr; fund complete in '
+                    f'<strong>{months_needed} month{"s" if months_needed != 1 else ""}</strong>'
+                    f'</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
 
-    if goal_name:
-        st.info(f"📎 Linked to savings goal: **{goal_name}** — contributions there count toward your emergency fund.")
+                # ── Three standard scenarios ──────────────────────────────────
+                st.markdown("**Compare saving scenarios:**")
+                cols = st.columns(3)
+                for col, n_months in zip(cols, [3, 6, 12]):
+                    mo_needed  = -(-shortfall // n_months)
+                    comp_date  = today.replace(day=1)
+                    for _ in range(n_months):
+                        if comp_date.month == 12:
+                            comp_date = comp_date.replace(year=comp_date.year + 1, month=1)
+                        else:
+                            comp_date = comp_date.replace(month=comp_date.month + 1)
+                    col.markdown(
+                        f'<div style="background:#f0f7f4;border-radius:10px;'
+                        f'padding:14px;text-align:center;">'
+                        f'<div style="font-size:0.75rem;color:#4a6070;font-weight:600;">'
+                        f'Done in {n_months} months</div>'
+                        f'<div style="font-size:1.15rem;font-weight:800;color:#1a3c5e;">'
+                        f'NGN {mo_needed:,}/mo</div>'
+                        f'<div style="font-size:0.72rem;color:#95a5a6;">'
+                        f'by {comp_date.strftime("%b %Y")}</div>'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
 
-    if pct_done >= 100:
-        st.success("🎉 You have fully funded your emergency fund! Maintain it and avoid dipping into it except for genuine emergencies.")
-    else:
-        # Monthly saving suggestions
-        st.markdown("**💡 How to reach your goal:**")
-        suggestions = [(3, 36), (6, 18), (12, 9), (24, 5)]
-        cols = st.columns(4)
-        for (monthly_save, months_needed), col in zip(suggestions, cols):
-            contribution = shortfall // months_needed
-            col.metric(f"In ~{months_needed} mo.", f"NGN {contribution:,}/mo",
-                       help=f"Save NGN {contribution:,} every month for {months_needed} months")
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.info(
+                    f"💡 Tip: Open a separate **Savings Goal** called 'Emergency Fund' and "
+                    f"auto-transfer NGN {_contribution:,} into it every month. "
+                    f"At that rate you'll be fully funded by **{completion.strftime('%B %Y')}**."
+                )
 
-    # Contextual tips
-    st.divider()
-    st.markdown("**📚 Emergency Fund Tips**")
-    tips = [
-        "Keep your emergency fund in a **separate account** so you are not tempted to spend it.",
-        "Aim for **6 months** if you are self-employed or your income is irregular.",
-        "**3 months** is sufficient if you have a stable salary and low fixed costs.",
-        "Do not invest your emergency fund — keep it in a **savings or fixed-deposit** account.",
-        "Review and increase it **annually** as your expenses grow.",
-    ]
-    for tip in tips:
-        st.markdown(f"• {tip}")
+            elif shortfall > 0 and _contribution == 0:
+                st.warning("Set a monthly contribution above to see your completion date.")
+
+            else:
+                st.success(
+                    f"✅ Emergency fund target of NGN {target:,} fully covered! "
+                    f"Excellent financial discipline."
+                )
+
+            if ef and ef.get("updated_at"):
+                st.caption(f"Last updated: {ef['updated_at']}")
+        else:
+            st.info("Enter your monthly expenses above to start the calculator.")
