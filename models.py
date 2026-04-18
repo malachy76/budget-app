@@ -171,7 +171,7 @@ def create_tables():
         """)
 
         # ── debt_payments ─────────────────────────────────────────────────────
-        # NEW: tracks individual payments made against a debt record
+        # Tracks individual payments made against a debt record
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS debt_payments (
             id SERIAL PRIMARY KEY,
@@ -182,6 +182,21 @@ def create_tables():
             note TEXT,
             paid_at DATE DEFAULT CURRENT_DATE
         )
+        """)
+        # Safe migrations for debt_payments
+        cursor.execute("""
+            ALTER TABLE debt_payments
+                ADD COLUMN IF NOT EXISTS bank_id INTEGER REFERENCES banks(id) ON DELETE SET NULL
+        """)
+        cursor.execute("""
+            ALTER TABLE debt_payments
+                ADD COLUMN IF NOT EXISTS note TEXT
+        """)
+        cursor.execute("""
+            DO $$ BEGIN
+                ALTER TABLE debt_payments ALTER COLUMN paid_at TYPE DATE
+                    USING CASE WHEN paid_at IS NOT NULL THEN paid_at::DATE ELSE CURRENT_DATE END;
+            EXCEPTION WHEN others THEN NULL; END $$;
         """)
 
         # ── emergency_fund_plan ───────────────────────────────────────────────
@@ -330,6 +345,7 @@ def create_tables():
             "CREATE INDEX IF NOT EXISTS idx_debts_user_id ON debts(user_id)",
             "CREATE INDEX IF NOT EXISTS idx_debt_payments_debt_id ON debt_payments(debt_id)",
             "CREATE INDEX IF NOT EXISTS idx_debt_payments_user_id ON debt_payments(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_debt_payments_paid_at ON debt_payments(debt_id, paid_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(user_id, read)",
             "CREATE INDEX IF NOT EXISTS idx_user_streaks_user_id ON user_streaks(user_id)",
