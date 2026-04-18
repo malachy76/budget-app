@@ -1,23 +1,24 @@
 # goals.py — goals page
 import streamlit as st
-import pandas as pd
-import plotly.express as px
 from datetime import datetime, timedelta
 
 from db import get_db
-from utils import save_expense, apply_income_filters, apply_expense_filters, \
-    render_filter_bar_income, render_filter_bar_expenses, \
-    get_category_budgets, compute_daily_safe_to_spend, BUDGET_CATEGORIES, upsert_category_budget
-from auth import validate_password, change_password, get_onboarding_status, mark_onboarding_complete
 
 
 def render_goals(user_id, pages):
     st.markdown("## Savings Goals")
 
-    # Check for banks first
+    # ── Single preflight: bank count + goals list in one connection ───────────
     with get_db() as (conn, cursor):
         cursor.execute("SELECT COUNT(*) AS n FROM banks WHERE user_id=%s", (user_id,))
         goals_bank_count = cursor.fetchone()["n"]
+
+        cursor.execute("""
+            SELECT id, name, target_amount, current_amount, status
+            FROM goals WHERE user_id=%s
+            ORDER BY CASE WHEN status='active' THEN 0 ELSE 1 END, created_at DESC
+        """, (user_id,))
+        goals = cursor.fetchall()
 
     if goals_bank_count == 0:
         st.markdown("""
@@ -193,16 +194,6 @@ def render_goals(user_id, pages):
             st.session_state.selected_goal = None
 
     # ── Goals list — active first, then completed ──
-    with get_db() as (conn, cursor):
-        cursor.execute("""
-            SELECT id, name, target_amount, current_amount, status
-            FROM goals
-            WHERE user_id = %s
-            ORDER BY
-                CASE WHEN status = 'active' THEN 0 ELSE 1 END,
-                created_at DESC
-        """, (user_id,))
-        goals = cursor.fetchall()
 
     if not goals:
         st.markdown("""
