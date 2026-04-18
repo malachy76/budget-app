@@ -14,6 +14,7 @@
 #   push_notification(user_id, type, title, body, icon) → insert one notification
 from __future__ import annotations
 
+import streamlit as st
 from datetime import datetime, timedelta, date
 
 from db import get_db
@@ -277,234 +278,222 @@ def _already_sent_today(cursor, user_id: int, title_prefix: str, today: date) ->
 
 def _generate_reminders(user_id: int, today: date) -> None:
     """
-    Scan the user's data and generate contextual in-app reminders.
-    Each reminder fires at most once per day per type.
+    Fetch ALL data needed for every reminder in a single DB round-trip,
+    then build and insert reminders in Python — zero extra queries.
+
+    BEFORE: 8+ separate SELECT calls (one per _already_sent_today check + data query).
+    AFTER:  1 preflight SELECT with CTEs, then INSERT only what fires.
     """
+    import calendar as _cal
     month_start   = today.replace(day=1)
     week_start    = today - timedelta(days=today.weekday())
+    days_in_month = _cal.monthrange(today.year, today.month)[1]
+    near_month_end = (days_in_month - today.day) <= 2
 
     with get_db() as (conn, cursor):
 
-        # ── 1. Bills due in the next 3 days ───────────────────────────────────
-        if not _already_sent_today(cursor, user_id, "Bill Due", today):
-            cursor.execute("""
-                SELECT name, amount, next_due FROM recurring_items
-                WHERE user_id = %s AND active = 1
+        # ── Preflight: single query fetches everything needed ─────────────────
+        # 1. Which reminder title-prefixes were already sent today
+        # 2. User's spending limit
+        # 3. Total spent this month
+        # 4. Bills due in next 3 days
+        # 5. Streak row
+        # 6. Active goal ≥ 90% complete
+        # 7. Last expense date
+        # 8. Last login date (for re-engagement)
+        # 9. Monthly income/spend (for month-end nudge)
+        # 10. Last week expense count (for Monday check-in)
+        cursor.execute("""
+            WITH sent_today AS (
+                SELECT DISTINCT LEFT(title, 20) AS prefix
+                FROM notifications
+                WHERE user_id = %(uid)s AND created_at::DATE = %(today)s
+            ),
+            user_data AS (
+                SELECT monthly_spending_limit, last_login
+                FROM users WHERE id = %(uid)s
+            ),
+            monthly_spend AS (
+                SELECT COALESCE(SUM(CASE WHEN t.type='debit'  THEN t.amount ELSE 0 END),0) AS spent,
+                       COALESCE(SUM(CASE WHEN t.type='credit' THEN t.amount ELSE 0 END),0) AS income
+                FROM transactions t JOIN banks b ON t.bank_id=b.id
+                WHERE b.user_id=%(uid)s AND t.created_at >= %(month_start)s
+            ),
+            bills_due AS (
+                SELECT name, amount, next_due
+                FROM recurring_items
+                WHERE user_id=%(uid)s AND active=1
                   AND next_due IS NOT NULL
-                  AND next_due BETWEEN %s AND %s
-                ORDER BY next_due ASC LIMIT 3
-            """, (user_id, today, today + timedelta(days=3)))
-            due_bills = cursor.fetchall()
-            if due_bills:
-                for bill in due_bills:
-                    days_away = (bill["next_due"] - today).days
-                    due_label = "today" if days_away == 0 else f"in {days_away} day{'s' if days_away != 1 else ''}"
-                    cursor.execute("""
-                        INSERT INTO notifications (user_id, type, title, body, icon)
-                        VALUES (%s, 'reminder', %s, %s, '&#x1F514;')
-                    """, (
-                        user_id,
+                  AND next_due BETWEEN %(today)s AND %(three_days)s
+                ORDER BY next_due LIMIT 3
+            ),
+            streak_row AS (
+                SELECT last_active_date, current_streak
+                FROM user_streaks WHERE user_id=%(uid)s
+            ),
+            near_goal AS (
+                SELECT name, target_amount, current_amount
+                FROM goals
+                WHERE user_id=%(uid)s AND status='active'
+                  AND current_amount > 0 AND target_amount > 0
+                  AND (current_amount::float/target_amount) >= 0.9
+                ORDER BY (current_amount::float/target_amount) DESC LIMIT 1
+            ),
+            last_expense AS (
+                SELECT MAX(e.created_at) AS last_date
+                FROM expenses e JOIN banks b ON e.bank_id=b.id
+                WHERE b.user_id=%(uid)s
+            ),
+            last_week_count AS (
+                SELECT COUNT(*) AS n
+                FROM expenses e JOIN banks b ON e.bank_id=b.id
+                WHERE b.user_id=%(uid)s AND e.created_at >= %(last_week_start)s
+                  AND e.created_at < %(week_start)s
+            )
+            SELECT
+                (SELECT json_agg(prefix) FROM sent_today)             AS sent_prefixes,
+                (SELECT monthly_spending_limit FROM user_data)         AS spending_limit,
+                (SELECT last_login FROM user_data)                     AS last_login,
+                (SELECT spent FROM monthly_spend)                      AS m_spent,
+                (SELECT income FROM monthly_spend)                     AS m_income,
+                (SELECT json_agg(bills_due) FROM bills_due)            AS bills,
+                (SELECT last_active_date FROM streak_row)              AS streak_date,
+                (SELECT current_streak FROM streak_row)                AS streak_curr,
+                (SELECT row_to_json(near_goal) FROM near_goal)         AS goal_row,
+                (SELECT last_date FROM last_expense)                   AS last_exp_date,
+                (SELECT n FROM last_week_count)                        AS last_week_n
+        """, {
+            "uid":            user_id,
+            "today":          today,
+            "month_start":    month_start,
+            "three_days":     today + timedelta(days=3),
+            "week_start":     week_start,
+            "last_week_start": week_start - timedelta(days=7),
+        })
+        pf = cursor.fetchone()
+
+        # Parse preflight results
+        sent_today_prefixes = set(pf["sent_prefixes"] or [])
+        spending_limit      = int(pf["spending_limit"] or 0)
+        last_login          = pf["last_login"]
+        m_spent             = int(pf["m_spent"] or 0)
+        m_income            = int(pf["m_income"] or 0)
+        bills               = pf["bills"] or []          # list of dicts
+        streak_date         = pf["streak_date"]
+        streak_curr         = int(pf["streak_curr"] or 0)
+        goal_row            = pf["goal_row"]             # dict or None
+        last_exp_date       = pf["last_exp_date"]
+        last_week_n         = int(pf["last_week_n"] or 0)
+
+        def _already_sent(prefix: str) -> bool:
+            """Check against in-memory set — no extra DB calls."""
+            return any(p.startswith(prefix[:20]) for p in sent_today_prefixes)
+
+        def _insert(ntype, title, body, icon):
+            cursor.execute("""
+                INSERT INTO notifications (user_id, type, title, body, icon)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (user_id, ntype, title, body, icon))
+
+        # ── 1. Bills due in next 3 days ────────────────────────────────────────
+        if bills and not _already_sent("Bill Due"):
+            for bill in bills:
+                days_away = (bill["next_due"] - today).days if isinstance(bill["next_due"], date) else (
+                    (__import__("datetime").date.fromisoformat(str(bill["next_due"])) - today).days
+                )
+                due_label = "today" if days_away == 0 else f"in {days_away} day{'s' if days_away != 1 else ''}"
+                _insert("reminder",
                         f"Bill Due: {bill['name']}",
                         f"<strong>{bill['name']}</strong> is due {due_label} "
                         f"({bill['next_due']}) — NGN {int(bill['amount']):,}. "
-                        f"Make sure you have enough balance on the account it will come from."
-                    ))
+                        f"Make sure you have enough balance on the account it will come from.",
+                        "&#x1F514;")
 
-        # ── 2. Budget halfway alert ────────────────────────────────────────────
-        if not _already_sent_today(cursor, user_id, "Budget Alert", today):
-            cursor.execute("SELECT monthly_spending_limit FROM users WHERE id = %s", (user_id,))
-            limit_row = cursor.fetchone()
-            spending_limit = int(limit_row["monthly_spending_limit"] or 0) if limit_row else 0
-            if spending_limit > 0:
-                cursor.execute("""
-                    SELECT COALESCE(SUM(t.amount), 0) AS spent
-                    FROM transactions t JOIN banks b ON t.bank_id = b.id
-                    WHERE b.user_id = %s AND t.type = 'debit' AND t.created_at >= %s
-                """, (user_id, month_start))
-                spent = int(cursor.fetchone()["spent"] or 0)
-                pct   = spent / spending_limit * 100
-                if 50 <= pct < 55:
-                    cursor.execute("""
-                        INSERT INTO notifications (user_id, type, title, body, icon)
-                        VALUES (%s, 'alert', %s, %s, '&#x26A0;&#xFE0F;')
-                    """, (
-                        user_id,
-                        "Budget Alert: 50% Used",
-                        f"You have spent <strong>NGN {spent:,}</strong> — "
+        # ── 2. Budget alerts ────────────────────────────────────────────────────
+        if spending_limit > 0 and not _already_sent("Budget Alert"):
+            pct = m_spent / spending_limit * 100
+            if 50 <= pct < 55:
+                _insert("alert", "Budget Alert: 50% Used",
+                        f"You have spent <strong>NGN {m_spent:,}</strong> — "
                         f"half your NGN {spending_limit:,} monthly budget. "
-                        f"NGN {spending_limit - spent:,} remaining for the rest of the month."
-                    ))
-                elif 80 <= pct < 85:
-                    cursor.execute("""
-                        INSERT INTO notifications (user_id, type, title, body, icon)
-                        VALUES (%s, 'alert', %s, %s, '&#x1F6A8;')
-                    """, (
-                        user_id,
-                        "Budget Alert: 80% Used",
+                        f"NGN {spending_limit - m_spent:,} remaining.",
+                        "&#x26A0;&#xFE0F;")
+            elif 80 <= pct < 85:
+                _insert("alert", "Budget Alert: 80% Used",
                         f"You have used <strong>{pct:.0f}% of your monthly budget</strong> "
-                        f"(NGN {spent:,} of NGN {spending_limit:,}). "
-                        f"Only NGN {spending_limit - spent:,} left — slow down before you exceed it."
-                    ))
-                elif pct >= 100:
-                    cursor.execute("""
-                        INSERT INTO notifications (user_id, type, title, body, icon)
-                        VALUES (%s, 'alert', %s, %s, '&#x1F534;')
-                    """, (
-                        user_id,
-                        "Budget Alert: Limit Exceeded",
+                        f"(NGN {m_spent:,} of NGN {spending_limit:,}). "
+                        f"Only NGN {spending_limit - m_spent:,} left — slow down.",
+                        "&#x1F6A8;")
+            elif pct >= 100:
+                _insert("alert", "Budget Alert: Limit Exceeded",
                         f"You have exceeded your NGN {spending_limit:,} monthly budget by "
-                        f"<strong>NGN {spent - spending_limit:,}</strong>. "
-                        f"Review your expenses and pause non-essential spending for the rest of the month."
-                    ))
+                        f"<strong>NGN {m_spent - spending_limit:,}</strong>. "
+                        f"Review your expenses and pause non-essential spending.",
+                        "&#x1F534;")
 
-        # ── 3. Streak broken nudge ─────────────────────────────────────────────
-        if not _already_sent_today(cursor, user_id, "Streak Broken", today):
-            cursor.execute(
-                "SELECT last_active_date, current_streak FROM user_streaks WHERE user_id = %s",
-                (user_id,)
-            )
-            streak_row = cursor.fetchone()
-            if streak_row and streak_row["last_active_date"]:
-                gap = (today - streak_row["last_active_date"]).days
-                if gap == 2 and int(streak_row["current_streak"]) >= 3:
-                    # Yesterday was missed — streak broke
-                    cursor.execute("""
-                        INSERT INTO notifications (user_id, type, title, body, icon)
-                        VALUES (%s, 'nudge', %s, %s, '&#x1F614;')
-                    """, (
-                        user_id,
-                        "Streak Broken — Come Back!",
-                        f"Your {int(streak_row['current_streak'])}-day tracking streak ended yesterday. "
+        # ── 3. Streak broken ────────────────────────────────────────────────────
+        if streak_date and not _already_sent("Streak Broken"):
+            gap = (today - streak_date).days
+            if gap == 2 and streak_curr >= 3:
+                _insert("nudge", "Streak Broken — Come Back!",
+                        f"Your {streak_curr}-day tracking streak ended yesterday. "
                         f"Don't let it stop you — start a new one today. "
-                        f"Log one expense now to get back on track."
-                    ))
+                        f"Log one expense now to get back on track.",
+                        "&#x1F614;")
 
-        # ── 4. Goal almost reached ─────────────────────────────────────────────
-        if not _already_sent_today(cursor, user_id, "Goal Almost", today):
-            cursor.execute("""
-                SELECT name, target_amount, current_amount
-                FROM goals
-                WHERE user_id = %s AND status = 'active'
-                  AND current_amount > 0
-                  AND target_amount > 0
-                  AND (current_amount::float / target_amount) >= 0.9
-                ORDER BY (current_amount::float / target_amount) DESC
-                LIMIT 1
-            """, (user_id,))
-            near_goal = cursor.fetchone()
-            if near_goal:
-                remaining = int(near_goal["target_amount"]) - int(near_goal["current_amount"])
-                pct_done  = round(int(near_goal["current_amount"]) / int(near_goal["target_amount"]) * 100)
-                cursor.execute("""
-                    INSERT INTO notifications (user_id, type, title, body, icon)
-                    VALUES (%s, 'milestone', %s, %s, '&#x1F3AF;')
-                """, (
-                    user_id,
-                    f"Goal Almost Complete: {near_goal['name'][:30]}",
-                    f"Your <strong>{near_goal['name']}</strong> goal is <strong>{pct_done}% complete</strong>! "
-                    f"Just NGN {remaining:,} left to go. "
-                    f"One more contribution and you are done!"
-                ))
+        # ── 4. Goal almost reached ──────────────────────────────────────────────
+        if goal_row and not _already_sent("Goal Almost"):
+            remaining = int(goal_row["target_amount"]) - int(goal_row["current_amount"])
+            pct_done  = round(int(goal_row["current_amount"]) / int(goal_row["target_amount"]) * 100)
+            _insert("milestone",
+                    f"Goal Almost Complete: {goal_row['name'][:30]}",
+                    f"Your <strong>{goal_row['name']}</strong> goal is "
+                    f"<strong>{pct_done}% complete</strong>! "
+                    f"Just NGN {remaining:,} left. One more contribution and you are done!",
+                    "&#x1F3AF;")
 
-        # ── 5. Weekly log reminder (Monday) ───────────────────────────────────
-        if today.weekday() == 0:  # Monday
-            if not _already_sent_today(cursor, user_id, "Weekly Check-in", today):
-                cursor.execute("""
-                    SELECT COUNT(*) AS n FROM expenses e
-                    JOIN banks b ON e.bank_id = b.id
-                    WHERE b.user_id = %s AND e.created_at >= %s
-                """, (user_id, week_start - timedelta(days=7)))
-                last_week_count = int(cursor.fetchone()["n"] or 0)
-                cursor.execute("""
-                    INSERT INTO notifications (user_id, type, title, body, icon)
-                    VALUES (%s, 'reminder', %s, %s, '&#x1F4C5;')
-                """, (
-                    user_id,
-                    "Weekly Check-in",
+        # ── 5. Monday check-in ──────────────────────────────────────────────────
+        if today.weekday() == 0 and not _already_sent("Weekly Check"):
+            _insert("reminder", "Weekly Check-in",
                     f"New week, fresh start. "
-                    + (f"You logged {last_week_count} expense{'s' if last_week_count != 1 else ''} last week. "
-                       if last_week_count > 0 else "")
-                    + "Log your first expense of the week to keep your streak alive!"
-                ))
+                    + (f"You logged {last_week_n} expense{'s' if last_week_n != 1 else ''} last week. "
+                       if last_week_n > 0 else "")
+                    + "Log your first expense of the week to keep your streak alive!",
+                    "&#x1F4C5;")
 
-        # ── 6. No expense in 3+ days nudge ────────────────────────────────────
-        if not _already_sent_today(cursor, user_id, "No Expenses Logged", today):
-            cursor.execute("""
-                SELECT MAX(e.created_at) AS last_expense
-                FROM expenses e JOIN banks b ON e.bank_id = b.id
-                WHERE b.user_id = %s
-            """, (user_id,))
-            last_exp_row = cursor.fetchone()
-            if last_exp_row and last_exp_row["last_expense"]:
-                days_since = (today - last_exp_row["last_expense"]).days
-                if days_since >= 3:
-                    cursor.execute("""
-                        INSERT INTO notifications (user_id, type, title, body, icon)
-                        VALUES (%s, 'nudge', %s, %s, '&#x1F4DD;')
-                    """, (
-                        user_id,
-                        "No Expenses Logged Recently",
-                        f"It has been <strong>{days_since} days</strong> since your last expense entry. "
-                        f"Even if you have not spent much, logging accurately keeps your balance right. "
-                        f"Tap Expenses and add anything you have spent since {last_exp_row['last_expense']}."
-                    ))
+        # ── 6. No expenses in 3+ days ───────────────────────────────────────────
+        if last_exp_date and not _already_sent("No Expenses"):
+            # Convert to date if needed
+            exp_date = last_exp_date if isinstance(last_exp_date, date) else last_exp_date.date()
+            days_since = (today - exp_date).days
+            if days_since >= 3:
+                _insert("nudge", "No Expenses Logged Recently",
+                        f"It has been <strong>{days_since} days</strong> since your last expense. "
+                        f"Logging accurately keeps your balance right. "
+                        f"Tap Expenses and add anything you have spent since {exp_date}.",
+                        "&#x1F4DD;")
 
-        # ── 7. Month-end savings nudge (last 3 days) ──────────────────────────
-        import calendar as _cal
-        days_in_month = _cal.monthrange(today.year, today.month)[1]
-        if days_in_month - today.day <= 2:
-            if not _already_sent_today(cursor, user_id, "Month-End", today):
-                cursor.execute("""
-                    SELECT
-                        COALESCE(SUM(CASE WHEN t.type='credit' THEN t.amount ELSE 0 END),0) AS income,
-                        COALESCE(SUM(CASE WHEN t.type='debit'  THEN t.amount ELSE 0 END),0) AS spent
-                    FROM transactions t JOIN banks b ON t.bank_id = b.id
-                    WHERE b.user_id = %s AND t.created_at >= %s
-                """, (user_id, month_start))
-                mn = cursor.fetchone()
-                m_income = int(mn["income"] or 0)
-                m_spent  = int(mn["spent"]  or 0)
-                net      = m_income - m_spent
-                if net > 0:
-                    cursor.execute("""
-                        INSERT INTO notifications (user_id, type, title, body, icon)
-                        VALUES (%s, 'tip', %s, %s, '&#x1F4B8;')
-                    """, (
-                        user_id,
-                        "Month-End: Move Your Surplus",
-                        f"The month is almost over and you have <strong>NGN {net:,} left</strong> "
-                        f"after spending. Before new-month expenses arrive, "
-                        f"transfer some to a savings goal or investment. "
-                        f"Even NGN {int(net * 0.3):,} moved now builds a habit."
-                    ))
+        # ── 7. Month-end surplus nudge ──────────────────────────────────────────
+        if near_month_end and not _already_sent("Month-End"):
+            net = m_income - m_spent
+            if net > 0:
+                _insert("tip", "Month-End: Move Your Surplus",
+                        f"The month is almost over and you have <strong>NGN {net:,} left</strong>. "
+                        f"Transfer some to a savings goal before new-month expenses arrive. "
+                        f"Even NGN {int(net * 0.3):,} moved now builds a habit.",
+                        "&#x1F4B8;")
 
-        # ── 8. Re-engagement nudge (7+ days since last login but seen today) ──
-        if not _already_sent_today(cursor, user_id, "Welcome Back", today):
-            cursor.execute(
-                "SELECT last_login FROM users WHERE id = %s",
-                (user_id,)
-            )
-            user_row = cursor.fetchone()
-            if user_row and user_row["last_login"]:
-                days_away = (today - user_row["last_login"]).days
-                if days_away >= 7:
-                    cursor.execute("""
-                        SELECT COALESCE(SUM(t.amount), 0) AS spent
-                        FROM transactions t JOIN banks b ON t.bank_id = b.id
-                        WHERE b.user_id = %s AND t.type = 'debit' AND t.created_at >= %s
-                    """, (user_id, month_start))
-                    m_spent = int(cursor.fetchone()["spent"] or 0)
-                    cursor.execute("""
-                        INSERT INTO notifications (user_id, type, title, body, icon)
-                        VALUES (%s, 'nudge', %s, %s, '&#x1F44B;')
-                    """, (
-                        user_id,
+        # ── 8. Re-engagement (7+ days away) ────────────────────────────────────
+        if last_login and not _already_sent("Welcome Back"):
+            login_date = last_login if isinstance(last_login, date) else last_login.date()
+            days_away  = (today - login_date).days
+            if days_away >= 7:
+                _insert("nudge",
                         f"Welcome Back — {days_away} Days Away",
                         f"Good to see you! You were away for {days_away} days. "
-                        + (f"NGN {m_spent:,} has been spent this month so far. "
-                           if m_spent > 0 else "")
-                        + "Take a minute to log any expenses you missed so your records stay accurate."
-                    ))
+                        + (f"NGN {m_spent:,} has been spent this month so far. " if m_spent > 0 else "")
+                        + "Take a minute to log any expenses you missed.",
+                        "&#x1F44B;")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -522,7 +511,14 @@ def push_notification(user_id: int, ntype: str, title: str, body: str,
 
 
 def get_notifications(user_id: int, unread_only: bool = False, limit: int = 50) -> list:
-    """Return list of notification dicts, newest first."""
+    """Return list of notification dicts, newest first.
+    Cached for 30 s — invalidated whenever a write happens via _invalidate_notif_cache().
+    """
+    return _get_notifications_cached(user_id, unread_only, limit)
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _get_notifications_cached(user_id: int, unread_only: bool, limit: int) -> list:
     with get_db() as (conn, cursor):
         if unread_only:
             cursor.execute("""
@@ -542,6 +538,12 @@ def get_notifications(user_id: int, unread_only: bool = False, limit: int = 50) 
 
 
 def get_unread_count(user_id: int) -> int:
+    """Cached for 30 s — invalidated on any write via _invalidate_notif_cache()."""
+    return _get_unread_count_cached(user_id)
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _get_unread_count_cached(user_id: int) -> int:
     with get_db() as (conn, cursor):
         cursor.execute(
             "SELECT COUNT(*) AS n FROM notifications WHERE user_id = %s AND read = 0",
@@ -550,12 +552,19 @@ def get_unread_count(user_id: int) -> int:
         return int(cursor.fetchone()["n"] or 0)
 
 
+def _invalidate_notif_cache() -> None:
+    """Call after any write to notifications so cached reads reflect the change."""
+    _get_notifications_cached.clear()
+    _get_unread_count_cached.clear()
+
+
 def mark_notifications_read(user_id: int) -> None:
     with get_db() as (conn, cursor):
         cursor.execute(
             "UPDATE notifications SET read = 1 WHERE user_id = %s AND read = 0",
             (user_id,)
         )
+    _invalidate_notif_cache()
 
 
 def mark_notification_read(notif_id: int) -> None:
@@ -564,6 +573,7 @@ def mark_notification_read(notif_id: int) -> None:
             "UPDATE notifications SET read = 1 WHERE id = %s",
             (notif_id,)
         )
+    _invalidate_notif_cache()
 
 
 def clear_all_notifications(user_id: int) -> None:
@@ -572,3 +582,4 @@ def clear_all_notifications(user_id: int) -> None:
             "DELETE FROM notifications WHERE user_id = %s",
             (user_id,)
         )
+    _invalidate_notif_cache()
