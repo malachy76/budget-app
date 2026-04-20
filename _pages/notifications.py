@@ -24,7 +24,7 @@ _TYPE_CONFIG = {
         "badge":  "#3498db",
     },
     "milestone": {
-        "bg":     "#f0f7f4",
+        "bg":     "#f4f7f6",
         "border": "#0e7c5b",
         "label":  "Milestone",
         "badge":  "#0e7c5b",
@@ -43,7 +43,7 @@ _TYPE_CONFIG = {
     },
 }
 _DEFAULT_CFG = {
-    "bg": "#f0f7f4", "border": "#0e7c5b", "label": "Notification", "badge": "#0e7c5b"
+    "bg": "#f4f7f6", "border": "#0e7c5b", "label": "Notification", "badge": "#0e7c5b"
 }
 
 _NOTIF_CSS = """
@@ -64,7 +64,7 @@ _NOTIF_CSS = """
 .notif-icon  { font-size: 1.4rem; flex-shrink: 0; margin-top: 1px; }
 .notif-body  { flex: 1; }
 .notif-title {
-    font-weight: 700; font-size: 0.93rem; color: #1a3c5e; margin-bottom: 3px;
+    font-weight: 700; font-size: 0.93rem; color: #1a2e3b; margin-bottom: 3px;
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
 }
 .notif-badge {
@@ -72,10 +72,10 @@ _NOTIF_CSS = """
     letter-spacing: 0.05em; border-radius: 20px;
     padding: 2px 9px; color: #fff;
 }
-.notif-text  { font-size: 0.88rem; color: #4a6070; line-height: 1.5; }
+.notif-text  { font-size: 0.88rem; color: #6b7f8e; line-height: 1.5; }
 .notif-time  { font-size: 0.72rem; color: #95a5a6; margin-top: 4px; }
 .streak-banner {
-    background: linear-gradient(90deg, #1a3c5e 0%, #0e7c5b 100%);
+    background: linear-gradient(90deg, #1a2e3b 0%, #0e7c5b 100%);
     border-radius: 14px; padding: 18px 22px; margin-bottom: 18px;
     display: flex; justify-content: space-between; align-items: center;
     flex-wrap: wrap; gap: 12px; color: #fff;
@@ -125,7 +125,7 @@ def _format_time(ts) -> str:
 
 
 def render_notifications(user_id: int) -> None:
-    st.markdown("## Notifications")
+    st.title("🔔 Notifications")
     st.markdown(_NOTIF_CSS, unsafe_allow_html=True)
 
     # ── Streak banner ─────────────────────────────────────────────────────────
@@ -221,10 +221,10 @@ def render_notifications(user_id: int) -> None:
 
     if not shown:
         st.markdown("""
-        <div style="background:#f0f7f4;border-radius:12px;padding:28px 24px;
-                    text-align:center;color:#4a6070;margin:16px 0;">
+        <div style="background:#f4f7f6;border-radius:12px;padding:28px 24px;
+                    text-align:center;color:#6b7f8e;margin:16px 0;">
           <div style="font-size:2.5rem;">&#x1F514;</div>
-          <div style="font-weight:700;margin:8px 0 4px;color:#1a3c5e;">
+          <div style="font-weight:700;margin:8px 0 4px;color:#1a2e3b;">
             No notifications yet
           </div>
           <div style="font-size:0.92rem;">
