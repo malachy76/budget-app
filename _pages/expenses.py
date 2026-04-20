@@ -12,7 +12,7 @@ from auth import validate_password, change_password, get_onboarding_status, mark
 
 
 def render_expenses(user_id, pages):
-    st.markdown("## Expenses")
+    st.title("📉 Expenses")
     with get_db() as (conn, cursor):
         cursor.execute("SELECT id, bank_name, account_number, balance FROM banks WHERE user_id=%s", (user_id,))
         banks = cursor.fetchall()
@@ -24,7 +24,7 @@ def render_expenses(user_id, pages):
             cursor.execute("SELECT name, category, amount, bank_id, tx_id FROM expenses WHERE id=%s AND user_id=%s", (edit_id, user_id))
             exp_row = cursor.fetchone()
         if exp_row:
-            st.info(f"Editing: {exp_row['name']} — NGN {exp_row['amount']:,.0f}")
+            st.info(f"Editing: {exp_row['name']} — ₦{exp_row['amount']:,}")
             with st.form("edit_expense_form"):
                 new_name     = st.text_input("Expense Name", value=exp_row["name"])
                 new_category = st.text_input("Category", value=exp_row["category"] or exp_row["name"])
@@ -55,10 +55,10 @@ def render_expenses(user_id, pages):
     if not banks:
         # Empty state — no banks
         st.markdown("""
-        <div style="background:#f0f7f4;border-radius:12px;padding:28px 24px;text-align:center;margin:16px 0;">
+        <div style="background:#f4f7f6;border-radius:12px;padding:28px 24px;text-align:center;margin:16px 0;">
           <div style="font-size:2.5rem;">&#x1F3E6;</div>
-          <div style="font-size:1.1rem;font-weight:700;color:#1a3c5e;margin:8px 0 4px;">No bank account yet</div>
-          <div style="color:#4a6070;font-size:0.93rem;">
+          <div style="font-size:1.1rem;font-weight:700;color:#1a2e3b;margin:8px 0 4px;">No bank account yet</div>
+          <div style="color:#6b7f8e;font-size:0.93rem;">
             You need to add a bank account before you can log expenses.<br>
             Head over to the <strong>Banks</strong> page to get started.
           </div>
@@ -69,14 +69,14 @@ def render_expenses(user_id, pages):
             st.rerun()
         st.stop()
 
-    bank_map = {f"{b['bank_name']} (****{b['account_number']}) - NGN {b['balance']:,}": b["id"] for b in banks}
+    bank_map = {f"{b['bank_name']} (****{b['account_number']}) - ₦{b['balance']:,}": b["id"] for b in banks}
 
     # ── QUICK ADD BUTTONS ──────────────────────────────────────────────────
     st.markdown("""
     <style>
     .qa-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
     .qa-label {
-        font-size: 0.82rem; font-weight: 700; color: #1a3c5e;
+        font-size: 0.82rem; font-weight: 700; color: #1a2e3b;
         text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px;
     }
     </style>
@@ -169,7 +169,7 @@ def render_expenses(user_id, pages):
             category = selected_category if selected_category != "-- Type custom name --" else expense_name
             ok, result = save_expense(user_id, bank_id, expense_name, int(expense_amount), category=category)
             if ok:
-                st.success(f"'{expense_name}' ({category}) — NGN {int(expense_amount):,} added.")
+                st.success(f"'{expense_name}' ({category}) — ₦{int(expense_amount):,} added.")
                 st.session_state.quick_add_name = ""
                 st.rerun()
             else:
@@ -198,9 +198,9 @@ def render_expenses(user_id, pages):
 
         total_shown = sum(e["amount"] for e in filtered_expenses)
         if len(filtered_expenses) != len(expenses_data):
-            st.caption(f"Showing {len(filtered_expenses)} of {len(expenses_data)} entries — NGN {total_shown:,.0f} total")
+            st.caption(f"Showing {len(filtered_expenses)} of {len(expenses_data)} entries — ₦{total_shown:,} total")
         else:
-            st.caption(f"{len(expenses_data)} entries — NGN {total_shown:,.0f} total")
+            st.caption(f"{len(expenses_data)} entries — ₦{total_shown:,} total")
 
         if not filtered_expenses:
             st.info("No expenses match your search or filters.")
@@ -217,7 +217,7 @@ def render_expenses(user_id, pages):
                         <div class="exp-card-date">Date: {exp['created_at']}</div>
                       </div>
                       <div class="exp-card-right">
-                        <div class="exp-card-amount">-NGN {exp['amount']:,.0f}</div>
+                        <div class="exp-card-amount">-₦{exp['amount']:,}</div>
                       </div>
                     </div>
                     """, unsafe_allow_html=True)
@@ -237,7 +237,7 @@ def render_expenses(user_id, pages):
                                         cursor.execute("DELETE FROM transactions WHERE id=%s", (exp["tx_id"],))
                                     cursor.execute("DELETE FROM expenses WHERE id=%s AND user_id=%s", (exp["id"], user_id))
                                 st.session_state.confirm_delete.pop(del_key, None)
-                                st.toast(f"Deleted — NGN {exp['amount']:,.0f} refunded to {exp['bank_name']}", icon="🗑️")
+                                st.toast(f"Deleted — ₦{exp['amount']:,} refunded to {exp['bank_name']}", icon="🗑️")
                                 st.rerun()
                         with c2:
                             if st.button("✗", key=f"confirm_no_exp_{exp['id']}", help="Cancel"):
@@ -260,23 +260,25 @@ def render_expenses(user_id, pages):
         df_other  = df_grouped[df_grouped["Amount"] < threshold]
         if not df_other.empty:
             df_main = pd.concat([df_main, pd.DataFrame([{"Category": "Others", "Amount": df_other["Amount"].sum()}])], ignore_index=True)
-        fig = px.pie(df_main, names="Category", values="Amount", title="Expenses by Category (NGN)",
-                     color_discrete_sequence=px.colors.qualitative.Pastel, hole=0.35)
-        fig.update_traces(textposition="inside", textinfo="percent+label",
-                          hovertemplate="<b>%{label}</b><br>NGN %{value:,.0f}<br>%{percent}<extra></extra>")
-        fig.update_layout(margin=dict(t=40, b=10, l=10, r=10), legend=dict(orientation="v", x=1.02, y=0.5))
+        fig = px.pie(df_main, names="Category", values="Amount",
+                     color_discrete_sequence=px.colors.qualitative.Set3, hole=0.38)
+        fig.update_traces(
+            textposition="inside", textinfo="percent",
+            hovertemplate="<b>%{label}</b><br>₦%{value:,.0f}<br>%{percent}<extra></extra>",
+        )
+        fig.update_layout(
+            margin=dict(t=10, b=10, l=0, r=0), height=320,
+            legend=dict(orientation="v", x=1.02, y=0.5, font_size=11),
+        )
         st.plotly_chart(fig, use_container_width=True)
     else:
         # Empty state — no expenses yet
-        st.markdown("""
-        <div style="background:#fff8f0;border-left:4px solid #f39c12;border-radius:10px;padding:20px 22px;margin:8px 0;">
-          <div style="font-size:1.8rem;">&#x1F9FE;</div>
-          <div style="font-weight:700;color:#7d5a00;margin:6px 0 4px;">No expenses recorded yet</div>
-          <div style="color:#8a6320;font-size:0.92rem;">
-            Use the Quick Add buttons above to log your first expense in seconds,
-            or type a custom name in the form.
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(
+            '<div style="background:#f4f7f6;border-radius:12px;padding:28px;text-align:center;color:#6b7f8e;margin:8px 0;">' +
+            '<div style="font-size:2.5rem;">🧾</div>' +
+            '<div style="font-weight:700;color:#1a2e3b;font-size:1rem;margin:8px 0 4px;">No expenses yet</div>' +
+            '<div style="font-size:0.92rem;">Use the Quick Add buttons above to log your first expense in seconds.</div></div>',
+            unsafe_allow_html=True
+        )
 
 # ================= PAGE: BANKS =================
