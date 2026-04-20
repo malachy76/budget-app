@@ -8,31 +8,65 @@ from analytics import get_analytics, notify_admin_new_signup, send_reengagement_
 
 
 def render_admin(user_id):
-    st.subheader("Admin Panel")
-    tabs_admin = st.tabs(["Users", "Banks", "Expenses & Income"])
+    st.title("🛡️ Admin Panel")
+    tabs_admin = st.tabs(["👤 Users", "🏦 Banks", "📊 Summary"])
     with tabs_admin[0]:
-        st.write("All Users:")
+        st.subheader("All Registered Users")
         with get_db() as (conn, cursor):
-            cursor.execute("SELECT id, surname, other_names, username, email, role FROM users")
+            cursor.execute("SELECT id, surname, other_names, username, email, role FROM users ORDER BY id DESC")
             all_users = cursor.fetchall()
-        for u in all_users:
-            st.write(f"{u['surname']} {u['other_names']} | {u['username']} | {u['email']} | Role: {u['role']}")
+        if all_users:
+            import pandas as pd
+            df_u = pd.DataFrame(
+                [(u["id"], f"{u['surname']} {u['other_names']}", u["username"], u["email"], u["role"]) for u in all_users],
+                columns=["ID", "Name", "Username", "Email", "Role"]
+            )
+            st.dataframe(df_u, use_container_width=True, hide_index=True)
+        else:
+            st.info("No users yet.")
     with tabs_admin[1]:
-        st.write("All Bank Accounts:")
+        st.subheader("All Bank Accounts")
         with get_db() as (conn, cursor):
-            cursor.execute("SELECT b.id, u.username, b.bank_name, b.account_name, b.account_number, b.balance FROM banks b JOIN users u ON b.user_id = u.id")
+            cursor.execute("""
+                SELECT b.id, u.username, b.bank_name, b.account_name,
+                       b.account_number, b.balance
+                FROM banks b JOIN users u ON b.user_id = u.id
+                ORDER BY b.id DESC
+            """)
             all_banks = cursor.fetchall()
-        for b in all_banks:
-            st.write(dict(b))
+        if all_banks:
+            import pandas as pd
+            df_b = pd.DataFrame(
+                [(b["id"], b["username"], b["bank_name"], b["account_name"],
+                  f"****{b['account_number']}", f"₦{int(b['balance']):,}") for b in all_banks],
+                columns=["ID", "User", "Bank", "Account Name", "Acct No.", "Balance"]
+            )
+            st.dataframe(df_b, use_container_width=True, hide_index=True)
+        else:
+            st.info("No bank accounts yet.")
     with tabs_admin[2]:
-        st.info("You can paste your existing Expenses & Income code here for admin view.")
+        st.subheader("Platform Summary")
+        with get_db() as (conn, cursor):
+            cursor.execute("SELECT COUNT(*) AS n FROM users")
+            total_users = cursor.fetchone()["n"]
+            cursor.execute("SELECT COUNT(*) AS n FROM banks")
+            total_banks = cursor.fetchone()["n"]
+            cursor.execute("SELECT COALESCE(SUM(amount),0) AS n FROM expenses")
+            total_spent = int(cursor.fetchone()["n"])
+            cursor.execute("SELECT COUNT(*) AS n FROM expenses")
+            total_txns = cursor.fetchone()["n"]
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("👤 Users", total_users)
+        c2.metric("🏦 Banks", total_banks)
+        c3.metric("🧾 Expenses", total_txns)
+        c4.metric("💸 Total Spent", f"₦{total_spent:,}")
 
 
 def render_analytics(user_id):
     if st.session_state.user_role != "admin":
         st.error("Access denied.")
         st.stop()
-    st.markdown("## Analytics Dashboard")
+    st.title("📊 Analytics Dashboard")
     data = get_analytics()
     if not data:
         st.warning("Could not load analytics data.")
@@ -52,9 +86,16 @@ def render_analytics(user_id):
             s2.metric("Signups (30 days)", data["new_signups_30d"])
             st.subheader("Daily Active Users — Last 14 Days")
             if data["daily_rows"]:
+                import plotly.express as px
                 df_dau = pd.DataFrame(data["daily_rows"], columns=["date", "active_users"])
                 df_dau["date"] = pd.to_datetime(df_dau["date"])
-                st.bar_chart(df_dau.set_index("date")["active_users"])
+                fig_dau = px.bar(
+                    df_dau, x="date", y="active_users",
+                    color_discrete_sequence=["#0e7c5b"],
+                    labels={"date":"Date","active_users":"Active Users"},
+                )
+                fig_dau.update_layout(margin=dict(t=10,b=10,l=0,r=0), height=250)
+                st.plotly_chart(fig_dau, use_container_width=True)
             else:
                 st.info("No login data yet.")
         with col_right:
