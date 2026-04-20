@@ -6,7 +6,7 @@ from db import get_db
 
 
 def render_goals(user_id, pages):
-    st.markdown("## Savings Goals")
+    st.title("🎯 Savings Goals")
 
     # ── Single preflight: bank count + goals list in one connection ───────────
     with get_db() as (conn, cursor):
@@ -22,9 +22,9 @@ def render_goals(user_id, pages):
 
     if goals_bank_count == 0:
         st.markdown("""
-        <div style="background:#f0f7f4;border-radius:12px;padding:24px;text-align:center;color:#4a6070;margin:12px 0;">
+        <div style="background:#f4f7f6;border-radius:12px;padding:24px;text-align:center;color:#6b7f8e;margin:12px 0;">
           <div style="font-size:2rem;">&#x1F3AF;</div>
-          <div style="font-weight:700;margin:6px 0 4px;color:#1a3c5e;">Add a bank account first</div>
+          <div style="font-weight:700;margin:6px 0 4px;color:#1a2e3b;">Add a bank account first</div>
           <div style="font-size:0.92rem;">
             Savings goal contributions are deducted from a bank account.<br>
             Add your bank on the <strong>Banks</strong> page, then set up your goals here.
@@ -124,12 +124,12 @@ def render_goals(user_id, pages):
             g = cursor.fetchone()
         if g:
             remaining = g["target_amount"] - g["current_amount"]
-            st.info(f"Adding money to: **{g['name']}** — NGN {g['current_amount']:,.0f} saved, NGN {remaining:,.0f} remaining")
+            st.info(f"Adding money to: **{g['name']}** — ₦{g['current_amount']:,} saved, ₦{remaining:,} remaining")
             with get_db() as (conn, cursor):
                 cursor.execute("SELECT id, bank_name, balance FROM banks WHERE user_id=%s", (user_id,))
                 bank_list = cursor.fetchall()
             if bank_list:
-                bank_options = {f"{b['bank_name']} (NGN {b['balance']:,})": b["id"] for b in bank_list}
+                bank_options = {f"{b['bank_name']} (₦{b['balance']:,})": b["id"] for b in bank_list}
                 bank_labels  = list(bank_options.keys())
 
                 with st.form("goal_contribution_form"):
@@ -148,7 +148,7 @@ def render_goals(user_id, pages):
                                 cursor.execute("SELECT balance FROM banks WHERE id=%s", (bank_id,))
                                 bank_balance = int(cursor.fetchone()["balance"])
                                 if amt > bank_balance:
-                                    st.error(f"Insufficient funds. Bank balance is NGN {bank_balance:,}.")
+                                    st.error(f"Insufficient funds. Bank balance is ₦{bank_balance:,}.")
                                 else:
                                     today       = datetime.now().date()
                                     new_current = int(g["current_amount"]) + amt
@@ -172,7 +172,7 @@ def render_goals(user_id, pages):
                                         "VALUES (%s, %s, %s, %s, %s)",
                                         (goal_id, user_id, bank_id, amt, today)
                                     )
-                            st.success(f"Added NGN {amt:,} to '{g['name']}'.")
+                            st.success(f"Added ₦{amt:,} to '{g['name']}'.")
                             st.session_state.show_goal_contribution = False
                             st.session_state.selected_goal = None
                             st.rerun()
@@ -197,9 +197,9 @@ def render_goals(user_id, pages):
 
     if not goals:
         st.markdown("""
-        <div style="background:#f0f7f4;border-radius:12px;padding:24px;text-align:center;color:#4a6070;margin-top:8px;">
+        <div style="background:#f4f7f6;border-radius:12px;padding:24px;text-align:center;color:#6b7f8e;margin-top:8px;">
           <div style="font-size:2.2rem;">&#x1F3AF;</div>
-          <div style="font-weight:700;margin:8px 0 4px;color:#1a3c5e;">No savings goals yet</div>
+          <div style="font-weight:700;margin:8px 0 4px;color:#1a2e3b;">No savings goals yet</div>
           <div style="font-size:0.93rem;">
             Use the <strong>Create New Goal</strong> form above to set a target — emergency fund,
             new phone, school fees, rent, or anything you're saving towards.
@@ -211,22 +211,37 @@ def render_goals(user_id, pages):
         completed_goals = [g for g in goals if g["status"] == "completed"]
 
         def render_goal(goal):
-            progress = (goal["current_amount"] / goal["target_amount"] * 100) if goal["target_amount"] > 0 else 0
+            progress  = (goal["current_amount"] / goal["target_amount"] * 100) if goal["target_amount"] > 0 else 0
+            remaining = max(int(goal["target_amount"]) - int(goal["current_amount"]), 0)
+            pct_capped = min(progress / 100, 1.0)
+            is_done   = goal["status"] == "completed"
+            bar_color = "#0e7c5b" if not is_done else "#16a085"
+            # Goal header card
+            st.markdown(
+                f'<div style="background:#fff;border:1px solid #d8eae2;border-radius:14px;padding:14px 18px 10px;margin-bottom:6px;">' +
+                f'<div style="display:flex;justify-content:space-between;align-items:flex-start;">' +
+                f'<div><div style="font-weight:800;font-size:1rem;color:#1a2e3b;">{goal["name"]}</div>' +
+                f'<div style="font-size:0.8rem;color:#6b7f8e;margin-top:2px;">'
+                + (f'₦{remaining:,} remaining' if not is_done else '🎉 Completed!') +
+                f'</div></div>' +
+                f'<div style="text-align:right;">' +
+                f'<div style="font-size:1.15rem;font-weight:800;color:{bar_color};">₦{int(goal["current_amount"]):,}</div>' +
+                f'<div style="font-size:0.75rem;color:#6b7f8e;">of ₦{int(goal["target_amount"]):,}</div>' +
+                f'</div></div></div>',
+                unsafe_allow_html=True
+            )
+            st.progress(pct_capped, text=f"{progress:.0f}%")
             col1, col2, col3 = st.columns([5, 1, 1])
             with col1:
-                st.markdown(f"**{goal['name']}**")
-                st.progress(
-                    min(progress / 100, 1.0),
-                    text=f"NGN {goal['current_amount']:,.0f} / NGN {goal['target_amount']:,.0f} ({progress:.1f}%)"
-                )
+                pass
             with col2:
                 if goal["status"] == "active":
-                    if st.button("Add Money", key=f"add_goal_{goal['id']}"):
+                    if st.button("💰 Add", key=f"add_goal_{goal['id']}", use_container_width=True):
                         st.session_state.selected_goal          = goal["id"]
                         st.session_state.show_goal_contribution = True
                         st.rerun()
                 else:
-                    st.markdown("Completed")
+                    st.markdown("<div style='font-size:0.8rem;color:#0e7c5b;font-weight:700;padding-top:6px;'>✅ Done</div>", unsafe_allow_html=True)
             with col3:
                 del_key = f"goal_{goal['id']}"
                 if st.session_state.confirm_delete.get(del_key):
@@ -286,7 +301,7 @@ def render_goals(user_id, pages):
                     f'<div class="exp-card-date">Date: {c["contributed_at"]}</div>'
                     f'</div>'
                     f'<div class="exp-card-right">'
-                    f'<div class="exp-card-amount" style="color:#0e7c5b;">+NGN {c["amount"]:,}</div>'
+                    f'<div class="exp-card-amount" style="color:#0e7c5b;">+₦{c["amount"]:,}</div>'
                     f'</div></div>',
                     unsafe_allow_html=True
                 )
