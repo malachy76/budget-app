@@ -6,7 +6,7 @@ from csv_import import csv_import_page
 
 
 def render_import_csv(user_id, pages):
-    st.markdown("## Import Bank Statement (CSV)")
+    st.title("📥 Import Bank Statement (CSV)")
 
     with get_db() as (conn, cursor):
         cursor.execute("SELECT COUNT(*) AS n FROM banks WHERE user_id=%s", (user_id,))
@@ -14,9 +14,9 @@ def render_import_csv(user_id, pages):
 
     if csv_bank_count == 0:
         st.markdown("""
-        <div style="background:#f0f7f4;border-radius:12px;padding:24px;text-align:center;color:#4a6070;margin:12px 0;">
+        <div style="background:#f4f7f6;border-radius:12px;padding:24px;text-align:center;color:#6b7f8e;margin:12px 0;">
           <div style="font-size:2rem;">&#x1F4E5;</div>
-          <div style="font-weight:700;margin:6px 0 4px;color:#1a3c5e;">Add a bank account before importing</div>
+          <div style="font-weight:700;margin:6px 0 4px;color:#1a2e3b;">Add a bank account before importing</div>
           <div style="font-size:0.92rem;">
             Your CSV transactions need to be linked to a bank account.<br>
             Add your bank on the <strong>Banks</strong> page first, then come back to import.
