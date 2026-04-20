@@ -9,7 +9,7 @@ from db import get_db
 
 
 def render_summaries(user_id):
-    st.markdown("## Weekly & Monthly Summaries")
+    st.title("📄 Weekly & Monthly Summaries")
 
     today        = datetime.now().date()
     month_start  = today.replace(day=1)
@@ -70,7 +70,7 @@ def render_summaries(user_id):
         week_net    = week_income - week_spent
         spend_diff  = week_spent - prev_week_spent
         spend_arrow = "⬆️" if spend_diff > 0 else ("⬇️" if spend_diff < 0 else "➡️")
-        vs_label    = f"{spend_arrow} NGN {abs(spend_diff):,} {'more' if spend_diff > 0 else 'less' if spend_diff < 0 else 'same'}"
+        vs_label    = f"{spend_arrow} ₦{abs(spend_diff):,} {'more' if spend_diff > 0 else 'less' if spend_diff < 0 else 'same'}"
 
         # Hero summary card
         st.markdown(f"""
@@ -79,16 +79,16 @@ def render_summaries(user_id):
           <div class="week-grid">
             <div class="week-stat">
               <div class="week-stat-label">Income</div>
-              <div class="week-stat-value">NGN {week_income:,}</div>
+              <div class="week-stat-value">₦{week_income:,}</div>
             </div>
             <div class="week-stat">
               <div class="week-stat-label">Spent</div>
-              <div class="week-stat-value">NGN {week_spent:,}</div>
+              <div class="week-stat-value">₦{week_spent:,}</div>
             </div>
             <div class="week-stat">
               <div class="week-stat-label">Net</div>
               <div class="week-stat-value" style="color:{'#a8d8c8' if week_net >= 0 else '#f1948a'};">
-                {"+" if week_net >= 0 else ""}NGN {week_net:,}
+                {"+" if week_net >= 0 else ""}₦{week_net:,}
               </div>
             </div>
             <div class="week-stat">
@@ -109,7 +109,7 @@ def render_summaries(user_id):
             st.warning(f"You are spending **{pct_more}% more** than last week. Review your categories below.")
         elif prev_week_spent > 0 and spend_diff < 0:
             saved = abs(spend_diff)
-            st.success(f"Great job — you spent **NGN {saved:,} less** than last week!")
+            st.success(f"Great job — you spent **₦{saved:,} less** than last week!")
 
         # Top categories
         if week_top_cats:
@@ -120,15 +120,15 @@ def render_summaries(user_id):
                 bar_w = max(int(r["total"]) / total_wk * 100, 2)
                 st.markdown(
                     f'<div style="display:flex;justify-content:space-between;align-items:center;'
-                    f'padding:8px 12px;background:#f0f7f4;border-radius:8px;margin-bottom:6px;">'
+                    f'padding:8px 12px;background:#f4f7f6;border-radius:8px;margin-bottom:6px;">'
                     f'<div style="flex:1;">'
-                    f'  <span style="font-weight:600;color:#1a3c5e;">{r["cat"] or "Uncategorised"}</span>'
-                    f'  <div style="background:#d0e8df;border-radius:4px;height:4px;margin-top:4px;">'
+                    f'  <span style="font-weight:600;color:#1a2e3b;">{r["cat"] or "Uncategorised"}</span>'
+                    f'  <div style="background:#d8eae2;border-radius:4px;height:4px;margin-top:4px;">'
                     f'    <div style="background:#0e7c5b;width:{bar_w:.0f}%;height:4px;border-radius:4px;"></div>'
                     f'  </div>'
                     f'</div>'
                     f'<div style="text-align:right;margin-left:12px;">'
-                    f'  <span style="color:#c0392b;font-weight:700;">NGN {int(r["total"]):,}</span>'
+                    f'  <span style="color:#c0392b;font-weight:700;">₦{int(r["total"]):,}</span>'
                     f'  <span style="font-size:0.75rem;color:#95a5a6;margin-left:4px;">{pct}%</span>'
                     f'</div>'
                     f'</div>',
@@ -229,15 +229,15 @@ def render_summaries(user_id):
         m_net        = m_income - m_spent
         savings_rate = round(m_net / m_income * 100, 1) if m_income > 0 else 0
         mom_diff     = m_spent - prev_m_spent
-        mom_delta    = (f"+NGN {mom_diff:,} vs last month" if mom_diff > 0
-                        else f"-NGN {abs(mom_diff):,} vs last month" if mom_diff < 0 else None)
+        mom_delta    = (f"+₦{mom_diff:,} vs last month" if mom_diff > 0
+                        else f"-₦{abs(mom_diff):,} vs last month" if mom_diff < 0 else None)
 
         # Key metrics
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Income",       f"NGN {m_income:,}")
-        c2.metric("Expenses",     f"NGN {m_spent:,}", delta=mom_delta,
+        c1.metric("Income",       f"₦{m_income:,}")
+        c2.metric("Expenses",     f"₦{m_spent:,}", delta=mom_delta,
                   delta_color="inverse")
-        c3.metric("Net Saved",    f"NGN {m_net:,}",
+        c3.metric("Net Saved",    f"₦{m_net:,}",
                   delta=f"{savings_rate:.1f}% savings rate")
         c4.metric("Transactions", str(m_tx_count))
 
@@ -246,7 +246,7 @@ def render_summaries(user_id):
             pct = min(round(m_spent / m_limit * 100, 1), 100)
             bar_color = "normal" if pct < 80 else ("off" if pct < 100 else "inverse")
             st.progress(pct / 100,
-                        text=f"Budget: {pct:.0f}% used — NGN {m_spent:,} of NGN {m_limit:,}")
+                        text=f"Budget: {pct:.0f}% used — ₦{m_spent:,} of ₦{m_limit:,}")
 
         st.divider()
 
@@ -259,23 +259,29 @@ def render_summaries(user_id):
                 bar_w   = max(pct_cat, 1)
                 st.markdown(
                     f'<div style="display:flex;justify-content:space-between;align-items:center;'
-                    f'padding:8px 12px;background:#f0f7f4;border-radius:8px;margin-bottom:6px;">'
+                    f'padding:8px 12px;background:#f4f7f6;border-radius:8px;margin-bottom:6px;">'
                     f'<div style="flex:1;">'
-                    f'  <span style="font-weight:600;color:#1a3c5e;">{cr["cat"] or "Uncategorised"}</span>'
+                    f'  <span style="font-weight:600;color:#1a2e3b;">{cr["cat"] or "Uncategorised"}</span>'
                     f'  <span style="font-size:0.75rem;color:#95a5a6;margin-left:8px;">{cr["cnt"]} transactions</span>'
-                    f'  <div style="background:#d0e8df;border-radius:4px;height:4px;margin-top:4px;">'
+                    f'  <div style="background:#d8eae2;border-radius:4px;height:4px;margin-top:4px;">'
                     f'    <div style="background:#0e7c5b;width:{bar_w:.0f}%;height:4px;border-radius:4px;"></div>'
                     f'  </div>'
                     f'</div>'
                     f'<div style="text-align:right;margin-left:12px;">'
-                    f'  <span style="color:#c0392b;font-weight:700;">NGN {int(cr["total"]):,}</span>'
+                    f'  <span style="color:#c0392b;font-weight:700;">₦{int(cr["total"]):,}</span>'
                     f'  <span style="font-size:0.75rem;color:#95a5a6;margin-left:4px;">{pct_cat:.0f}%</span>'
                     f'</div>'
                     f'</div>',
                     unsafe_allow_html=True
                 )
         else:
-            st.info("No expenses recorded for this month.")
+            st.markdown(
+                '<div style="background:#f4f7f6;border-radius:12px;padding:24px;text-align:center;color:#6b7f8e;">' +
+                '<div style="font-size:2rem;">📊</div>' +
+                '<div style="font-weight:700;color:#1a2e3b;margin:8px 0 4px;">No expenses this month</div>' +
+                '<div style="font-size:0.9rem;">Log expenses to see your monthly breakdown.</div></div>',
+                unsafe_allow_html=True
+            )
 
         # Weekly bar chart within the month
         if m_weekly:
@@ -285,7 +291,7 @@ def render_summaries(user_id):
                 columns=["Week", "Spent (NGN)"]
             )
             fig = px.bar(df_wk, x="Week", y="Spent (NGN)",
-                         color_discrete_sequence=["#1a3c5e"],
+                         color_discrete_sequence=["#1a2e3b"],
                          text_auto=True)
             fig.update_layout(margin=dict(t=20, b=20, l=10, r=10), height=280)
             fig.update_traces(texttemplate='%{y:,.0f}', textposition='outside')
@@ -310,7 +316,7 @@ def render_summaries(user_id):
                           color_discrete_sequence=px.colors.qualitative.Pastel,
                           hole=0.35)
             fig2.update_traces(textposition="inside", textinfo="percent+label",
-                               hovertemplate="<b>%{label}</b><br>NGN %{value:,.0f}<br>%{percent}<extra></extra>")
+                               hovertemplate="<b>%{label}</b><br>₦%{value:,.0f}<br>%{percent}<extra></extra>")
             fig2.update_layout(margin=dict(t=20, b=10, l=10, r=10),
                                legend=dict(orientation="v", x=1.02, y=0.5))
             st.plotly_chart(fig2, use_container_width=True)
