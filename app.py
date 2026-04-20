@@ -113,14 +113,14 @@ if st.session_state.user_id is None:
 def render_landing():
     st.markdown("""
     <style>
-    .landing-hero { background: linear-gradient(135deg,#1a3c5e 0%,#0e7c5b 100%);
+    .landing-hero { background: linear-gradient(135deg,#1a2e3b 0%,#0e7c5b 100%);
         border-radius:16px; padding:36px 28px 28px 28px; text-align:center; margin-bottom:24px; }
     .landing-title   { font-size:2.1rem; font-weight:900; color:#ffffff; margin-bottom:6px; }
     .landing-tagline { font-size:1.05rem; color:#a8d8c8; margin-bottom:0; }
     .landing-desc    { font-size:0.95rem; color:#e0f0ec; margin-top:10px; }
-    .feature-card    { background:#f0f7f4; border-left:4px solid #0e7c5b; border-radius:10px;
+    .feature-card    { background:#f4f7f6; border-left:4px solid #0e7c5b; border-radius:10px;
         padding:14px 16px; margin-bottom:10px; }
-    .demo-card  { background:#ffffff; border:1px solid #d0e8df; border-radius:10px;
+    .demo-card  { background:#ffffff; border:1px solid #d8eae2; border-radius:10px;
         padding:14px 16px; margin-bottom:8px; }
     .demo-row   { display:flex; justify-content:space-between; align-items:center;
         padding:4px 0; font-size:0.88rem; }
@@ -307,24 +307,45 @@ _streak_emoji = (
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown(f"### Hello, {user['surname']} {user['other_names']}")
+    # ── Logo / brand ──────────────────────────────────────────────────────
+    st.markdown(
+        '<div style="padding:18px 16px 10px 16px;">'
+        '<div style="font-size:1.3rem;font-weight:900;color:#ffffff;letter-spacing:-0.02em;">💰 Budget Right</div>'
+        '<div style="font-size:0.72rem;color:#6b7f8e;margin-top:2px;text-transform:uppercase;letter-spacing:0.08em;">Personal Finance Tracker</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+    st.divider()
 
-    _unread_badge = (
-        f' <span style="background:#e74c3c;color:#fff;border-radius:20px;'
-        f'padding:1px 7px;font-size:0.72rem;font-weight:700;">{_unread}</span>'
+    # ── User pill + streak/notifications ─────────────────────────────────
+    first_name = user['other_names'].split()[0] if user['other_names'] else user['surname']
+    _unread_badge_html = (
+        f'<span style="background:#e74c3c;color:#fff;border-radius:20px;'
+        f'padding:1px 7px;font-size:0.7rem;font-weight:700;margin-left:4px;">{_unread}</span>'
         if _unread > 0 else ""
     )
     st.markdown(
-        f'<div style="background:#1a3c5e;border-radius:10px;padding:10px 14px;'
-        f'margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">'
-        f'<span style="color:#a8d8c8;font-size:0.8rem;font-weight:700;">'
-        f'{_streak_emoji} {_streak_curr}-day streak</span>'
-        f'<span style="color:#a8d8c8;font-size:0.8rem;">🔔{_unread_badge}</span>'
+        f'<div style="padding:10px 16px 10px 16px;">'
+        f'<div style="font-size:0.78rem;color:#6b7f8e;text-transform:uppercase;letter-spacing:0.06em;font-weight:700;margin-bottom:4px;">Signed in as</div>'
+        f'<div style="font-size:0.97rem;font-weight:700;color:#e0eef5;">{user["surname"]} {user["other_names"]}</div>'
+        f'<div style="margin-top:8px;display:flex;align-items:center;gap:8px;">'
+        f'<span style="font-size:0.8rem;color:#a8d8c8;font-weight:600;">{_streak_emoji} {_streak_curr}-day streak</span>'
+        f'<span style="color:#6b7f8e;">·</span>'
+        f'<span style="font-size:0.8rem;color:#a8d8c8;">🔔{_unread_badge_html}</span>'
+        f'</div>'
         f'</div>',
         unsafe_allow_html=True
     )
     st.divider()
 
+    # ── Navigation ────────────────────────────────────────────────────────
+    PAGE_ICONS = {
+        "Dashboard": "📊", "Income": "📈", "Expenses": "📉",
+        "Banks": "🏦", "Transfers": "🔄", "Savings Goals": "🎯",
+        "Tracker": "🔁", "Summaries": "📄",
+        "Notifications": "🔔", "Import CSV": "📥", "Settings": "⚙️",
+        "Admin Panel": "🛡️", "Analytics": "📊",
+    }
     pages = [
         "Dashboard", "Income", "Expenses",
         "Banks", "Transfers", "Savings Goals",
@@ -337,18 +358,22 @@ with st.sidebar:
     selected_idx = st.radio(
         "Navigate",
         range(len(pages)),
-        format_func=lambda i: pages[i],
+        format_func=lambda i: f"{PAGE_ICONS.get(pages[i], '')}  {pages[i]}",
         key="nav_radio"
     )
     current_page = pages[selected_idx]
 
     st.divider()
     st.markdown(
-        "Report a bug / Suggest a feature: "
-        "[Click here](https://docs.google.com/forms/d/e/1FAIpQLSccXTBLwx6GhwqpUCt6lrjQ4qzNzNgjs2APheQ-FOryC0wCJA/viewform?usp=dialog)"
+        '<div style="padding:0 4px;">'
+        '<a href="https://docs.google.com/forms/d/e/1FAIpQLSccXTBLwx6GhwqpUCt6lrjQ4qzNzNgjs2APheQ-FOryC0wCJA/viewform?usp=dialog" '
+        'target="_blank" style="font-size:0.8rem;color:#6b7f8e;text-decoration:none;">'
+        '💬 Report a bug / Suggest a feature</a>'
+        '</div>',
+        unsafe_allow_html=True
     )
-    st.divider()
-    if st.button("Logout", key="logout_btn"):
+    st.markdown("")
+    if st.button("⬅️  Logout", key="logout_btn"):
         revoke_session_token(st.session_state.get("session_token"), cookies)
         for k in list(st.session_state.keys()):
             del st.session_state[k]
@@ -361,15 +386,6 @@ if not _ob["already_done"]:
         mark_onboarding_complete(user_id)
     else:
         steps_done = sum([_ob["has_bank"], _ob["has_income"], _ob["has_expense"], _ob["has_budget"]])
-        st.markdown("""
-        <style>
-        .ob-step { display:flex; align-items:center; gap:10px; background:#f0f7f4;
-            border-radius:8px; padding:10px 14px; margin-bottom:6px; font-size:0.92rem; }
-        .ob-done { border-left:4px solid #0e7c5b; color:#2c7a5a; }
-        .ob-todo { border-left:4px solid #d0d0d0; color:#555; }
-        .ob-icon { font-size:1.2rem; }
-        </style>""", unsafe_allow_html=True)
-
         with st.expander(f"🚀 Setup checklist — {steps_done}/4 done", expanded=(steps_done == 0)):
             st.progress(steps_done / 4, text=f"{steps_done * 25}% set up")
 
@@ -520,12 +536,11 @@ def render_dashboard():
     today       = datetime.now().date()
     month_start = today.replace(day=1)
 
+    # ── Single DB round-trip for all dashboard data ───────────────────────────
     with get_db() as (conn, cursor):
-        # Banks
         cursor.execute("SELECT id, bank_name, account_number, balance FROM banks WHERE user_id=%s", (user_id,))
         banks = cursor.fetchall()
 
-        # Monthly totals
         cursor.execute("""
             SELECT
               COALESCE(SUM(CASE WHEN t.type='credit' THEN t.amount ELSE 0 END),0) AS income,
@@ -538,11 +553,9 @@ def render_dashboard():
         spent  = int(totals["spent"] or 0)
         net    = income - spent
 
-        # Spending limit
         cursor.execute("SELECT monthly_spending_limit FROM users WHERE id=%s", (user_id,))
         limit = int(cursor.fetchone()["monthly_spending_limit"] or 0)
 
-        # Weekly spend (last 7 days)
         cursor.execute("""
             SELECT COALESCE(SUM(t.amount),0) AS n FROM transactions t
             JOIN banks b ON t.bank_id=b.id
@@ -550,7 +563,6 @@ def render_dashboard():
         """, (user_id, today - timedelta(days=7)))
         weekly_spend = int(cursor.fetchone()["n"] or 0)
 
-        # Top 5 expenses this month
         cursor.execute("""
             SELECT e.name, COALESCE(e.category, e.name) AS cat, e.amount, e.created_at, b.bank_name
             FROM expenses e JOIN banks b ON e.bank_id=b.id
@@ -559,7 +571,6 @@ def render_dashboard():
         """, (user_id, month_start))
         recent_expenses = cursor.fetchall()
 
-        # Category breakdown
         cursor.execute("""
             SELECT COALESCE(e.category, e.name) AS cat, SUM(e.amount) AS total
             FROM expenses e JOIN banks b ON e.bank_id=b.id
@@ -568,38 +579,41 @@ def render_dashboard():
         """, (user_id, month_start))
         cat_data = cursor.fetchall()
 
-        # Active goals
         cursor.execute("""
             SELECT name, target_amount, current_amount FROM goals
             WHERE user_id=%s AND status='active' ORDER BY created_at DESC LIMIT 3
         """, (user_id,))
         goals = cursor.fetchall()
 
-    total_balance = sum(b["balance"] for b in banks)
-    savings_rate  = round((net / income * 100), 1) if income > 0 else 0
-
-    # ── Key metrics ───────────────────────────────────────────────────────────
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("💰 Total Balance", f"₦{total_balance:,}")
-    c2.metric("📈 Income (MTD)",  f"₦{income:,}")
-    c3.metric("📉 Spent (MTD)",   f"₦{spent:,}")
-    c4.metric("💚 Net Saved",     f"₦{net:,}", delta=f"{savings_rate}% savings rate")
-
-    # ── Budget progress ───────────────────────────────────────────────────────
-    if limit > 0:
-        pct = min(spent / limit * 100, 100)
-        bar_color = "🔴" if pct >= 100 else ("🟡" if pct >= 80 else "🟢")
-        st.markdown(f"**{bar_color} Monthly Budget: ₦{spent:,} / ₦{limit:,} ({pct:.0f}%)**")
-        st.progress(pct / 100)
-
-    # ── Weekly summary card ───────────────────────────────────────────────────
+    total_balance  = sum(b["balance"] for b in banks)
+    savings_rate   = round((net / income * 100), 1) if income > 0 else 0
     days_in_month  = calendar.monthrange(today.year, today.month)[1]
     days_remaining = days_in_month - today.day + 1
-    daily_safe = max(limit - spent, 0) // max(days_remaining, 1) if limit else 0
+    daily_safe     = max(limit - spent, 0) // max(days_remaining, 1) if limit else 0
 
+    # ── Key metrics row ───────────────────────────────────────────────────────
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("💰 Total Balance",   f"₦{total_balance:,}")
+    c2.metric("📈 Income (MTD)",    f"₦{income:,}")
+    c3.metric("📉 Spent (MTD)",     f"₦{spent:,}")
+    c4.metric("💚 Net Saved",       f"₦{net:,}", delta=f"{savings_rate}% rate" if income > 0 else None)
+
+    # ── Budget progress bar ───────────────────────────────────────────────────
+    if limit > 0:
+        pct = min(spent / limit * 100, 100)
+        status_icon  = "🔴" if pct >= 100 else ("🟡" if pct >= 80 else "🟢")
+        st.markdown(
+            f"<div style='margin:6px 0 2px;font-size:0.88rem;font-weight:700;color:#1a2e3b;'>"
+            f"{status_icon} Monthly Budget &nbsp;·&nbsp; "
+            f"₦{spent:,} / ₦{limit:,} &nbsp;·&nbsp; {pct:.0f}%</div>",
+            unsafe_allow_html=True
+        )
+        st.progress(pct / 100)
+
+    # ── Week-at-a-glance card ─────────────────────────────────────────────────
     st.markdown(f"""
     <div class="week-card">
-      <div class="week-title">📅 This Week at a Glance</div>
+      <div class="week-title">THIS WEEK</div>
       <div class="week-grid">
         <div class="week-stat"><div class="week-stat-label">Weekly Spend</div><div class="week-stat-value">₦{weekly_spend:,}</div></div>
         <div class="week-stat"><div class="week-stat-label">Daily Safe-to-Spend</div><div class="week-stat-value">₦{daily_safe:,}</div></div>
@@ -609,83 +623,117 @@ def render_dashboard():
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Bank accounts ─────────────────────────────────────────────────────────
+    # ── Bank balances ─────────────────────────────────────────────────────────
     if banks:
-        st.subheader("🏦 Your Banks")
-        cols = st.columns(min(len(banks), 3))
+        st.subheader("🏦 Bank Accounts")
+        cols = st.columns(min(len(banks), 4))
         for i, b in enumerate(banks):
-            with cols[i % 3]:
-                st.metric(f"{b['bank_name']} (****{b['account_number']})", f"₦{b['balance']:,}")
+            with cols[i % 4]:
+                st.metric(f"{b['bank_name']} ****{b['account_number']}", f"₦{b['balance']:,}")
 
-    # ── Pie chart + recent expenses ───────────────────────────────────────────
-    col_chart, col_recent = st.columns([1, 1])
+    st.divider()
+
+    # ── Spending chart + recent expenses (side by side) ───────────────────────
+    col_chart, col_recent = st.columns([1.1, 1])
 
     with col_chart:
-        st.subheader("📊 Spending by Category")
+        st.subheader("📊 This Month by Category")
         if cat_data:
             df_cat = pd.DataFrame(cat_data, columns=["Category", "Amount"])
-            fig = px.pie(df_cat, names="Category", values="Amount",
-                         color_discrete_sequence=px.colors.sequential.Teal)
-            fig.update_layout(margin=dict(t=20, b=20, l=0, r=0), showlegend=True)
+            fig = px.pie(
+                df_cat, names="Category", values="Amount",
+                color_discrete_sequence=px.colors.qualitative.Set3,
+                hole=0.38,
+            )
+            fig.update_traces(
+                textposition="inside", textinfo="percent",
+                hovertemplate="<b>%{label}</b><br>₦%{value:,.0f}<br>%{percent}<extra></extra>",
+            )
+            fig.update_layout(
+                margin=dict(t=10, b=10, l=0, r=0),
+                showlegend=True,
+                legend=dict(orientation="v", font_size=11, x=1.02, y=0.5),
+                height=300,
+            )
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No expenses this month yet.")
+            st.markdown(
+                '<div style="background:#f4f7f6;border-radius:12px;padding:28px;text-align:center;color:#6b7f8e;">' +
+                '<div style="font-size:2rem;">📊</div>' +
+                '<div style="margin-top:8px;font-weight:700;">No expenses this month yet</div></div>',
+                unsafe_allow_html=True
+            )
 
     with col_recent:
         st.subheader("🧾 Recent Expenses")
         if recent_expenses:
             for e in recent_expenses:
                 st.markdown(
-                    f'<div class="exp-card">'
-                    f'<div class="exp-card-left">'
-                    f'<div class="exp-card-name">{e["name"]}</div>'
-                    f'<div class="exp-card-bank">{e["cat"]} · {e["bank_name"]}</div>'
-                    f'<div class="exp-card-date">{e["created_at"]}</div>'
-                    f'</div>'
-                    f'<div class="exp-card-right">'
-                    f'<div class="exp-card-amount">-₦{e["amount"]:,}</div>'
-                    f'</div></div>',
+                    f'<div class="exp-card">' +
+                    f'<div class="exp-card-left">' +
+                    f'<div class="exp-card-name">{e["name"]}</div>' +
+                    f'<div class="exp-card-bank">{e["cat"]} · {e["bank_name"]}</div>' +
+                    f'<div class="exp-card-date">{e["created_at"]}</div></div>' +
+                    f'<div class="exp-card-right"><div class="exp-card-amount">-₦{e["amount"]:,}</div></div></div>',
                     unsafe_allow_html=True
                 )
         else:
-            st.info("No expenses recorded this month.")
+            st.markdown(
+                '<div style="background:#f4f7f6;border-radius:12px;padding:28px;text-align:center;color:#6b7f8e;">' +
+                '<div style="font-size:2rem;">🧾</div>' +
+                '<div style="margin-top:8px;font-weight:700;">No expenses this month</div></div>',
+                unsafe_allow_html=True
+            )
+
+    st.divider()
 
     # ── Savings goals ─────────────────────────────────────────────────────────
     if goals:
-        st.subheader("🎯 Savings Goals Progress")
-        for g in goals:
+        st.subheader("🎯 Savings Goals")
+        g_cols = st.columns(len(goals))
+        for i, g in enumerate(goals):
             pct = min(int(g["current_amount"]) / max(int(g["target_amount"]), 1) * 100, 100)
-            st.markdown(f"**{g['name']}** — ₦{g['current_amount']:,} / ₦{g['target_amount']:,} ({pct:.0f}%)")
-            st.progress(pct / 100)
+            with g_cols[i]:
+                st.markdown(
+                    f'<div style="background:#fff;border:1px solid #d8eae2;border-radius:12px;padding:14px 16px;">' +
+                    f'<div style="font-weight:700;font-size:0.95rem;color:#1a2e3b;margin-bottom:6px;">{g["name"]}</div>' +
+                    f'<div style="font-size:1.2rem;font-weight:800;color:#0e7c5b;">₦{int(g["current_amount"]):,}</div>' +
+                    f'<div style="font-size:0.78rem;color:#6b7f8e;margin-bottom:8px;">of ₦{int(g["target_amount"]):,} goal</div></div>',
+                    unsafe_allow_html=True
+                )
+                st.progress(pct / 100, text=f"{pct:.0f}%")
 
-    # ── Insight cards ─────────────────────────────────────────────────────────
-    st.subheader("💡 Financial Insights")
+    # ── Quick insights ────────────────────────────────────────────────────────
+    st.subheader("💡 Quick Insights")
     insights = []
     if income > 0 and savings_rate < 10:
-        insights.append(("⚠️", "#fff3e0", "Low Savings Rate",
-            f"You're saving {savings_rate}% of income. Aim for at least 20% — the 50/30/20 rule says: "
-            "50% needs, 30% wants, 20% savings."))
-    if limit > 0 and spent / limit >= 0.8:
-        insights.append(("🚨", "#fdecea", "Budget Warning",
-            f"You've used {spent/limit*100:.0f}% of your ₦{limit:,} budget. Slow down spending for the rest of the month."))
+        insights.append(("⚠️", "#fff8ec", "Low Savings Rate",
+            f"Saving {savings_rate}% of income. Aim for 20%+ using the 50/30/20 rule."))
+    if limit > 0 and spent > 0:
+        pct_b = spent / limit * 100
+        if pct_b >= 80:
+            insights.append(("🚨", "#fdf2f2", "Budget Warning",
+                f"Used {pct_b:.0f}% of your ₦{limit:,} budget. Slow down spending."))
     if spent == 0 and income == 0:
         insights.append(("📌", "#e8f5f0", "Get Started",
-            "You haven't recorded any transactions this month. Start by logging your income and expenses."))
+            "No transactions this month yet. Log income and expenses to see insights."))
     if daily_safe > 0:
         insights.append(("📅", "#e8f5f0", "Daily Budget",
-            f"You can safely spend ₦{daily_safe:,}/day for the remaining {days_remaining} days of this month."))
+            f"₦{daily_safe:,}/day for the remaining {days_remaining} days."))
     if not insights:
         insights.append(("✅", "#e8f5f0", "Looking Good!",
-            "Your finances look healthy this month. Keep tracking consistently."))
+            "Your finances look healthy this month. Keep tracking!"))
 
-    for icon, bg, title, text in insights:
-        st.markdown(
-            f'<div class="insight-card" style="background:{bg};">'
-            f'<div class="insight-icon">{icon}</div>'
-            f'<div class="insight-body"><div class="insight-title">{title}</div>'
-            f'<div class="insight-text">{text}</div></div></div>',
-            unsafe_allow_html=True
-        )
+    ins_cols = st.columns(min(len(insights), 2))
+    for i, (icon, bg, title, text) in enumerate(insights):
+        with ins_cols[i % 2]:
+            st.markdown(
+                f'<div class="insight-card" style="background:{bg};">' +
+                f'<div class="insight-icon">{icon}</div>' +
+                f'<div class="insight-body"><div class="insight-title">{title}</div>' +
+                f'<div class="insight-text">{text}</div></div></div>',
+                unsafe_allow_html=True
+            )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -750,13 +798,16 @@ def render_income():
 
     for r in filtered:
         source = str(r["description"] or "").replace("Income: ", "")
-        edit_key = f"edit_inc_{r['id']}"
-
-        col_info, col_amt, col_btns = st.columns([3, 1.5, 1])
-        with col_info:
-            st.markdown(f"**{source}**  \n{r['bank_name']} · {r['created_at']}")
-        with col_amt:
-            st.markdown(f"<span style='color:#0e7c5b;font-weight:700;font-size:1rem;'>+₦{r['amount']:,}</span>", unsafe_allow_html=True)
+        col_card, col_btns = st.columns([5, 1])
+        with col_card:
+            st.markdown(
+                f'<div style="background:#fff;border:1px solid #d8eae2;border-left:4px solid #0e7c5b;'
+                f'border-radius:10px;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;">'
+                f'<div><div style="font-weight:700;color:#1a2e3b;">{source}</div>'
+                f'<div style="font-size:0.78rem;color:#6b7f8e;margin-top:2px;">{r["bank_name"]} · {r["created_at"]}</div></div>'
+                f'<div style="font-size:1.05rem;font-weight:800;color:#0e7c5b;">+₦{r["amount"]:,}</div></div>',
+                unsafe_allow_html=True
+            )
         with col_btns:
             cb1, cb2 = st.columns(2)
             with cb1:
@@ -825,9 +876,10 @@ def render_expenses():
 
     # ── Quick-add buttons ─────────────────────────────────────────────────────
     st.subheader("⚡ Quick Add")
-    qa_cols = st.columns(5)
-    for i, (label, cat) in enumerate(QUICK_ADD_CATEGORIES[:15]):
-        with qa_cols[i % 5]:
+    st.caption("Tap a category to pre-fill the form below")
+    qa_cols = st.columns(6)
+    for i, (label, cat) in enumerate(QUICK_ADD_CATEGORIES[:18]):
+        with qa_cols[i % 6]:
             if st.button(label, key=f"qa_{cat}", use_container_width=True):
                 st.session_state.quick_add_name = cat
 
@@ -878,11 +930,18 @@ def render_expenses():
     st.caption(f"{len(filtered)} records · Total: ₦{total_shown:,}")
 
     for r in filtered:
-        col_info, col_amt, col_btns = st.columns([3, 1.5, 1])
-        with col_info:
-            st.markdown(f"**{r['name']}** · {r['category'] or r['name']}  \n{r['bank_name']} · {r['created_at']}")
-        with col_amt:
-            st.markdown(f"<span style='color:#c0392b;font-weight:700;font-size:1rem;'>-₦{r['amount']:,}</span>", unsafe_allow_html=True)
+        col_card, col_btns = st.columns([5, 1])
+        with col_card:
+            cat_label = r["category"] or r["name"]
+            st.markdown(
+                f'<div class="exp-card">'
+                f'<div class="exp-card-left">'
+                f'<div class="exp-card-name">{r["name"]}</div>'
+                f'<div class="exp-card-bank">{cat_label} · {r["bank_name"]}</div>'
+                f'<div class="exp-card-date">{r["created_at"]}</div>'
+                f'</div><div class="exp-card-right"><div class="exp-card-amount">-₦{r["amount"]:,}</div></div></div>',
+                unsafe_allow_html=True
+            )
         with col_btns:
             cb1, cb2 = st.columns(2)
             with cb1:
@@ -967,21 +1026,41 @@ def render_banks():
                 st.warning("Please fill all required fields.")
 
     if not banks:
-        st.info("No bank accounts yet. Add your first bank above.")
+        st.markdown(
+            '<div style="background:#f4f7f6;border-radius:12px;padding:28px;text-align:center;color:#6b7f8e;">'
+            '<div style="font-size:2.5rem;">🏦</div>'
+            '<div style="font-weight:700;font-size:1rem;color:#1a2e3b;margin:8px 0 4px;">No bank accounts yet</div>'
+            '<div style="font-size:0.9rem;">Add your first bank account above to get started.</div>'
+            '</div>',
+            unsafe_allow_html=True
+        )
         return
 
     total_balance = sum(b["balance"] for b in banks)
-    st.metric("💰 Total Balance Across All Banks", f"₦{total_balance:,}")
+    st.metric("💰 Total Balance (All Banks)", f"₦{total_balance:,}")
     st.divider()
 
     for b in banks:
+        alert_html = ""
+        if b["min_balance_alert"] and b["balance"] < b["min_balance_alert"]:
+            alert_html = f'<div style="color:#c0392b;font-size:0.78rem;font-weight:700;margin-top:4px;">⚠️ Below alert threshold (₦{b["min_balance_alert"]:,})</div>'
+        st.markdown(
+            f'<div style="background:#fff;border:1px solid #d8eae2;border-radius:12px;padding:14px 16px 10px;margin-bottom:4px;">'
+            f'<div style="display:flex;justify-content:space-between;align-items:flex-start;">'
+            f'<div>'
+            f'<div style="font-weight:800;font-size:1rem;color:#1a2e3b;">{b["bank_name"]}</div>'
+            f'<div style="font-size:0.82rem;color:#6b7f8e;margin-top:2px;">{b["account_name"]} · ****{b["account_number"]}</div>'
+            f'{alert_html}'
+            f'</div>'
+            f'<div style="text-align:right;">'
+            f'<div style="font-size:1.3rem;font-weight:800;color:#0e7c5b;">₦{int(b["balance"]):,}</div>'
+            f'<div style="font-size:0.72rem;color:#6b7f8e;margin-top:2px;">Current Balance</div>'
+            f'</div>'
+            f'</div>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
         col_info, col_bal, col_btns = st.columns([3, 1.5, 1])
-        with col_info:
-            st.markdown(f"**{b['bank_name']}** · {b['account_name']}  \nAcct: ****{b['account_number']}")
-            if b["min_balance_alert"] and b["balance"] < b["min_balance_alert"]:
-                st.warning(f"⚠️ Balance below alert threshold (₦{b['min_balance_alert']:,})")
-        with col_bal:
-            st.metric("Balance", f"₦{b['balance']:,}")
         with col_btns:
             cb1, cb2 = st.columns(2)
             with cb1:
@@ -1091,17 +1170,27 @@ def render_transfers():
         transfers = cursor.fetchall()
 
     if not transfers:
-        st.info("No transfers yet.")
+        st.markdown(
+            '<div style="background:#f4f7f6;border-radius:12px;padding:28px;text-align:center;color:#6b7f8e;">' +
+            '<div style="font-size:2rem;">🔄</div>' +
+            '<div style="font-weight:700;margin-top:8px;color:#1a2e3b;">No transfers yet</div>' +
+            '<div style="font-size:0.9rem;margin-top:4px;">Make a transfer above between your bank accounts.</div></div>',
+            unsafe_allow_html=True
+        )
     else:
         for t in transfers:
-            color = "#c0392b" if "out" in (t["description"] or "").lower() else "#0e7c5b"
-            prefix = "-" if "out" in (t["description"] or "").lower() else "+"
+            is_out = "out" in (t["description"] or "").lower()
+            color  = "#c0392b" if is_out else "#0e7c5b"
+            prefix = "-" if is_out else "+"
             st.markdown(
-                f"**{t['description']}** · {t['bank_name']} · {t['created_at']}  "
-                f"<span style='color:{color};font-weight:700;'>{prefix}₦{t['amount']:,}</span>",
+                f'<div style="background:#fff;border:1px solid #d8eae2;border-left:4px solid {color};'
+                f'border-radius:10px;padding:10px 14px;display:flex;justify-content:space-between;'
+                f'align-items:center;margin-bottom:6px;">'
+                f'<div><div style="font-weight:700;color:#1a2e3b;font-size:0.95rem;">{t["description"]}</div>'
+                f'<div style="font-size:0.78rem;color:#6b7f8e;margin-top:2px;">{t["bank_name"]} · {t["created_at"]}</div></div>'
+                f'<div style="font-size:1.05rem;font-weight:800;color:{color};">{prefix}₦{t["amount"]:,}</div></div>',
                 unsafe_allow_html=True
             )
-            st.divider()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1151,7 +1240,14 @@ def render_goals():
                 st.warning("Please enter a name and target amount.")
 
     if not goals:
-        st.info("No goals yet. Create your first savings goal above!")
+        st.markdown(
+            '<div style="background:#f4f7f6;border-radius:12px;padding:28px;text-align:center;color:#6b7f8e;margin-top:8px;">'
+            '<div style="font-size:2.5rem;">🎯</div>'
+            '<div style="font-weight:700;font-size:1rem;color:#1a2e3b;margin:8px 0 4px;">No savings goals yet</div>'
+            '<div style="font-size:0.9rem;">Create your first goal above — Emergency Fund, Rent, or any custom target.</div>'
+            '</div>',
+            unsafe_allow_html=True
+        )
         return
 
     # ── Goal cards ────────────────────────────────────────────────────────────
@@ -1274,23 +1370,37 @@ def render_tracker():
 
     today = datetime.now().date()
     for it in items:
-        due   = it["next_due"]
+        due     = it["next_due"]
         overdue = due and due < today
         due_label = f"Due: {due}" if due else "No due date"
-        color = "#c0392b" if overdue else ("#f39c12" if due and (due - today).days <= 3 else "#0e7c5b")
+        due_color = "#c0392b" if overdue else ("#f39c12" if due and (due - today).days <= 3 else "#0e7c5b")
+        type_bg    = "#e8f5f0" if it["type"] == "income" else "#fdf2f2"
+        type_color = "#0e7c5b" if it["type"] == "income" else "#c0392b"
+        type_label = "📥 INCOME" if it["type"] == "income" else "📤 EXPENSE"
 
-        col_info, col_amt, col_btn = st.columns([3, 1.5, 1])
-        with col_info:
-            badge = "📥 INCOME" if it["type"] == "income" else "📤 EXPENSE"
-            st.markdown(f"**{it['name']}** {badge}  \n{it['frequency'].title()} · {it['bank_name'] or '—'}  \n<span style='color:{color};font-size:0.82rem;font-weight:700;'>{'⚠️ OVERDUE — ' if overdue else ''}{due_label}</span>", unsafe_allow_html=True)
-        with col_amt:
-            st.metric("Amount", f"₦{it['amount']:,}")
+        col_card, col_btn = st.columns([6, 0.7])
+        with col_card:
+            st.markdown(
+                f'<div style="background:#fff;border:1px solid #d8eae2;border-radius:12px;padding:12px 16px;'
+                f'display:flex;justify-content:space-between;align-items:center;">'
+                f'<div>'
+                f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">'
+                f'<span style="font-weight:800;font-size:0.97rem;color:#1a2e3b;">{it["name"]}</span>'
+                f'<span style="background:{type_bg};color:{type_color};border-radius:20px;padding:1px 9px;font-size:0.7rem;font-weight:700;">{type_label}</span>'
+                f'</div>'
+                f'<div style="font-size:0.8rem;color:#6b7f8e;">{it["frequency"].title()} · {it["bank_name"] or "No bank"}</div>'
+                f'<div style="font-size:0.78rem;font-weight:700;color:{due_color};margin-top:3px;">'
+                f'{"⚠️ OVERDUE — " if overdue else ""}{due_label}</div>'
+                f'</div>'
+                f'<div style="font-size:1.2rem;font-weight:800;color:#1a2e3b;">₦{int(it["amount"]):,}</div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
         with col_btn:
             if st.button("🗑️", key=f"dr_{it['id']}", help="Delete"):
                 with get_db() as (conn, cursor):
                     cursor.execute("DELETE FROM recurring_items WHERE id=%s AND user_id=%s", (it["id"], user_id))
                 st.rerun()
-        st.divider()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1381,18 +1491,18 @@ def render_notifications():
     notifications = get_notifications(user_id, unread_only=False, limit=50)
     unread_count  = sum(1 for n in notifications if not n["read"])
 
-    col_a, col_b = st.columns([3, 1])
+    col_a, col_b, col_c = st.columns([3, 1, 1])
     with col_a:
         st.caption(f"{len(notifications)} notifications · {unread_count} unread")
     with col_b:
-        if st.button("Mark all read", key="mark_all_read"):
+        if st.button("✅ Mark all read", key="mark_all_read", use_container_width=True):
             mark_notifications_read(user_id)
             st.session_state._unread_cache = 0
             st.rerun()
-
-    if st.button("🗑️ Clear all", key="clear_notifs"):
-        clear_all_notifications(user_id)
-        st.rerun()
+    with col_c:
+        if st.button("🗑️ Clear all", key="clear_notifs", use_container_width=True):
+            clear_all_notifications(user_id)
+            st.rerun()
 
     if not notifications:
         st.info("No notifications yet. Keep using Budget Right to earn streaks and tips!")
@@ -1479,9 +1589,9 @@ def render_settings():
             cb     = budget_map.get(cat, {})
             cur_lim = int(cb.get("monthly_limit", 0))
             spent   = int(cb.get("spent", 0))
-            col_c, col_inp, col_prog = st.columns([2, 1.5, 2])
+            col_c, col_inp, col_prog = st.columns([2, 1.5, 2.5])
             with col_c:
-                st.caption(cat)
+                st.markdown(f"<div style='padding-top:8px;font-size:0.9rem;font-weight:600;color:#1a2e3b;'>{cat}</div>", unsafe_allow_html=True)
             with col_inp:
                 new_lim = st.number_input("", min_value=0, step=1000, value=cur_lim,
                                            key=f"catbdg_{cat}", label_visibility="collapsed")
@@ -1491,12 +1601,16 @@ def render_settings():
                 if cur_lim > 0:
                     pct = min(spent / cur_lim * 100, 100)
                     color = "#c0392b" if pct >= 100 else ("#f39c12" if pct >= 80 else "#0e7c5b")
+                    status = "OVER" if pct >= 100 else ("HIGH" if pct >= 80 else "OK")
                     st.markdown(
-                        f'<div style="background:#f0f0f0;border-radius:6px;height:8px;margin-top:10px;">'
+                        f'<div style="margin-top:10px;"><div style="background:#f0f0f0;border-radius:6px;height:7px;">'
                         f'<div style="background:{color};width:{pct:.0f}%;height:100%;border-radius:6px;"></div></div>'
-                        f'<div style="font-size:0.72rem;color:#666;">₦{spent:,} / ₦{cur_lim:,}</div>',
+                        f'<div style="font-size:0.72rem;color:#6b7f8e;margin-top:2px;">₦{spent:,} / ₦{cur_lim:,} &nbsp;'
+                        f'<span style="color:{color};font-weight:700;">{status}</span></div></div>',
                         unsafe_allow_html=True
                     )
+                else:
+                    st.markdown("<div style='padding-top:14px;font-size:0.75rem;color:#95a5a6;'>No limit set</div>", unsafe_allow_html=True)
 
     with tab_security:
         st.subheader("Change Password")
@@ -1533,11 +1647,11 @@ def render_admin():
         return
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Registered", data.get("total_registered", 0))
-    c2.metric("Verified",   data.get("total_verified", 0))
-    c3.metric("DAU",        data.get("dau", 0))
-    c4.metric("WAU",        data.get("wau", 0))
-    c5.metric("MAU",        data.get("mau", 0))
+    c1.metric("👤 Registered", data.get("total_registered", 0))
+    c2.metric("✅ Verified",   data.get("total_verified", 0))
+    c3.metric("📅 DAU",        data.get("dau", 0))
+    c4.metric("📆 WAU",        data.get("wau", 0))
+    c5.metric("📊 MAU",        data.get("mau", 0))
 
     st.subheader("Inactive Users (7+ days)")
     inactive = data.get("inactive_users", [])
