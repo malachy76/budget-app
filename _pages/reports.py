@@ -7,7 +7,7 @@
 #   4. bank_report        — per-bank balance, income, expenses, transactions
 #
 # All reports share a common header/footer template with the Budget Right
-# brand colours (#1a3c5e navy, #0e7c5b green).  No external fonts needed —
+# brand colours (#1a2e3b navy, #0e7c5b green).  No external fonts needed —
 # Helvetica works on every platform.
 
 import io
@@ -29,10 +29,10 @@ from reportlab.graphics import renderPDF
 from db import get_db
 
 # ── Brand colours ─────────────────────────────────────────────────────────────
-NAVY    = colors.HexColor("#1a3c5e")
+NAVY    = colors.HexColor("#1a2e3b")
 GREEN   = colors.HexColor("#0e7c5b")
-LIGHT   = colors.HexColor("#f0f7f4")
-BORDER  = colors.HexColor("#d0e8df")
+LIGHT   = colors.HexColor("#f4f7f6")
+BORDER  = colors.HexColor("#d8eae2")
 RED_C   = colors.HexColor("#c0392b")
 AMBER   = colors.HexColor("#f39c12")
 GREY    = colors.HexColor("#95a5a6")
