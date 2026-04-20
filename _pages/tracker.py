@@ -37,7 +37,7 @@ def _due_badge(next_due, today):
     if days == 0:  return "Due today", "#e67e22"
     if days <= 3:  return f"Due in {days}d", "#c0392b"
     if days <= 7:  return f"Due in {days}d", "#f39c12"
-    return f"Due in {days}d", "#1a3c5e"
+    return f"Due in {days}d", "#1a2e3b"
 
 
 def _run_auto_posting(user_id: int, today) -> list:
@@ -84,7 +84,7 @@ def _run_auto_posting(user_id: int, today) -> list:
                 if bank_balance < amount and not allow_overdraft:
                     results.append(
                         f"⚠️ **{item['name']}** — Skipped (insufficient funds: "
-                        f"NGN {bank_balance:,} available, NGN {amount:,} needed)"
+                        f"₦{bank_balance:,} available, ₦{amount:,} needed)"
                     )
                     continue
 
@@ -122,7 +122,7 @@ def _run_auto_posting(user_id: int, today) -> list:
 
             sign   = "+" if item_type == "income" else "-"
             results.append(
-                f"✅ **{item['name']}** — {sign}NGN {amount:,} posted to "
+                f"✅ **{item['name']}** — {sign}₦{amount:,} posted to "
                 f"{item['bank_name']}. Next due: {new_next_due}"
             )
 
@@ -134,8 +134,8 @@ def _run_auto_posting(user_id: int, today) -> list:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_tracker(user_id):
-    st.markdown("## Tracker")
-    st.caption("Recurring income & expenses, bill reminders, debts, and your emergency fund.")
+    st.title("🔁 Tracker")
+    st.caption("Recurring income & expenses · bill reminders · debts · emergency fund")
 
     today = datetime.now().date()
 
@@ -159,7 +159,7 @@ def render_tracker(user_id):
         )
         banks = cursor.fetchall()
 
-    bank_map  = {f"{b['bank_name']} (****{b['account_number']}) — NGN {b['balance']:,}": b["id"] for b in banks}
+    bank_map  = {f"{b['bank_name']} (****{b['account_number']}) — ₦{b['balance']:,}": b["id"] for b in banks}
     bank_opts = list(bank_map.keys())
 
     tab_ri, tab_re, tab_bill, tab_debt, tab_ef = st.tabs([
@@ -224,7 +224,7 @@ def render_tracker(user_id):
             total_monthly_income = sum(
                 r["amount"] * FREQ_MULT.get(r["frequency"], 1) for r in rec_incomes
             )
-            st.caption(f"Estimated monthly recurring income: **NGN {int(total_monthly_income):,}**")
+            st.caption(f"Estimated monthly recurring income: **₦{int(total_monthly_income):,}**")
 
             for ri in rec_incomes:
                 due_label, due_color = _due_badge(ri["next_due"], today)
@@ -246,7 +246,7 @@ def render_tracker(user_id):
                         </div>
                       </div>
                       <div class="exp-card-right">
-                        <div class="exp-card-amount" style="color:#0e7c5b;">+NGN {ri['amount']:,}</div>
+                        <div class="exp-card-amount" style="color:#0e7c5b;">+₦{ri['amount']:,}</div>
                       </div>
                     </div>
                     """, unsafe_allow_html=True)
@@ -333,7 +333,7 @@ def render_tracker(user_id):
             st.info("No recurring expenses yet.")
         else:
             total_monthly = sum(r["amount"] * FREQ_MULT.get(r["frequency"], 1) for r in rec_expenses)
-            st.caption(f"Estimated monthly recurring cost: **NGN {int(total_monthly):,}**")
+            st.caption(f"Estimated monthly recurring cost: **₦{int(total_monthly):,}**")
 
             for re in rec_expenses:
                 due_label, due_color = _due_badge(re["next_due"], today)
@@ -365,7 +365,7 @@ def render_tracker(user_id):
                         </div>
                       </div>
                       <div class="exp-card-right">
-                        <div class="exp-card-amount">-NGN {re['amount']:,}</div>
+                        <div class="exp-card-amount">-₦{re['amount']:,}</div>
                       </div>
                     </div>
                     """, unsafe_allow_html=True)
@@ -408,7 +408,13 @@ def render_tracker(user_id):
         due_30   = [r for r in upcoming   if 7 <  (r["next_due"] - today).days <= 30]
 
         if not upcoming:
-            st.info("No items due in the next 30 days.")
+            st.markdown(
+                '<div style="background:#f4f7f6;border-radius:12px;padding:24px;text-align:center;color:#6b7f8e;">' +
+                '<div style="font-size:2rem;">🔔</div>' +
+                '<div style="font-weight:700;color:#1a2e3b;margin:8px 0 4px;">All clear!</div>' +
+                '<div style="font-size:0.9rem;">No bills or reminders due in the next 30 days.</div></div>',
+                unsafe_allow_html=True
+            )
         else:
             def _bill_card(r):
                 days   = (r["next_due"] - today).days
@@ -431,28 +437,28 @@ def render_tracker(user_id):
                   </div>
                   <div class="exp-card-right">
                     <div class="exp-card-amount" style="color:{color};">
-                      {sign}NGN {r['amount']:,}
+                      {sign}₦{r['amount']:,}
                     </div>
                   </div>
                 </div>
                 """, unsafe_allow_html=True)
 
             if overdue:
-                st.markdown("#### 🔴 Overdue")
+                st.markdown('<div style="font-weight:700;color:#c0392b;font-size:0.85rem;text-transform:uppercase;letter-spacing:0.05em;margin:10px 0 6px;">🔴 Overdue</div>', unsafe_allow_html=True)
                 for r in overdue: _bill_card(r)
             if due_7:
-                st.markdown("#### 🟠 Due within 7 days")
+                st.markdown('<div style="font-weight:700;color:#e67e22;font-size:0.85rem;text-transform:uppercase;letter-spacing:0.05em;margin:10px 0 6px;">🟠 Due within 7 days</div>', unsafe_allow_html=True)
                 for r in due_7: _bill_card(r)
             if due_30:
-                st.markdown("#### 🟢 Due in 8–30 days")
+                st.markdown('<div style="font-weight:700;color:#0e7c5b;font-size:0.85rem;text-transform:uppercase;letter-spacing:0.05em;margin:10px 0 6px;">🟢 Due in 8–30 days</div>', unsafe_allow_html=True)
                 for r in due_30: _bill_card(r)
 
             st.divider()
             exp_total = sum(r["amount"] for r in upcoming if r["type"] == "expense")
             inc_total = sum(r["amount"] for r in upcoming if r["type"] == "income")
             c1, c2 = st.columns(2)
-            c1.metric("Bills to pay (30 days)",    f"NGN {exp_total:,}")
-            c2.metric("Income expected (30 days)", f"NGN {inc_total:,}")
+            c1.metric("Bills to pay (30 days)",    f"₦{exp_total:,}")
+            c2.metric("Income expected (30 days)", f"₦{inc_total:,}")
 
             # ── Manual "Post now" button for overdue items ────────────────────
             if overdue:
@@ -561,10 +567,10 @@ def render_tracker(user_id):
                                 for d in debts)
 
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("You owe (active)",       f"NGN {total_owe:,}")
-            c2.metric("Owed to you (active)",   f"NGN {total_owed:,}")
-            c3.metric("Monthly repayments",     f"NGN {total_monthly:,}")
-            c4.metric("Total repaid (all time)", f"NGN {total_repaid:,}")
+            c1.metric("You owe (active)",       f"₦{total_owe:,}")
+            c2.metric("Owed to you (active)",   f"₦{total_owed:,}")
+            c3.metric("Monthly repayments",     f"₦{total_monthly:,}")
+            c4.metric("Total repaid (all time)", f"₦{total_repaid:,}")
             st.divider()
 
             for d in debts:
@@ -584,7 +590,7 @@ def render_tracker(user_id):
                 monthly_pmt = int(d["monthly_payment"] or 0)
                 if monthly_pmt > 0 and balance > 0 and d["status"] == "active":
                     months_left = -(-balance // monthly_pmt)
-                    payoff_str  = f"{months_left}mo at NGN {monthly_pmt:,}/mo"
+                    payoff_str  = f"{months_left}mo at ₦{monthly_pmt:,}/mo"
                 else:
                     payoff_str  = None
 
@@ -606,7 +612,7 @@ def render_tracker(user_id):
                     f'<div style="background:{bar_color};width:{bar_pct:.1f}%;'
                     f'height:7px;border-radius:6px;"></div></div>'
                     f'<div style="font-size:0.72rem;color:#95a5a6;margin-top:3px;">'
-                    f'NGN {paid:,} paid of NGN {principal:,} ({pct_paid:.0f}%)</div>'
+                    f'₦{paid:,} paid of ₦{principal:,} ({pct_paid:.0f}%)</div>'
                 )
 
                 col_card, col_act = st.columns([5, 1])
@@ -630,7 +636,7 @@ def render_tracker(user_id):
                       </div>
                       <div class="exp-card-right">
                         <div class="exp-card-amount" style="color:{color};">
-                          NGN {balance:,}
+                          ₦{balance:,}
                         </div>
                         <div style="font-size:0.72rem;color:#95a5a6;">remaining</div>
                       </div>
@@ -653,7 +659,7 @@ def render_tracker(user_id):
                                 f'<div style="background:#f8fbf9;border-radius:8px;'
                                 f'padding:10px 14px;margin:4px 0 8px;">'
                                 f'<strong>Repayment History</strong> &mdash; '
-                                f'Total paid: NGN {total_via_payments:,}</div>',
+                                f'Total paid: ₦{total_via_payments:,}</div>',
                                 unsafe_allow_html=True
                             )
                             for p in debt_pmts:
@@ -662,9 +668,9 @@ def render_tracker(user_id):
                                     f'<div style="display:flex;justify-content:space-between;'
                                     f'padding:5px 14px;border-bottom:1px solid #e8f0ea;'
                                     f'font-size:0.88rem;">'
-                                    f'<span style="color:#4a6070;">{p["payment_date"]}{note_str}</span>'
+                                    f'<span style="color:#6b7f8e;">{p["payment_date"]}{note_str}</span>'
                                     f'<span style="color:#0e7c5b;font-weight:700;">'
-                                    f'NGN {int(p["amount"]):,}</span>'
+                                    f'₦{int(p["amount"]):,}</span>'
                                     f'</div>',
                                     unsafe_allow_html=True
                                 )
@@ -721,9 +727,9 @@ def render_tracker(user_id):
                                             (new_balance, new_status, d["id"], user_id)
                                         )
                                     st.session_state.pop(pay_key, None)
-                                    msg = (f"NGN {int(amt_paid):,} recorded. "
+                                    msg = (f"₦{int(amt_paid):,} recorded. "
                                            + ("Debt fully cleared! 🎉" if new_balance == 0
-                                              else f"NGN {new_balance:,} remaining."))
+                                              else f"₦{new_balance:,} remaining."))
                                     st.success(msg)
                                     st.rerun()
 
@@ -804,7 +810,7 @@ def render_tracker(user_id):
         if actual_avg_monthly > 0:
             st.info(
                 f"📊 Your average monthly expenses over the last 3 months: "
-                f"**NGN {actual_avg_monthly:,}**. Used as the default below — adjust if needed."
+                f"**₦{actual_avg_monthly:,}**. Used as the default below — adjust if needed."
             )
 
         # ── Linked savings goal banner ────────────────────────────────────────
@@ -816,15 +822,15 @@ def render_tracker(user_id):
                 f'<div style="background:#e8f5f0;border-radius:10px;padding:12px 16px;'
                 f'margin-bottom:12px;border-left:4px solid #0e7c5b;">'
                 f'<strong>🔗 Linked Savings Goal:</strong> {linked_goal["name"]} &mdash; '
-                f'NGN {int(linked_goal["current_amount"]):,} saved of '
-                f'NGN {int(linked_goal["target_amount"]):,} ({g_pct:.0f}%)'
+                f'₦{int(linked_goal["current_amount"]):,} saved of '
+                f'₦{int(linked_goal["target_amount"]):,} ({g_pct:.0f}%)'
                 f'</div>',
                 unsafe_allow_html=True
             )
 
         # ── Input form ────────────────────────────────────────────────────────
         with st.form("ef_form"):
-            st.markdown("#### Step 1 — Set your target")
+            st.markdown('<div style="font-weight:700;color:#1a2e3b;font-size:0.95rem;margin:8px 0 4px;padding-bottom:4px;border-bottom:2px solid #e8f0ed;">Step 1 — Set your target</div>', unsafe_allow_html=True)
             c1, c2 = st.columns(2)
             with c1:
                 ef_months = st.slider(
@@ -843,7 +849,7 @@ def render_tracker(user_id):
                     min_value=0, step=1000, value=default_monthly
                 )
 
-            st.markdown("#### Step 2 — Where are you now?")
+            st.markdown('<div style="font-weight:700;color:#1a2e3b;font-size:0.95rem;margin:12px 0 4px;padding-bottom:4px;border-bottom:2px solid #e8f0ed;">Step 2 — Where are you now?</div>', unsafe_allow_html=True)
             # Use linked goal's current_amount if available
             default_saved = (
                 int(linked_goal["current_amount"])
@@ -856,7 +862,7 @@ def render_tracker(user_id):
                 help="Pre-filled from your linked Emergency Fund goal if one exists"
             )
 
-            st.markdown("#### Step 3 — How much can you contribute monthly?")
+            st.markdown('<div style="font-weight:700;color:#1a2e3b;font-size:0.95rem;margin:12px 0 4px;padding-bottom:4px;border-bottom:2px solid #e8f0ed;">Step 3 — Monthly contribution</div>', unsafe_allow_html=True)
             suggested = max(-(-max((ef_months * (ef_monthly or 0)) - (ef_saved or 0), 0) // 6), 1000)
             ef_contribution = st.number_input(
                 "Monthly contribution (NGN)",
@@ -894,19 +900,19 @@ def render_tracker(user_id):
             # ── Metrics ───────────────────────────────────────────────────────
             st.divider()
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric(f"Target ({_months}-month)",  f"NGN {target:,}",
-                      help=f"{_months} months × NGN {_monthly:,}")
-            c2.metric("Saved so far",  f"NGN {_saved:,}")
-            c3.metric("Still needed",  f"NGN {shortfall:,}")
+            c1.metric(f"Target ({_months}-month)",  f"₦{target:,}",
+                      help=f"{_months} months × ₦{_monthly:,}")
+            c2.metric("Saved so far",  f"₦{_saved:,}")
+            c3.metric("Still needed",  f"₦{shortfall:,}")
             if income_this_month > 0:
                 savings_pct = round(_contribution / income_this_month * 100, 1)
                 c4.metric("% of income", f"{savings_pct:.1f}%",
                           help="Monthly contribution as % of this month's income")
             else:
-                c4.metric("Monthly contribution", f"NGN {_contribution:,}")
+                c4.metric("Monthly contribution", f"₦{_contribution:,}")
 
             st.progress(pct / 100,
-                        text=f"{pct:.0f}% complete — NGN {_saved:,} of NGN {target:,}")
+                        text=f"{pct:.0f}% complete — ₦{_saved:,} of ₦{target:,}")
 
             if shortfall > 0 and _contribution > 0:
                 months_needed = math.ceil(shortfall / _contribution)
@@ -924,15 +930,15 @@ def render_tracker(user_id):
 
                 # ── Completion banner ─────────────────────────────────────────
                 st.markdown(
-                    f'<div style="background:linear-gradient(90deg,#1a3c5e,#0e7c5b);'
+                    f'<div style="background:linear-gradient(90deg,#1a2e3b,#0e7c5b);'
                     f'border-radius:12px;padding:16px 20px;margin:12px 0;color:#fff;">'
                     f'<div style="font-size:0.8rem;color:#a8d8c8;font-weight:600;'
                     f'text-transform:uppercase;letter-spacing:0.05em;">Completion estimate</div>'
                     f'<div style="font-size:1.5rem;font-weight:800;margin:4px 0;">'
                     f'{completion.strftime("%B %Y")}</div>'
                     f'<div style="font-size:0.88rem;color:#d4eee6;">'
-                    f'Save <strong>NGN {_contribution:,}/month</strong> '
-                    f'(or <strong>NGN {weekly_needed:,}/week</strong>) &rarr; '
+                    f'Save <strong>₦{_contribution:,}/month</strong> '
+                    f'(or <strong>₦{weekly_needed:,}/week</strong>) &rarr; '
                     f'fund complete in <strong>{months_needed} month'
                     f'{"s" if months_needed != 1 else ""}</strong>'
                     f'</div></div>',
@@ -952,13 +958,13 @@ def render_tracker(user_id):
                         else:
                             comp_date = comp_date.replace(month=comp_date.month + 1)
                     col.markdown(
-                        f'<div style="background:#f0f7f4;border-radius:10px;padding:14px;text-align:center;">'
-                        f'<div style="font-size:0.75rem;color:#4a6070;font-weight:600;">'
+                        f'<div style="background:#f4f7f6;border-radius:10px;padding:14px;text-align:center;">'
+                        f'<div style="font-size:0.75rem;color:#6b7f8e;font-weight:600;">'
                         f'Done in {n_months} months</div>'
-                        f'<div style="font-size:1.1rem;font-weight:800;color:#1a3c5e;">'
-                        f'NGN {mo_needed:,}/mo</div>'
+                        f'<div style="font-size:1.1rem;font-weight:800;color:#1a2e3b;">'
+                        f'₦{mo_needed:,}/mo</div>'
                         f'<div style="font-size:0.78rem;color:#0e7c5b;">'
-                        f'≈ NGN {wk_needed:,}/week</div>'
+                        f'≈ ₦{wk_needed:,}/week</div>'
                         f'<div style="font-size:0.72rem;color:#95a5a6;">by {comp_date.strftime("%b %Y")}</div>'
                         f'</div>',
                         unsafe_allow_html=True
@@ -967,7 +973,7 @@ def render_tracker(user_id):
                 st.markdown("<br>", unsafe_allow_html=True)
                 st.info(
                     f"💡 Tip: {'Link this plan to your Emergency Fund savings goal above, or create' if not linked_goal else 'Your linked savings goal is active. Also consider creating'} "
-                    f"a recurring deposit of NGN {_contribution:,}/month. "
+                    f"a recurring deposit of ₦{_contribution:,}/month. "
                     f"You'll be fully funded by **{completion.strftime('%B %Y')}**."
                 )
 
@@ -975,7 +981,7 @@ def render_tracker(user_id):
                 st.warning("Set a monthly contribution above to see your completion date.")
             else:
                 st.success(
-                    f"✅ Emergency fund target of NGN {target:,} fully covered! "
+                    f"✅ Emergency fund target of ₦{target:,} fully covered! "
                     f"Excellent financial discipline."
                 )
 
