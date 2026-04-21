@@ -18,18 +18,18 @@ def render_landing(cookies):
     st.markdown("""
     <style>
     .landing-hero {
-        background: linear-gradient(135deg, #1a2e3b 0%, #0e7c5b 100%);
+        background: linear-gradient(135deg, #1a3c5e 0%, #0e7c5b 100%);
         border-radius: 16px; padding: 48px 40px 40px 40px; text-align: center; margin-bottom: 8px;
     }
     .landing-logo { font-size: 56px; margin-bottom: 4px; display: block; }
     .landing-title { font-size: 2.6rem; font-weight: 800; color: #ffffff; margin: 0 0 6px 0; letter-spacing: -0.5px; }
     .landing-tagline { font-size: 1.1rem; color: #a8d8c8; margin: 0 0 28px 0; font-weight: 400; }
     .landing-desc { font-size: 1.05rem; color: #d4eee6; max-width: 560px; margin: 0 auto; line-height: 1.7; }
-    .feature-card { background: #f4f7f6; border-left: 4px solid #0e7c5b; border-radius: 10px; padding: 18px 20px; height: 100%; }
+    .feature-card { background: #f0f7f4; border-left: 4px solid #0e7c5b; border-radius: 10px; padding: 18px 20px; height: 100%; }
     .feature-icon { font-size: 1.8rem; }
-    .feature-title { font-weight: 700; color: #1a2e3b; font-size: 1rem; margin: 6px 0 4px 0; }
-    .feature-text  { color: #6b7f8e; font-size: 0.92rem; line-height: 1.5; }
-    .demo-card { background: #ffffff; border: 1px solid #d8eae2; border-radius: 14px; padding: 24px; margin-bottom: 4px; }
+    .feature-title { font-weight: 700; color: #1a3c5e; font-size: 1rem; margin: 6px 0 4px 0; }
+    .feature-text  { color: #4a6070; font-size: 0.92rem; line-height: 1.5; }
+    .demo-card { background: #ffffff; border: 1px solid #d0e8df; border-radius: 14px; padding: 24px; margin-bottom: 4px; }
     .demo-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #eef5f2; font-size: 0.95rem; }
     .demo-row:last-child { border-bottom: none; }
     .demo-credit { color: #0e7c5b; font-weight: 600; }
@@ -38,13 +38,13 @@ def render_landing(cookies):
     .demo-date   { color: #95a5a6; font-size: 0.82rem; }
     .badge { display: inline-block; background: #e8f5f0; color: #0e7c5b; border-radius: 20px; padding: 4px 14px; font-size: 0.82rem; font-weight: 600; margin: 4px 4px 0 0; }
     .trust-bar {
-        background: #f4f7f6; border: 1px solid #c2e0d4; border-radius: 12px;
+        background: #f0f7f4; border: 1px solid #c2e0d4; border-radius: 12px;
         padding: 18px 24px; margin: 18px 0 4px 0;
         display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; align-items: center;
     }
     .trust-item {
         display: flex; align-items: center; gap: 8px;
-        font-size: 0.92rem; color: #1a2e3b; font-weight: 600;
+        font-size: 0.92rem; color: #1a3c5e; font-weight: 600;
     }
     .trust-icon { font-size: 1.3rem; }
     .trust-divider { color: #b0cfc4; font-size: 1.2rem; }
@@ -109,9 +109,30 @@ def render_landing(cookies):
 
     with demo_col:
         st.markdown("#### &#x1F4F1; See it in action")
+
+        # ── TRY DEMO BUTTON ───────────────────────────────────────────────────
+        st.markdown("""
+        <div style="background:linear-gradient(135deg,#1a3c5e,#0e7c5b);
+                    border-radius:14px;padding:18px 20px;margin-bottom:14px;
+                    text-align:center;">
+          <div style="color:#a8d8c8;font-size:0.78rem;font-weight:700;
+                      text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">
+            No signup needed
+          </div>
+          <div style="color:#ffffff;font-size:1.05rem;font-weight:700;margin-bottom:12px;">
+            Try the app instantly with sample data
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("🚀 Try Demo — No Signup Needed",
+                     key="try_demo_btn", use_container_width=True, type="primary"):
+            st.session_state["demo_mode"] = True
+            st.rerun()
+
+        st.markdown("---")
         st.markdown("""
         <div class="demo-card">
-          <div style="font-weight:700;color:#1a2e3b;margin-bottom:12px;font-size:1rem;">
+          <div style="font-weight:700;color:#1a3c5e;margin-bottom:12px;font-size:1rem;">
             &#x1F4B3; My Dashboard &nbsp;&middot;&nbsp;
             <span style="color:#0e7c5b;">&#x20A6; 842,500 total</span>
           </div>
