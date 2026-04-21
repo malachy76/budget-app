@@ -814,7 +814,7 @@ def render_tracker(user_id):
                     SELECT id, name, target_amount, current_amount, status
                     FROM goals
                     WHERE user_id=%s AND status='active'
-                      AND LOWER(name) LIKE '%emergency%'
+                      AND LOWER(name) LIKE '%%emergency%%'
                     ORDER BY created_at LIMIT 1
                 """, (user_id,))
                 linked_goal = cursor.fetchone()
