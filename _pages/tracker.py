@@ -250,26 +250,21 @@ def render_tracker(user_id):
                 due_label, due_color = _due_badge(ri["next_due"], today)
                 col_card, col_del = st.columns([6, 0.5])
                 with col_card:
-                    last_posted = f" &middot; Last posted: {ri['last_posted_at']}" if ri.get("last_posted_at") else ""
-                    st.markdown(f"""
-                    <div class="exp-card" style="border-left-color:#0e7c5b;">
-                      <div class="exp-card-left">
-                        <div class="exp-card-name">{ri['name']}</div>
-                        <div class="exp-card-bank">
-                          {FREQ_LABELS.get(ri['frequency'], 'Monthly')}
-                          {f" &rarr; {ri['bank_name']}" if ri.get('bank_name') else ""}
-                          {"&nbsp;<em style='font-size:0.75rem;'>auto-post</em>" if ri['auto_post'] else ""}
-                          {last_posted}
-                        </div>
-                        <div class="exp-card-date" style="color:{due_color};">
-                          {due_label} &mdash; {ri['next_due'] or 'No date'}
-                        </div>
-                      </div>
-                      <div class="exp-card-right">
-                        <div class="exp-card-amount" style="color:#0e7c5b;">+₦{ri['amount']:,}</div>
-                      </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    last_html = (" &middot; Last posted: " + str(ri["last_posted_at"])) if ri.get("last_posted_at") else ""
+                    bank_html = (" &rarr; " + str(ri["bank_name"])) if ri.get("bank_name") else ""
+                    auto_html = "&nbsp;<em style='font-size:0.75rem;'>auto-post</em>" if ri["auto_post"] else ""
+                    freq_label = FREQ_LABELS.get(ri["frequency"], "Monthly")
+                    amount_fmt = "{:,}".format(ri["amount"])
+                    next_due_str = str(ri["next_due"]) if ri["next_due"] else "No date"
+                    card_html = ('<div class="exp-card" style="border-left-color:#0e7c5b;">' +
+                        '<div class="exp-card-left">' +
+                        '<div class="exp-card-name">' + str(ri["name"]) + '</div>' +
+                        '<div class="exp-card-bank">' + freq_label + bank_html + auto_html + last_html + '</div>' +
+                        '<div class="exp-card-date" style="color:' + due_color + ';">' + due_label + ' &mdash; ' + next_due_str + '</div>' +
+                        '</div>' +
+                        '<div class="exp-card-right"><div class="exp-card-amount" style="color:#0e7c5b;">+₦' + amount_fmt + '</div></div>' +
+                        '</div>')
+                    st.markdown(card_html, unsafe_allow_html=True)
                 with col_del:
                     dk = f"ri_{ri['id']}"
                     if st.session_state.confirm_delete.get(dk):
@@ -359,36 +354,25 @@ def render_tracker(user_id):
                 due_label, due_color = _due_badge(re["next_due"], today)
                 col_card, col_del = st.columns([6, 0.5])
                 with col_card:
-                    cat_badge = (
-                        f'<span style="background:#e8f5f0;color:#0e7c5b;border-radius:10px;'
-                        f'padding:1px 8px;font-size:0.75rem;font-weight:600;margin-left:6px;">'
-                        f'{re["category"]}</span>'
-                        if re.get("category") else ""
-                    )
+                    cat_badge = ('<span style="background:#e8f5f0;color:#0e7c5b;border-radius:10px;padding:1px 8px;font-size:0.75rem;font-weight:600;margin-left:6px;">' + str(re["category"]) + '</span>') if re.get("category") else ""
                     flags = []
-                    if re["auto_post"]:    flags.append("<em>auto-post</em>")
+                    if re["auto_post"]: flags.append("<em>auto-post</em>")
                     if re["allow_overdraft"]: flags.append("<em>overdraft ✓</em>")
-                    flags_str = " &middot; ".join(flags)
-                    last_posted = f" &middot; Last posted: {re['last_posted_at']}" if re.get("last_posted_at") else ""
-                    st.markdown(f"""
-                    <div class="exp-card">
-                      <div class="exp-card-left">
-                        <div class="exp-card-name">{re['name']}{cat_badge}</div>
-                        <div class="exp-card-bank">
-                          {FREQ_LABELS.get(re['frequency'], 'Monthly')}
-                          {f" &rarr; {re['bank_name']}" if re.get('bank_name') else ""}
-                          {(" &middot; " + flags_str) if flags_str else ""}
-                          {last_posted}
-                        </div>
-                        <div class="exp-card-date" style="color:{due_color};">
-                          {due_label} &mdash; {re['next_due'] or 'No date'}
-                        </div>
-                      </div>
-                      <div class="exp-card-right">
-                        <div class="exp-card-amount">-₦{re['amount']:,}</div>
-                      </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    flags_html = (" &middot; " + " &middot; ".join(flags)) if flags else ""
+                    bank_html = (" &rarr; " + str(re["bank_name"])) if re.get("bank_name") else ""
+                    last_html = (" &middot; Last posted: " + str(re["last_posted_at"])) if re.get("last_posted_at") else ""
+                    freq_label = FREQ_LABELS.get(re["frequency"], "Monthly")
+                    amount_fmt = "{:,}".format(re["amount"])
+                    next_due_str = str(re["next_due"]) if re["next_due"] else "No date"
+                    card_html = ('<div class="exp-card">' +
+                        '<div class="exp-card-left">' +
+                        '<div class="exp-card-name">' + str(re["name"]) + cat_badge + '</div>' +
+                        '<div class="exp-card-bank">' + freq_label + bank_html + flags_html + last_html + '</div>' +
+                        '<div class="exp-card-date" style="color:' + due_color + ';">' + due_label + ' &mdash; ' + next_due_str + '</div>' +
+                        '</div>' +
+                        '<div class="exp-card-right"><div class="exp-card-amount">-₦' + amount_fmt + '</div></div>' +
+                        '</div>')
+                    st.markdown(card_html, unsafe_allow_html=True)
                 with col_del:
                     dk = f"re_{re['id']}"
                     if st.session_state.confirm_delete.get(dk):
@@ -445,23 +429,18 @@ def render_tracker(user_id):
                 label  = (f"Overdue {abs(days)}d" if days < 0
                           else "Due today" if days == 0 else f"Due in {days}d")
                 auto_tag = " <em style='font-size:0.72rem;color:#888;'>auto</em>" if r.get("auto_post") else ""
-                st.markdown(f"""
-                <div class="exp-card" style="border-left-color:{color};">
-                  <div class="exp-card-left">
-                    <div class="exp-card-name">{icon} {r['name']}{auto_tag}</div>
-                    <div class="exp-card-bank">
-                      {FREQ_LABELS.get(r['frequency'],'')}
-                      {f" &rarr; {r['bank_name']}" if r.get('bank_name') else ""}
-                    </div>
-                    <div class="exp-card-date">{label} &mdash; {r['next_due']}</div>
-                  </div>
-                  <div class="exp-card-right">
-                    <div class="exp-card-amount" style="color:{color};">
-                      {sign}₦{r['amount']:,}
-                    </div>
-                  </div>
-                </div>
-                """, unsafe_allow_html=True)
+                bank_html = (" &rarr; " + str(r["bank_name"])) if r.get("bank_name") else ""
+                freq_html = FREQ_LABELS.get(r["frequency"], "")
+                amount_fmt = "{:,}".format(r["amount"])
+                bill_html = ('<div class="exp-card" style="border-left-color:' + color + ';">' +
+                    '<div class="exp-card-left">' +
+                    '<div class="exp-card-name">' + icon + " " + str(r["name"]) + auto_tag + '</div>' +
+                    '<div class="exp-card-bank">' + freq_html + bank_html + '</div>' +
+                    '<div class="exp-card-date">' + label + ' &mdash; ' + str(r["next_due"]) + '</div>' +
+                    '</div>' +
+                    '<div class="exp-card-right"><div class="exp-card-amount" style="color:' + color + ';">' + sign + '₦' + amount_fmt + '</div></div>' +
+                    '</div>')
+                st.markdown(bill_html, unsafe_allow_html=True)
 
             if overdue:
                 st.markdown('<div style="font-weight:700;color:#c0392b;font-size:0.85rem;text-transform:uppercase;letter-spacing:0.05em;margin:10px 0 6px;">🔴 Overdue</div>', unsafe_allow_html=True)
@@ -635,31 +614,24 @@ def render_tracker(user_id):
 
                 col_card, col_act = st.columns([5, 1])
                 with col_card:
-                    st.markdown(f"""
-                    <div class="exp-card" style="border-left-color:{color};">
-                      <div class="exp-card-left" style="width:100%;">
-                        <div class="exp-card-name">
-                          {direction}: {d['name']} {status_badge} {cat_badge}
-                        </div>
-                        <div class="exp-card-bank">
-                          {f"{d['counterparty']} &middot; " if d.get('counterparty') else ""}
-                          {f"{d['interest_rate']:.1f}% p.a." if d['interest_rate'] else "0% interest"}
-                          {f" &middot; {payoff_str}" if payoff_str else ""}
-                        </div>
-                        <div class="exp-card-date">
-                          Due: {d['due_date'] or 'Not set'}
-                          {f" &middot; {clean_notes}" if clean_notes else ""}
-                        </div>
-                        {progress_html}
-                      </div>
-                      <div class="exp-card-right">
-                        <div class="exp-card-amount" style="color:{color};">
-                          ₦{balance:,}
-                        </div>
-                        <div style="font-size:0.72rem;color:#95a5a6;">remaining</div>
-                      </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    counterparty_html = (str(d["counterparty"]) + " &middot; ") if d.get("counterparty") else ""
+                    rate_html = ("{:.1f}% p.a.".format(d["interest_rate"])) if d["interest_rate"] else "0% interest"
+                    payoff_html = (" &middot; " + payoff_str) if payoff_str else ""
+                    due_html = "Due: " + (str(d["due_date"]) if d["due_date"] else "Not set")
+                    notes_html = (" &middot; " + clean_notes) if clean_notes else ""
+                    balance_fmt = "{:,}".format(balance)
+                    debt_card_html = ('<div class="exp-card" style="border-left-color:' + color + ';">' +
+                        '<div class="exp-card-left" style="width:100%;">' +
+                        '<div class="exp-card-name">' + direction + ": " + str(d["name"]) + " " + status_badge + " " + cat_badge + '</div>' +
+                        '<div class="exp-card-bank">' + counterparty_html + rate_html + payoff_html + '</div>' +
+                        '<div class="exp-card-date">' + due_html + notes_html + '</div>' +
+                        progress_html +
+                        '</div>' +
+                        '<div class="exp-card-right">' +
+                        '<div class="exp-card-amount" style="color:' + color + ';">' + "₦" + balance_fmt + '</div>' +
+                        '<div style="font-size:0.72rem;color:#95a5a6;">remaining</div>' +
+                        '</div></div>')
+                    st.markdown(debt_card_html, unsafe_allow_html=True)
 
                     # ── Payment history inline ────────────────────────────────
                     debt_pmts = payments_by_debt.get(d["id"], [])
