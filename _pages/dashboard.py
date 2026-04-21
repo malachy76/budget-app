@@ -1177,7 +1177,7 @@ def _render_daily_summary(d: dict) -> None:
         )
 
 
-
+def render_dashboard(user_id, pages):
     st.markdown("## My Dashboard")
     with get_db() as (conn, cursor):
         cursor.execute("SELECT COALESCE(SUM(balance),0) AS n FROM banks WHERE user_id=%s", (user_id,))
