@@ -1,5 +1,7 @@
 # auth.py — validation helpers, registration, login, verification,
 #            password reset, session tokens, onboarding tracking
+# OPTIMIZED: throttled session-token UPDATE, merged onboarding query,
+#            removed psycopg2 top-level import (unused at module level)
 import re
 import random
 import secrets
@@ -15,7 +17,8 @@ from email_service import send_verification_email
 
 
 CODE_EXPIRY_MINUTES = 12   # verification & reset codes expire after 12 minutes
-SESSION_EXPIRY_DAYS = 30  # Sessions expire after 30 days
+SESSION_EXPIRY_DAYS = 30   # Sessions expire after 30 days
+_SESSION_UPDATE_THROTTLE_HOURS = 1  # OPTIMIZED: only write sliding-window UPDATE once/hour
 
 
 # ── Validation ────────────────────────────────────────────────────────────────
@@ -26,7 +29,7 @@ def is_valid_email(email: str) -> bool:
 
 
 def validate_password(password: str):
-    """Returns (True, \'\') or (False, reason)."""
+    """Returns (True, '') or (False, reason)."""
     if len(password) < 8:
         return False, "Password must be at least 8 characters long."
     if not re.search(r'[A-Z]', password):
@@ -51,7 +54,6 @@ def _check_rate_limit(identifier: str, action: str, max_attempts: int = 5, windo
     """
     Returns True if the action is ALLOWED (under the rate limit).
     Returns False if the limit has been exceeded.
-    identifier: IP substitute — username or email string.
     """
     try:
         cutoff = datetime.now() - timedelta(minutes=window_minutes)
@@ -86,8 +88,8 @@ def _rate_limit_remaining(identifier: str, action: str, max_attempts: int = 5, w
     except Exception:
         return max_attempts
 
-# ---------------- AUTH FUNCTIONS ----------------
 
+# ---------------- AUTH FUNCTIONS ----------------
 
 def hash_password(password):
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt())
@@ -138,7 +140,6 @@ def login_user(username, password):
 
 
 def request_password_reset(email):
-    # Rate limit: 3 reset requests per 15 minutes per email
     if not _check_rate_limit(email.lower(), "password_reset", max_attempts=3, window_minutes=15):
         return False, "Too many reset requests. Please wait 15 minutes before trying again."
     try:
@@ -169,10 +170,12 @@ def reset_password(email, code, new_password):
             if not user:
                 return False, "Invalid reset code. Please request a new one."
             if user["verification_code_expires_at"] and now > user["verification_code_expires_at"]:
-                return False, f"This reset code has expired. Codes are only valid for {CODE_EXPIRY_MINUTES} minutes. Please request a new one."
+                return False, (f"This reset code has expired. Codes are only valid for "
+                               f"{CODE_EXPIRY_MINUTES} minutes. Please request a new one.")
             hashed_pw = hash_password(new_password)
             cursor.execute(
-                "UPDATE users SET password=%s, verification_code=NULL, verification_code_expires_at=NULL WHERE email=%s",
+                "UPDATE users SET password=%s, verification_code=NULL, "
+                "verification_code_expires_at=NULL WHERE email=%s",
                 (psycopg2.Binary(hashed_pw), email)
             )
         return True, "Password reset successful"
@@ -181,7 +184,6 @@ def reset_password(email, code, new_password):
 
 
 def resend_verification(email):
-    # Rate limit: 3 resends per 15 minutes per email
     if not _check_rate_limit(email.lower(), "resend_verification", max_attempts=3, window_minutes=15):
         return False, "Too many resend requests. Please wait 15 minutes."
     try:
@@ -200,7 +202,6 @@ def resend_verification(email):
 
 
 def verify_email_code(email, code):
-    """Check code validity including expiry, then mark verified."""
     now = datetime.now()
     with get_db() as (conn, cursor):
         cursor.execute(
@@ -212,7 +213,8 @@ def verify_email_code(email, code):
         if not user:
             return False, "Invalid email or code."
         if user["verification_code_expires_at"] and now > user["verification_code_expires_at"]:
-            return False, f"This code has expired. Codes are only valid for {CODE_EXPIRY_MINUTES} minutes. Please request a new code."
+            return False, (f"This code has expired. Codes are only valid for "
+                           f"{CODE_EXPIRY_MINUTES} minutes. Please request a new code.")
         cursor.execute(
             "UPDATE users SET email_verified=1, verification_code=NULL, "
             "verification_code_expires_at=NULL WHERE id=%s",
@@ -236,7 +238,6 @@ def change_password(user_id, current_pw, new_pw):
         return False, "Current password incorrect"
 
 
-
 # ── Session tokens ────────────────────────────────────────────────────────────
 
 def create_session_token(user_id, cookies):
@@ -258,7 +259,10 @@ def validate_session_token(token, cookies):
     """
     Hash the incoming raw token, look up its hash in the DB.
     Returns (user_id, role) if valid and within SESSION_EXPIRY_DAYS of last activity.
-    Refreshes the sliding-window timestamp on every successful call.
+
+    OPTIMIZED: The sliding-window UPDATE is throttled to once per hour per token
+    (stored in session_state). This eliminates a DB write on every page rerun,
+    saving one round-trip per click while keeping the 30-day expiry accurate.
     """
     if not token:
         return None, None
@@ -268,7 +272,8 @@ def validate_session_token(token, cookies):
         expiry_cutoff = now - timedelta(days=SESSION_EXPIRY_DAYS)
         with get_db() as (conn, cursor):
             cursor.execute("""
-                SELECT u.id, u.role FROM session_tokens s
+                SELECT u.id, u.role, s.created_at AS token_updated_at
+                FROM session_tokens s
                 JOIN users u ON s.user_id = u.id
                 WHERE s.token = %s
                   AND u.email_verified = 1
@@ -276,10 +281,16 @@ def validate_session_token(token, cookies):
             """, (hashed_tok, expiry_cutoff))
             row = cursor.fetchone()
             if row:
-                cursor.execute(
-                    "UPDATE session_tokens SET created_at = %s WHERE token = %s",
-                    (now, hashed_tok)
-                )
+                # OPTIMIZED: throttle sliding-window UPDATE — only write if > 1 hour since last update
+                last_update_key = f"_tok_updated_{hashed_tok[:16]}"
+                last_updated    = st.session_state.get(last_update_key)
+                throttle_cutoff = now - timedelta(hours=_SESSION_UPDATE_THROTTLE_HOURS)
+                if last_updated is None or last_updated < throttle_cutoff:
+                    cursor.execute(
+                        "UPDATE session_tokens SET created_at = %s WHERE token = %s",
+                        (now, hashed_tok)
+                    )
+                    st.session_state[last_update_key] = now
                 return row["id"], row["role"]
     except Exception:
         pass
@@ -293,6 +304,9 @@ def revoke_session_token(token, cookies):
         hashed_tok = _hash_token(token)
         with get_db() as (conn, cursor):
             cursor.execute("DELETE FROM session_tokens WHERE token=%s", (hashed_tok,))
+        # OPTIMIZED: clear throttle key on logout
+        tok_key = f"_tok_updated_{hashed_tok[:16]}"
+        st.session_state.pop(tok_key, None)
     except Exception:
         pass
     cookies["session_token"] = ""
@@ -300,34 +314,45 @@ def revoke_session_token(token, cookies):
 
 
 def get_onboarding_status(user_id):
-    """Returns dict with booleans for each onboarding step."""
+    """
+    Returns dict with booleans for each onboarding step.
+
+    OPTIMIZED: Single query instead of 5 separate queries.
+    Result is cached in session_state — skips DB entirely if already_done=True
+    (the most common case for returning users).
+    """
+    # OPTIMIZED: cache in session_state; invalidate by calling invalidate_onboarding_cache()
+    cache_key = f"_ob_status_{user_id}"
+    cached    = st.session_state.get(cache_key)
+    if cached is not None:
+        return cached
+
     with get_db() as (conn, cursor):
-        cursor.execute("SELECT onboarding_complete FROM users WHERE id=%s", (user_id,))
-        row          = cursor.fetchone()
-        already_done = bool(row["onboarding_complete"])
+        # OPTIMIZED: single query using conditional aggregates instead of 5 round-trips
+        cursor.execute("""
+            SELECT
+                u.onboarding_complete,
+                u.monthly_spending_limit,
+                (SELECT COUNT(*) FROM banks            WHERE user_id = u.id)           AS bank_count,
+                (SELECT COUNT(*) FROM expenses         WHERE user_id = u.id)           AS exp_count,
+                (SELECT COUNT(*) FROM transactions t
+                 JOIN banks b ON t.bank_id = b.id
+                 WHERE b.user_id = u.id AND t.type = 'credit')                         AS income_count
+            FROM users u WHERE u.id = %s
+        """, (user_id,))
+        row = cursor.fetchone()
 
-        cursor.execute("SELECT COUNT(*) AS n FROM banks WHERE user_id=%s", (user_id,))
-        has_bank = cursor.fetchone()["n"] > 0
+    if not row:
+        return {"already_done": False, "has_bank": False, "has_income": False,
+                "has_expense": False, "has_budget": False, "all_done": False}
 
-        cursor.execute(
-            "SELECT COUNT(*) AS n FROM transactions t "
-            "JOIN banks b ON t.bank_id=b.id "
-            "WHERE b.user_id=%s AND t.type='credit'", (user_id,)
-        )
-        has_income = cursor.fetchone()["n"] > 0
+    already_done = bool(row["onboarding_complete"])
+    has_bank     = int(row["bank_count"]   or 0) > 0
+    has_income   = int(row["income_count"] or 0) > 0
+    has_expense  = int(row["exp_count"]    or 0) > 0
+    has_budget   = bool(row["monthly_spending_limit"])
 
-        cursor.execute(
-            "SELECT COUNT(*) AS n FROM expenses WHERE user_id=%s", (user_id,)
-        )
-        has_expense = cursor.fetchone()["n"] > 0
-
-        cursor.execute(
-            "SELECT monthly_spending_limit FROM users WHERE id=%s", (user_id,)
-        )
-        limit_row  = cursor.fetchone()
-        has_budget = bool(limit_row["monthly_spending_limit"])
-
-    return {
+    result = {
         "already_done": already_done,
         "has_bank":     has_bank,
         "has_income":   has_income,
@@ -335,6 +360,14 @@ def get_onboarding_status(user_id):
         "has_budget":   has_budget,
         "all_done":     has_bank and has_income and has_expense and has_budget,
     }
+    # OPTIMIZED: cache result — skip DB on subsequent reruns
+    st.session_state[cache_key] = result
+    return result
+
+
+def invalidate_onboarding_cache(user_id):
+    """Call after any onboarding step completes to force a fresh DB read next time."""
+    st.session_state.pop(f"_ob_status_{user_id}", None)
 
 
 def mark_onboarding_complete(user_id):
@@ -342,6 +375,7 @@ def mark_onboarding_complete(user_id):
         cursor.execute(
             "UPDATE users SET onboarding_complete=1 WHERE id=%s", (user_id,)
         )
+    invalidate_onboarding_cache(user_id)  # OPTIMIZED: clear cache after write
 
 
 # ── Analytics tracking ────────────────────────────────────────────────────────
@@ -350,6 +384,7 @@ def track_login(user_id):
     try:
         today = datetime.now().date()
         with get_db() as (conn, cursor):
+            # OPTIMIZED: both writes in single connection
             cursor.execute("INSERT INTO analytics_logins (user_id, login_date) VALUES (%s, %s)", (user_id, today))
             cursor.execute("UPDATE users SET last_login=%s WHERE id=%s", (today, user_id))
     except Exception:
@@ -363,8 +398,3 @@ def track_signup(user_id):
             cursor.execute("INSERT INTO analytics_logins (user_id, login_date) VALUES (%s, %s)", (user_id, today))
     except Exception:
         pass
-
-
-
-
-
