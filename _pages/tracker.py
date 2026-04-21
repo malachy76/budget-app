@@ -47,84 +47,104 @@ def _run_auto_posting(user_id: int, today) -> list:
     Returns a list of result strings for display.
 
     Rules:
-    - allow_overdraft=0 (default): only post if bank has sufficient balance
+    - allow_overdraft=0: only post if bank has sufficient balance
     - allow_overdraft=1: post even if balance goes negative
-    - After posting, advance next_due to the next cycle
-    - If bank_id is NULL, skip auto-posting (no bank selected)
+    - Each item uses a savepoint so one failure never cancels others
+    - If bank_id is NULL, skip (no bank linked)
     """
     results = []
-    with get_db() as (conn, cursor):
-        # Load all due auto-post items
-        cursor.execute("""
-            SELECT r.id, r.type, r.name, r.category, r.amount, r.frequency,
-                   r.next_due, r.bank_id, r.allow_overdraft,
-                   b.balance, b.bank_name
-            FROM recurring_items r
-            LEFT JOIN banks b ON r.bank_id = b.id
-            WHERE r.user_id = %s
-              AND r.auto_post = 1
-              AND r.active = 1
-              AND r.next_due IS NOT NULL
-              AND r.next_due <= %s
-        """, (user_id, today))
-        due_items = cursor.fetchall()
+    try:
+        with get_db() as (conn, cursor):
+            # Load all due auto-post items in one query
+            cursor.execute("""
+                SELECT r.id, r.type, r.name, r.category, r.amount, r.frequency,
+                       r.next_due, r.bank_id, r.allow_overdraft,
+                       b.balance, b.bank_name
+                FROM recurring_items r
+                LEFT JOIN banks b ON r.bank_id = b.id
+                WHERE r.user_id = %s
+                  AND r.auto_post = 1
+                  AND r.active = 1
+                  AND r.next_due IS NOT NULL
+                  AND r.next_due <= %s
+            """, (user_id, today))
+            due_items = cursor.fetchall()
 
-        for item in due_items:
-            # Must have a linked bank for auto-posting
-            if not item["bank_id"]:
-                continue
-
-            bank_balance    = int(item["balance"] or 0)
-            amount          = int(item["amount"])
-            allow_overdraft = bool(item["allow_overdraft"])
-            item_type       = item["type"]  # 'income' or 'expense'
-
-            # Check funds (only relevant for expenses)
-            if item_type == "expense":
-                if bank_balance < amount and not allow_overdraft:
-                    results.append(
-                        f"⚠️ **{item['name']}** — Skipped (insufficient funds: "
-                        f"₦{bank_balance:,} available, ₦{amount:,} needed)"
-                    )
+            for item in due_items:
+                if not item["bank_id"]:
+                    results.append(f"⚠️ **{item['name']}** — Skipped (no bank linked)")
                     continue
 
-            # ── Post the transaction ──────────────────────────────────────────
-            tx_type      = "credit" if item_type == "income" else "debit"
-            description  = f"Auto-posted: {item['name']}"
-            balance_delta = amount if item_type == "income" else -amount
+                try:
+                    cursor.execute("SAVEPOINT ap_item")
 
-            cursor.execute("""
-                INSERT INTO transactions (bank_id, type, amount, description, created_at)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (item["bank_id"], tx_type, amount, description, today))
+                    # Re-fetch live balance with row lock
+                    cursor.execute(
+                        "SELECT balance FROM banks WHERE id = %s FOR UPDATE",
+                        (item["bank_id"],)
+                    )
+                    bank_row     = cursor.fetchone()
+                    bank_balance = int(bank_row["balance"] or 0) if bank_row else 0
+                    amount       = int(item["amount"])
+                    allow_od     = bool(item["allow_overdraft"])
+                    item_type    = item["type"]
 
-            # For expenses also create an expense record
-            if item_type == "expense":
-                cursor.execute("""
-                    INSERT INTO expenses (user_id, bank_id, name, category, amount, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                """, (user_id, item["bank_id"], item["name"],
-                      item.get("category") or item["name"], amount, today))
+                    if item_type == "expense" and bank_balance < amount and not allow_od:
+                        cursor.execute("ROLLBACK TO SAVEPOINT ap_item")
+                        results.append(
+                            f"⚠️ **{item['name']}** — Skipped (insufficient funds: "
+                            f"₦{bank_balance:,} available, ₦{amount:,} needed)"
+                        )
+                        continue
 
-            # Update bank balance
-            cursor.execute(
-                "UPDATE banks SET balance = balance + %s WHERE id = %s",
-                (balance_delta, item["bank_id"])
-            )
+                    tx_type       = "credit" if item_type == "income" else "debit"
+                    balance_delta = amount if item_type == "income" else -amount
 
-            # Advance next_due and record last_posted_at
-            new_next_due = _next_due(item["frequency"], today)
-            cursor.execute("""
-                UPDATE recurring_items
-                SET next_due = %s, last_posted_at = %s
-                WHERE id = %s AND user_id = %s
-            """, (new_next_due, today, item["id"], user_id))
+                    cursor.execute("""
+                        INSERT INTO transactions (bank_id, type, amount, description, created_at)
+                        VALUES (%s, %s, %s, %s, %s)
+                    """, (item["bank_id"], tx_type, amount,
+                          f"Auto-posted: {item['name']}", today))
 
-            sign   = "+" if item_type == "income" else "-"
-            results.append(
-                f"✅ **{item['name']}** — {sign}₦{amount:,} posted to "
-                f"{item['bank_name']}. Next due: {new_next_due}"
-            )
+                    if item_type == "expense":
+                        cursor.execute("""
+                            INSERT INTO expenses
+                                (user_id, bank_id, name, category, amount, created_at)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                        """, (user_id, item["bank_id"], item["name"],
+                              item.get("category") or item["name"], amount, today))
+
+                    cursor.execute(
+                        "UPDATE banks SET balance = balance + %s WHERE id = %s",
+                        (balance_delta, item["bank_id"])
+                    )
+
+                    new_next_due = _next_due(item["frequency"], today)
+                    cursor.execute("""
+                        UPDATE recurring_items
+                        SET next_due = %s, last_posted_at = %s
+                        WHERE id = %s AND user_id = %s
+                    """, (new_next_due, today, item["id"], user_id))
+
+                    cursor.execute("RELEASE SAVEPOINT ap_item")
+
+                    sign = "+" if item_type == "income" else "-"
+                    results.append(
+                        f"✅ **{item['name']}** — {sign}₦{amount:,} posted to "
+                        f"{item['bank_name']}. Next due: {new_next_due}"
+                    )
+
+                except Exception as item_err:
+                    try:
+                        cursor.execute("ROLLBACK TO SAVEPOINT ap_item")
+                    except Exception:
+                        pass
+                    results.append(
+                        f"❌ **{item['name']}** — Error: {str(item_err)[:80]}"
+                    )
+
+    except Exception as e:
+        results.append(f"❌ Auto-posting failed: {str(e)[:100]}")
 
     return results
 
@@ -538,15 +558,13 @@ def render_tracker(user_id):
 
             # Load all payment history in one query
             if debts:
-                debt_ids  = tuple(d["id"] for d in debts)
-                ph_clause = "IN %s" if len(debt_ids) > 1 else "= %s"
-                ph_param  = (debt_ids,) if len(debt_ids) > 1 else (debt_ids[0],)
-                cursor.execute(f"""
+                debt_ids = [d["id"] for d in debts]
+                cursor.execute("""
                     SELECT debt_id, amount, payment_date, note
                     FROM debt_payments
-                    WHERE debt_id {ph_clause}
+                    WHERE debt_id = ANY(%s)
                     ORDER BY payment_date DESC, created_at DESC
-                """, ph_param)
+                """, (debt_ids,))
                 all_payments = cursor.fetchall()
             else:
                 all_payments = []
