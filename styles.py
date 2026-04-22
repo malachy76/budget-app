@@ -103,6 +103,46 @@ div[data-baseweb="select"] > div:first-child:focus-within {
     border-color: #0e7c5b !important;
     box-shadow: 0 0 0 2px rgba(14,124,91,0.12) !important;
 }
+/* Force dark text inside every input so typed text is always visible */
+div[data-baseweb="input"] input,
+div[data-baseweb="textarea"] textarea,
+div[data-baseweb="select"] [data-testid="stSelectboxValue"],
+div[data-baseweb="select"] span,
+input[type="text"],
+input[type="number"],
+input[type="email"],
+input[type="password"],
+textarea,
+.stTextInput input,
+.stNumberInput input,
+.stTextArea textarea,
+.stDateInput input,
+.stTimeInput input {
+    color: #1a2e3b !important;
+    -webkit-text-fill-color: #1a2e3b !important;
+    caret-color: #1a2e3b !important;
+    opacity: 1 !important;
+}
+/* Placeholder — muted but readable */
+div[data-baseweb="input"] input::placeholder,
+div[data-baseweb="textarea"] textarea::placeholder,
+.stTextInput input::placeholder,
+.stNumberInput input::placeholder,
+.stTextArea textarea::placeholder {
+    color: #8aa5b0 !important;
+    -webkit-text-fill-color: #8aa5b0 !important;
+    opacity: 1 !important;
+}
+/* Select dropdown value */
+div[data-baseweb="select"] [data-testid="stSelectboxValue"],
+div[data-baseweb="select"] > div > div > div {
+    color: #1a2e3b !important;
+}
+/* Number input spinner buttons */
+div[data-testid="stNumberInput"] button {
+    color: #1a2e3b !important;
+    background: #eef5f2 !important;
+}
 
 /* ══════════════════════════════════════════════
    METRICS — premium card style
