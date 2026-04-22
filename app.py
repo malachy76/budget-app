@@ -45,12 +45,10 @@ from datetime  import datetime
 
 inject_styles()
 
-# ── create_tables only once per process, not on every page load ───────────────
-# Streamlit re-runs app.py on every interaction, so we gate this with
-# session_state to avoid 30 SQL statements per click.
-if "tables_created" not in st.session_state:
-    create_tables()
-    st.session_state["tables_created"] = True
+# create_tables is decorated with @st.cache_resource — runs once per server
+# process regardless of how many users or reruns. Zero cost on every call after
+# the first because Streamlit returns the cached result immediately.
+create_tables()
 
 # ── Session state defaults ────────────────────────────────────────────────────
 _DEFAULTS = {
