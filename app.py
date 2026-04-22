@@ -7,13 +7,12 @@ st.set_page_config(
     page_title="Budget Right",
     page_icon="\U0001f4b0",
     layout="wide",
-    # "auto" collapses sidebar on mobile, keeps it open on desktop
-    initial_sidebar_state="auto",
+    # Disable Streamlit's built-in multipage navigation entirely
+    initial_sidebar_state="expanded",
 )
 
 # ── Hide Streamlit's auto-generated multipage nav (belt + suspenders) ─────────
 st.markdown("""
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
 <style>
 /* Hide any auto-generated multipage nav Streamlit adds above the sidebar */
 [data-testid="stSidebarNav"] { display: none !important; }
@@ -423,103 +422,6 @@ if not _ob["already_done"]:
                 st.rerun()
 
         st.divider()
-
-# ── Mobile bottom nav bar ─────────────────────────────────────────────────────
-# Visible only on mobile (CSS hides .mob-nav on desktop > 768px).
-# Tapping a nav item sets nav_radio in session state and reruns.
-_mob_pages = [
-    ("Dashboard",     "📊"),
-    ("Expenses",      "🧾"),
-    ("Income",        "💰"),
-    ("Transfers",     "🔄"),
-    ("Savings Goals", "🎯"),
-]
-_page_to_idx = {p: i for i, p in enumerate(pages)}
-
-# Render 5 columns as tap targets — hidden on desktop via CSS
-_mob_cols = st.columns(len(_mob_pages))
-for _ci, (_mp, _icon) in enumerate(_mob_pages):
-    with _mob_cols[_ci]:
-        _is_active = current_page == _mp
-        _btn_style = (
-            "background:#4dd6a3;color:#0f2540;" if _is_active
-            else "background:#0f2540;color:#7aa8c4;"
-        )
-        if st.button(
-            f"{_icon}\n{_mp.split()[0]}",
-            key=f"mob_nav_{_mp}",
-            use_container_width=True,
-            help=_mp,
-        ):
-            _new_idx = _page_to_idx.get(_mp, 0)
-            st.session_state["nav_radio"] = _new_idx
-            st.rerun()
-
-# Style those buttons as a fixed bottom bar on mobile
-st.markdown("""
-<style>
-/* Hide the mobile nav columns on desktop */
-@media screen and (min-width: 769px) {
-    div[data-testid="mob-nav-bar"] { display: none !important; }
-}
-</style>
-""", unsafe_allow_html=True)
-
-# Wrap the last N buttons in a fixed bar using CSS class targeting
-# We use a sentinel marker div to locate them
-st.markdown("""
-<style>
-/* Target the 5-column button row that acts as mobile nav */
-.mob-nav-bar-container {
-    position: fixed !important;
-    bottom: 0 !important; left: 0 !important; right: 0 !important;
-    z-index: 9998 !important;
-    background: #0f2540 !important;
-    border-top: 1.5px solid #1e4a7a !important;
-    box-shadow: 0 -3px 14px rgba(0,0,0,0.3) !important;
-    display: none !important;
-}
-@media screen and (max-width: 768px) {
-    .mob-nav-bar-container { display: flex !important; }
-    .mob-nav-bar-container .stButton > button {
-        border-radius: 0 !important;
-        min-height: 58px !important;
-        font-size: 0.62rem !important;
-        font-weight: 700 !important;
-        letter-spacing: 0.03em !important;
-        padding: 4px 2px !important;
-        white-space: pre-line !important;
-        line-height: 1.2 !important;
-        border: none !important;
-        box-shadow: none !important;
-        margin: 0 !important;
-        width: 100% !important;
-        color: #a8d8c8 !important;
-        background: transparent !important;
-    }
-    .mob-nav-bar-container .stButton > button:active {
-        background: rgba(77,214,163,0.15) !important;
-        color: #4dd6a3 !important;
-    }
-}
-</style>
-<script>
-// Wrap the last column-group (mobile nav buttons) in a fixed bar
-(function wrap() {
-    // Find all stHorizontalBlock groups with exactly 5 stButton children tagged mob_nav_
-    var allBlocks = document.querySelectorAll('[data-testid="stHorizontalBlock"]');
-    allBlocks.forEach(function(block) {
-        var btns = block.querySelectorAll('button[kind]');
-        if (btns.length === 5 && btns[0] && btns[0].textContent.includes('📊')) {
-            if (!block.classList.contains('mob-nav-bar-container')) {
-                block.classList.add('mob-nav-bar-container');
-            }
-        }
-    });
-    setTimeout(wrap, 800);
-})();
-</script>
-""", unsafe_allow_html=True)
 
 # ── Page routing ──────────────────────────────────────────────────────────────
 if current_page == "Admin Panel":
