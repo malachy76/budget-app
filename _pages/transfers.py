@@ -44,37 +44,43 @@ def render_transfers(user_id):
 
                 try:
                     with get_db() as (conn, cursor):
-                        # Read live balance inside the same transaction
-                        cursor.execute(
-                            "SELECT balance FROM banks WHERE id = %s",
-                            (from_id,)
-                        )
-                        row = cursor.fetchone()
-                        live_balance = int(row["balance"]) if row else 0
+                        # Single atomic UPDATE with balance check built in.
+                        # Returns the new balance only if funds were sufficient —
+                        # no separate SELECT needed, no idle-in-transaction gap.
+                        cursor.execute("""
+                            UPDATE banks
+                               SET balance = balance - %s
+                             WHERE id = %s
+                               AND user_id = %s
+                               AND balance >= %s
+                         RETURNING balance
+                        """, (transfer_amount, from_id, user_id, transfer_amount))
 
-                        if transfer_amount > live_balance:
+                        row = cursor.fetchone()
+
+                        if row is None:
+                            # UPDATE matched 0 rows → insufficient funds
+                            cursor.execute(
+                                "SELECT balance FROM banks WHERE id = %s AND user_id = %s",
+                                (from_id, user_id)
+                            )
+                            bal_row = cursor.fetchone()
+                            current = int(bal_row["balance"]) if bal_row else 0
                             st.error(
-                                f"Insufficient funds. {from_name} has ₦{live_balance:,} "
-                                f"but you are trying to transfer ₦{transfer_amount:,}."
+                                f"Insufficient funds. {from_name} has ₦{current:,} "
+                                f"but you tried to transfer ₦{transfer_amount:,}."
                             )
                         else:
-                            # Debit source bank
-                            cursor.execute(
-                                "UPDATE banks SET balance = balance - %s WHERE id = %s AND user_id = %s",
-                                (transfer_amount, from_id, user_id)
-                            )
-                            # Credit destination bank
+                            # Debit succeeded — now credit destination and log both sides
                             cursor.execute(
                                 "UPDATE banks SET balance = balance + %s WHERE id = %s AND user_id = %s",
                                 (transfer_amount, to_id, user_id)
                             )
-                            # Record debit transaction
                             cursor.execute(
                                 "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
                                 "VALUES (%s, 'debit', %s, %s, %s)",
                                 (from_id, transfer_amount, f"Transfer to {to_name}", today)
                             )
-                            # Record credit transaction
                             cursor.execute(
                                 "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
                                 "VALUES (%s, 'credit', %s, %s, %s)",
