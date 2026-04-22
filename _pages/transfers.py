@@ -42,61 +42,88 @@ def render_transfers(user_id):
                 to_name   = to_b["bank_name"]
                 today     = datetime.now().date()
 
+                # ── Execute transfer, capture result BEFORE st calls ──────────
+                transfer_ok    = False
+                error_msg      = None
+                current_bal    = None
+
                 try:
-                    with get_db() as (conn, cursor):
-                        # Single atomic UPDATE with balance check built in.
-                        # Returns the new balance only if funds were sufficient —
-                        # no separate SELECT needed, no idle-in-transaction gap.
-                        cursor.execute("""
-                            UPDATE banks
-                               SET balance = balance - %s
-                             WHERE id = %s
-                               AND user_id = %s
-                               AND balance >= %s
-                         RETURNING balance
-                        """, (transfer_amount, from_id, user_id, transfer_amount))
+                    conn = None
+                    from db import get_connection, _return_connection
+                    conn   = get_connection()
+                    cursor = conn.cursor()
 
-                        row = cursor.fetchone()
+                    # Atomic debit with built-in balance guard
+                    cursor.execute("""
+                        UPDATE banks
+                           SET balance = balance - %s
+                         WHERE id = %s AND user_id = %s AND balance >= %s
+                     RETURNING balance
+                    """, (transfer_amount, from_id, user_id, transfer_amount))
+                    row = cursor.fetchone()
 
-                        if row is None:
-                            # UPDATE matched 0 rows → insufficient funds
-                            cursor.execute(
-                                "SELECT balance FROM banks WHERE id = %s AND user_id = %s",
-                                (from_id, user_id)
-                            )
-                            bal_row = cursor.fetchone()
-                            current = int(bal_row["balance"]) if bal_row else 0
-                            st.error(
-                                f"Insufficient funds. {from_name} has ₦{current:,} "
-                                f"but you tried to transfer ₦{transfer_amount:,}."
-                            )
-                        else:
-                            # Debit succeeded — now credit destination and log both sides
-                            cursor.execute(
-                                "UPDATE banks SET balance = balance + %s WHERE id = %s AND user_id = %s",
-                                (transfer_amount, to_id, user_id)
-                            )
-                            cursor.execute(
-                                "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
-                                "VALUES (%s, 'debit', %s, %s, %s)",
-                                (from_id, transfer_amount, f"Transfer to {to_name}", today)
-                            )
-                            cursor.execute(
-                                "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
-                                "VALUES (%s, 'credit', %s, %s, %s)",
-                                (to_id, transfer_amount, f"Transfer from {from_name}", today)
-                            )
-                            st.success(f"✅ ₦{transfer_amount:,} transferred from {from_name} to {to_name}.")
-                            st.rerun()
+                    if row is None:
+                        # Insufficient funds — read current balance for message
+                        cursor.execute(
+                            "SELECT balance FROM banks WHERE id=%s AND user_id=%s",
+                            (from_id, user_id)
+                        )
+                        bal_row     = cursor.fetchone()
+                        current_bal = int(bal_row["balance"]) if bal_row else 0
+                        conn.rollback()
+                    else:
+                        # Credit destination
+                        cursor.execute(
+                            "UPDATE banks SET balance = balance + %s WHERE id=%s AND user_id=%s",
+                            (transfer_amount, to_id, user_id)
+                        )
+                        # Log debit side
+                        cursor.execute(
+                            "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
+                            "VALUES (%s,'debit',%s,%s,%s)",
+                            (from_id, transfer_amount, f"Transfer to {to_name}", today)
+                        )
+                        # Log credit side
+                        cursor.execute(
+                            "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
+                            "VALUES (%s,'credit',%s,%s,%s)",
+                            (to_id, transfer_amount, f"Transfer from {from_name}", today)
+                        )
+                        conn.commit()
+                        transfer_ok = True
+
+                    cursor.close()
+                    _return_connection(conn, error=False)
 
                 except Exception as e:
+                    if conn:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+                        try:
+                            _return_connection(conn, error=True)
+                        except Exception:
+                            pass
                     err = str(e)
                     if "QueryCanceled" in err or "timeout" in err.lower():
-                        st.error("Connection timed out — please try again.")
+                        error_msg = "Connection timed out — please try again."
                     elif "could not serialize" in err.lower():
-                        st.error("Transfer conflict — please try again.")
+                        error_msg = "Transfer conflict — please try again."
                     else:
-                        st.error(f"Transfer failed: {err[:150]}")
+                        error_msg = f"Transfer failed: {err[:150]}"
+
+                # ── Show result AFTER db work is fully done ───────────────────
+                if transfer_ok:
+                    st.success(f"✅ ₦{transfer_amount:,} transferred from {from_name} to {to_name}.")
+                    st.rerun()
+                elif current_bal is not None:
+                    st.error(
+                        f"Insufficient funds. {from_name} has ₦{current_bal:,} "
+                        f"but you tried to transfer ₦{transfer_amount:,}."
+                    )
+                elif error_msg:
+                    st.error(error_msg)
 
         # ── Transfer History ──────────────────────────────────────────────────
         st.divider()
