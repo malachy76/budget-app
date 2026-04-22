@@ -431,96 +431,27 @@ div[data-testid="stProgress"] > div {
 }
 
 /* ══════════════════════════════════════════════
-   CHARTS — always full width
+   MOBILE (≤ 640px)
 ══════════════════════════════════════════════ */
-.stPlotlyChart > div,
-.stPlotlyChart iframe {
-    max-width: 100% !important;
-    width: 100% !important;
-}
-div[data-testid="stDataFrame"],
-div[data-testid="stTable"] {
-    overflow-x: auto !important;
-    -webkit-overflow-scrolling: touch !important;
-    max-width: 100% !important;
-}
-
-/* ══════════════════════════════════════════════
-   BOTTOM NAV BAR (mobile only, rendered via HTML)
-══════════════════════════════════════════════ */
-.mob-nav {
-    display: none;
-}
-@media screen and (max-width: 768px) {
-    .mob-nav {
-        display: flex !important;
-        position: fixed;
-        bottom: 0; left: 0; right: 0;
-        background: #0f2540;
-        border-top: 1px solid #1a3c5e;
-        z-index: 9999;
-        height: 60px;
-        align-items: stretch;
-        box-shadow: 0 -2px 12px rgba(0,0,0,0.25);
-    }
-    .mob-nav-item {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        color: #7aa8c4;
-        font-size: 0.58rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.03em;
-        cursor: pointer;
-        border: none;
-        background: transparent;
-        padding: 4px 2px 6px;
-        transition: color 0.15s, background 0.15s;
-        -webkit-tap-highlight-color: transparent;
-        text-decoration: none;
-    }
-    .mob-nav-item .mob-nav-icon {
-        font-size: 1.25rem;
-        margin-bottom: 2px;
-        line-height: 1;
-    }
-    .mob-nav-item.active,
-    .mob-nav-item:active {
-        color: #4dd6a3;
-        background: rgba(77,214,163,0.08);
-    }
-}
-
-/* ══════════════════════════════════════════════
-   MOBILE (≤ 768px)
-══════════════════════════════════════════════ */
-@media screen and (max-width: 768px) {
-    /* Extra bottom padding so content isn't hidden behind bottom nav */
+@media screen and (max-width: 640px) {
     .main .block-container {
-        padding: 0.5rem 0.75rem 5rem 0.75rem !important;
-        max-width: 100% !important;
+        padding: 0.5rem 0.65rem 1.5rem 0.65rem !important;
     }
-
     h1 { font-size: 1.2rem !important; }
     h2 { font-size: 1.08rem !important; }
     h3 { font-size: 0.96rem !important; }
 
-    /* Stack ALL columns on mobile */
+    /* Stack columns */
     div[data-testid="stHorizontalBlock"] {
-        flex-direction: column !important;
-        gap: 0.3rem !important;
+        flex-direction: column !important; gap: 0.3rem !important;
     }
     div[data-testid="stHorizontalBlock"] > div[data-testid="stColumn"],
     div[data-testid="stHorizontalBlock"] > div[class*="stColumn"] {
-        width: 100% !important;
-        min-width: 100% !important;
+        width: 100% !important; min-width: 100% !important;
         flex: 1 1 100% !important;
     }
 
-    /* Metrics — dark themed for mobile */
+    /* Metrics on mobile — dark themed */
     div[data-testid="stMetric"] {
         background: #1a3c5e !important;
         border: 1px solid #0e7c5b !important;
@@ -546,30 +477,23 @@ div[data-testid="stTable"] {
     /* Buttons — full width, thumb-friendly */
     .stButton > button {
         width: 100% !important;
-        min-height: 3rem !important;
-        font-size: 1rem !important;
-        margin-bottom: 0.3rem !important;
-    }
-    .stDownloadButton > button {
-        width: 100% !important;
-        min-height: 3rem !important;
+        min-height: 2.8rem !important;
+        font-size: 0.95rem !important;
+        margin-bottom: 0.25rem !important;
     }
 
-    /* Inputs — thumb-sized, prevent iOS zoom (font-size >= 16px) */
-    input, textarea, select,
+    /* Inputs */
+    input, textarea,
     div[data-baseweb="input"] input,
-    div[data-baseweb="textarea"] textarea {
-        font-size: 16px !important;
-        min-height: 3rem !important;
+    div[data-baseweb="textarea"] textarea,
+    div[data-baseweb="select"] {
+        font-size: 1rem !important;
+        min-height: 2.8rem !important;
         width: 100% !important;
     }
-    div[data-baseweb="select"] > div { min-height: 3rem !important; }
-    div[data-baseweb="select"] [data-testid="stSelectboxValue"] {
-        font-size: 16px !important;
-    }
-    .stNumberInput input { font-size: 16px !important; }
+    div[data-baseweb="select"] > div { min-height: 2.8rem !important; }
 
-    /* Tabs — horizontal scroll, no scrollbar */
+    /* Tabs — horizontal scroll */
     div[data-testid="stTabs"] > div:first-child {
         overflow-x: auto !important;
         -webkit-overflow-scrolling: touch !important;
@@ -579,79 +503,72 @@ div[data-testid="stTable"] {
     div[data-testid="stTabs"] > div:first-child::-webkit-scrollbar {
         display: none !important;
     }
-    div[data-testid="stTabs"] button[data-baseweb="tab"] {
-        font-size: 0.82rem !important;
-        padding: 0.4rem 0.75rem !important;
+
+    /* Sidebar */
+    section[data-testid="stSidebar"] {
+        min-width: 210px !important;
+        max-width: 230px !important;
+    }
+    section[data-testid="stSidebar"] label {
+        font-size: 0.88rem !important;
     }
 
-    /* Charts — always scrollable horizontally */
+    /* Charts */
     div[data-testid="stArrowVegaLiteChart"],
     div[data-testid="stVegaLiteChart"],
     .stPlotlyChart {
         overflow-x: auto !important;
         -webkit-overflow-scrolling: touch !important;
-        max-width: 100% !important;
     }
 
-    /* Stat cards — 2-column grid */
+    /* Stat cards grid — 2 columns on mobile */
     .sc-grid {
         grid-template-columns: 1fr 1fr !important;
         gap: 8px !important;
     }
-    .sc-card  { padding: 12px 13px 10px !important; }
+    .sc-card { padding: 12px 13px 10px !important; }
     .sc-value { font-size: 1.05rem !important; }
 
-    /* Expense / transaction cards */
-    .exp-card        { padding: 9px 10px !important; }
+    /* Exp cards */
+    .exp-card { padding: 9px 10px !important; }
     .exp-card-name   { font-size: 0.88rem !important; }
     .exp-card-amount { font-size: 0.96rem !important; }
 
-    /* Weekly summary card */
-    .week-card       { padding: 14px !important; border-radius: 13px !important; }
-    .week-stat       { flex: 1 1 88px !important; padding: 8px 10px !important; }
+    /* Weekly card */
+    .week-card { padding: 14px 14px !important; border-radius: 13px !important; }
+    .week-stat { flex: 1 1 88px !important; padding: 8px 10px !important; }
     .week-stat-value { font-size: 0.98rem !important; }
 
     /* Insight cards */
     .insight-card { padding: 10px 11px !important; }
-    .insight-text { font-size: 0.86rem !important; }
-
-    /* Forms */
-    div[data-testid="stForm"] { padding: 0 !important; }
+    .insight-text  { font-size: 0.86rem !important; }
 
     hr { margin: 0.5rem 0 !important; }
     div[data-testid="stProgress"] > div { height: 7px !important; }
 
-    details, div[data-testid="stExpander"] { width: 100% !important; }
+    /* Tables */
+    div[data-testid="stDataFrame"],
+    div[data-testid="stTable"] {
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+    }
 
-    /* Landing page */
-    .landing-hero    { padding: 20px 14px 16px !important; border-radius: 14px !important; }
+    details, div[data-testid="stExpander"] { width: 100% !important; }
+    .landing-hero {
+        padding: 20px 14px 16px !important;
+        border-radius: 14px !important;
+    }
     .landing-title   { font-size: 1.45rem !important; }
     .landing-tagline { font-size: 0.86rem !important; }
-
-    .stAlert       { font-size: 0.86rem !important; }
-    .streak-banner { border-radius: 12px !important; padding: 14px 16px !important; }
-    .streak-right  { text-align: left !important; }
-
-    /* Sidebar — keep it working when toggled open, but collapsed by default */
-    section[data-testid="stSidebar"] {
-        min-width: 240px !important;
-        max-width: 260px !important;
-    }
-    section[data-testid="stSidebar"] label {
-        font-size: 0.9rem !important;
-        padding: 8px 4px !important;
-    }
-
-    /* Prevent horizontal overflow everywhere */
-    .main, .block-container, [data-testid="stAppViewContainer"] {
-        overflow-x: hidden !important;
-    }
+    .stAlert         { font-size: 0.86rem !important; }
+    .streak-banner   { border-radius: 12px !important; padding: 14px 16px !important; }
+    .streak-right    { text-align: left !important; }
 }
 
 /* ══════════════════════════════════════════════
-   TABLET (769px – 1024px)
+   TABLET (641px – 900px)
 ══════════════════════════════════════════════ */
-@media screen and (min-width: 769px) and (max-width: 1024px) {
+@media screen and (min-width: 641px) and (max-width: 900px) {
     .main .block-container {
         padding-left: 1rem !important;
         padding-right: 1rem !important;
