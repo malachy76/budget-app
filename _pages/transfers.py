@@ -1,125 +1,147 @@
 # transfers.py — transfers page
 import re
 import streamlit as st
-import pandas as pd
-import plotly.express as px
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from db import get_db
-from utils import save_expense, apply_income_filters, apply_expense_filters, \
-    render_filter_bar_income, render_filter_bar_expenses, \
-    get_category_budgets, compute_daily_safe_to_spend, BUDGET_CATEGORIES, upsert_category_budget
-from auth import validate_password, change_password, get_onboarding_status, mark_onboarding_complete
 
 
 def render_transfers(user_id):
     st.title("🔄 Transfers")
+
     with get_db() as (conn, cursor):
-        cursor.execute("SELECT id, bank_name, account_number, balance FROM banks WHERE user_id=%s", (user_id,))
+        cursor.execute(
+            "SELECT id, bank_name, account_number, balance FROM banks WHERE user_id=%s ORDER BY bank_name",
+            (user_id,)
+        )
         banks = cursor.fetchall()
 
     if len(banks) >= 2:
-        bank_map_transfer = {f"{b['bank_name']} (****{b['account_number']}) — ₦{b['balance']:,}": b for b in banks}
+        bank_map = {
+            f"{b['bank_name']} (****{b['account_number']}) — ₦{b['balance']:,}": b
+            for b in banks
+        }
+        opts = list(bank_map.keys())
+
         with st.form("transfer_form_pg"):
-            from_bank       = st.selectbox("From Bank", list(bank_map_transfer.keys()), key="from_bank_f")
-            to_bank         = st.selectbox("To Bank",   list(bank_map_transfer.keys()), key="to_bank_f")
+            from_key        = st.selectbox("From Bank", opts, key="from_bank_f")
+            to_key          = st.selectbox("To Bank",   opts, key="to_bank_f")
             transfer_amount = st.number_input("Amount (NGN)", min_value=1, step=500)
-            tr_note         = st.text_input("Note (optional)", placeholder="e.g. Move for savings")
-            tr_submitted    = st.form_submit_button("Transfer Now", use_container_width=True)
-        if tr_submitted:
-            if from_bank == to_bank:
-                st.warning("Cannot transfer to the same bank")
+            st.text_input("Note (optional)", placeholder="e.g. Move for savings")
+            submitted = st.form_submit_button("Transfer Now", use_container_width=True, type="primary")
+
+        if submitted:
+            if from_key == to_key:
+                st.warning("Please select two different banks.")
             else:
-                from_b    = bank_map_transfer[from_bank]
-                to_b      = bank_map_transfer[to_bank]
+                from_b    = bank_map[from_key]
+                to_b      = bank_map[to_key]
                 from_id   = from_b["id"]
                 to_id     = to_b["id"]
                 from_name = from_b["bank_name"]
                 to_name   = to_b["bank_name"]
                 today     = datetime.now().date()
+
                 try:
                     with get_db() as (conn, cursor):
-                        # Lock both rows in consistent order (lower id first) to prevent deadlocks
-                        lock_ids = sorted([from_id, to_id])
+                        # Read live balance inside the same transaction
                         cursor.execute(
-                            "SELECT id, balance FROM banks WHERE id = ANY(%s) ORDER BY id FOR UPDATE",
-                            (lock_ids,)
+                            "SELECT balance FROM banks WHERE id = %s",
+                            (from_id,)
                         )
-                        rows = {r["id"]: r["balance"] for r in cursor.fetchall()}
-                        from_balance = rows.get(from_id, 0)
-                        if transfer_amount > from_balance:
-                            st.error(f"Insufficient funds. {from_name} only has ₦{from_balance:,}.")
+                        row = cursor.fetchone()
+                        live_balance = int(row["balance"]) if row else 0
+
+                        if transfer_amount > live_balance:
+                            st.error(
+                                f"Insufficient funds. {from_name} has ₦{live_balance:,} "
+                                f"but you are trying to transfer ₦{transfer_amount:,}."
+                            )
                         else:
+                            # Debit source bank
                             cursor.execute(
-                                "UPDATE banks SET balance = balance - %s WHERE id = %s",
-                                (transfer_amount, from_id)
+                                "UPDATE banks SET balance = balance - %s WHERE id = %s AND user_id = %s",
+                                (transfer_amount, from_id, user_id)
                             )
+                            # Credit destination bank
                             cursor.execute(
-                                "UPDATE banks SET balance = balance + %s WHERE id = %s",
-                                (transfer_amount, to_id)
+                                "UPDATE banks SET balance = balance + %s WHERE id = %s AND user_id = %s",
+                                (transfer_amount, to_id, user_id)
                             )
+                            # Record debit transaction
                             cursor.execute(
-                                "INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'debit', %s, %s, %s)",
+                                "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
+                                "VALUES (%s, 'debit', %s, %s, %s)",
                                 (from_id, transfer_amount, f"Transfer to {to_name}", today)
                             )
+                            # Record credit transaction
                             cursor.execute(
-                                "INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'credit', %s, %s, %s)",
+                                "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
+                                "VALUES (%s, 'credit', %s, %s, %s)",
                                 (to_id, transfer_amount, f"Transfer from {from_name}", today)
                             )
-                            st.success(f"✅ Transferred ₦{transfer_amount:,} from {from_name} to {to_name}")
+                            st.success(f"✅ ₦{transfer_amount:,} transferred from {from_name} to {to_name}.")
                             st.rerun()
+
                 except Exception as e:
                     err = str(e)
-                    if "QueryCanceled" in err or "statement timeout" in err.lower():
-                        st.error("Transfer timed out — please try again.")
-                    elif "insufficient" in err.lower():
-                        st.error(f"Insufficient funds in {from_name}.")
+                    if "QueryCanceled" in err or "timeout" in err.lower():
+                        st.error("Connection timed out — please try again.")
+                    elif "could not serialize" in err.lower():
+                        st.error("Transfer conflict — please try again.")
                     else:
-                        st.error(f"Transfer failed: {err[:120]}")
+                        st.error(f"Transfer failed: {err[:150]}")
 
         # ── Transfer History ──────────────────────────────────────────────────
         st.divider()
         st.subheader("Transfer History")
+
         with get_db() as (conn, cursor):
             cursor.execute("""
-                SELECT t.id, t.created_at, t.description, t.amount, t.type,
+                SELECT t.created_at, t.description, t.amount, t.type,
                        b.bank_name, b.account_number
-                FROM transactions t JOIN banks b ON t.bank_id = b.id
+                FROM transactions t
+                JOIN banks b ON t.bank_id = b.id
                 WHERE b.user_id = %s
-                  AND (t.description LIKE 'Transfer to %%' OR t.description LIKE 'Transfer from %%'
-                       OR t.description LIKE 'Transfer to bank %%' OR t.description LIKE 'Transfer from bank %%')
+                  AND (   t.description LIKE 'Transfer to %%'
+                       OR t.description LIKE 'Transfer from %%'
+                       OR t.description LIKE 'Transfer to bank %%'
+                       OR t.description LIKE 'Transfer from bank %%')
                 ORDER BY t.created_at DESC
                 LIMIT 50
             """, (user_id,))
-            transfer_history = cursor.fetchall()
+            history = cursor.fetchall()
 
-        if transfer_history:
-            for tx in transfer_history:
-                color  = "#0e7c5b" if tx["type"] == "credit" else "#c0392b"
-                prefix = "+" if tx["type"] == "credit" else "-"
-                # Humanise legacy "Transfer to bank 12" descriptions
-                desc = tx["description"]
-                desc = re.sub(r"Transfer to bank \d+", "Transfer to another account", desc)
-                desc = re.sub(r"Transfer from bank \d+", "Transfer from another account", desc)
+        if history:
+            for tx in history:
+                color      = "#0e7c5b" if tx["type"] == "credit" else "#c0392b"
+                prefix     = "+" if tx["type"] == "credit" else "-"
+                desc       = re.sub(r"Transfer to bank \d+",   "Transfer to another account",   tx["description"])
+                desc       = re.sub(r"Transfer from bank \d+", "Transfer from another account", desc)
                 amount_fmt = "{:,}".format(tx["amount"])
-                tx_html = ('<div class="exp-card" style="border-left-color:' + color + ';">' +
-                    '<div class="exp-card-left">' +
-                    '<div class="exp-card-name">' + desc + '</div>' +
-                    '<div class="exp-card-bank">Account: ' + str(tx["bank_name"]) + ' (****' + str(tx["account_number"]) + ')</div>' +
-                    '<div class="exp-card-date">Date: ' + str(tx["created_at"]) + '</div>' +
-                    '</div>' +
-                    '<div class="exp-card-right"><div class="exp-card-amount" style="color:' + color + ';">' + prefix + '₦' + amount_fmt + '</div></div>' +
-                    '</div>')
-                st.markdown(tx_html, unsafe_allow_html=True)
+                st.markdown(
+                    '<div class="exp-card" style="border-left-color:' + color + ';">'
+                    '<div class="exp-card-left">'
+                    '<div class="exp-card-name">' + desc + '</div>'
+                    '<div class="exp-card-bank">' + str(tx["bank_name"]) + ' (****' + str(tx["account_number"]) + ')</div>'
+                    '<div class="exp-card-date">' + str(tx["created_at"]) + '</div>'
+                    '</div>'
+                    '<div class="exp-card-right">'
+                    '<div class="exp-card-amount" style="color:' + color + ';">' + prefix + '₦' + amount_fmt + '</div>'
+                    '</div></div>',
+                    unsafe_allow_html=True
+                )
         else:
-            st.caption("No transfers recorded yet.")
+            st.info("No transfers recorded yet.")
+
     else:
-        st.markdown("""
-        <div style="background:#f4f7f6;border-radius:10px;padding:20px 22px;text-align:center;color:#6b7f8e;">
-          <div style="font-size:2rem;">&#x1F4B8;</div>
-          <div style="font-weight:700;margin:6px 0 4px;color:#1a2e3b;">You need at least two bank accounts to transfer</div>
-          <div style="font-size:0.92rem;">Add a second account on the <strong>Banks</strong> page, then come back here to move money between them.</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(
+            '<div style="background:#f4f7f6;border-radius:10px;padding:20px 22px;text-align:center;color:#6b7f8e;">'
+            '<div style="font-size:2rem;">&#x1F4B8;</div>'
+            '<div style="font-weight:700;margin:6px 0 4px;color:#1a2e3b;">You need at least two bank accounts to transfer</div>'
+            '<div style="font-size:0.92rem;">Add a second account on the <strong>Banks</strong> page, then come back here.</div>'
+            '</div>',
+            unsafe_allow_html=True
+        )
 
 # ================= PAGE: SAVINGS GOALS =================
