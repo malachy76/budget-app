@@ -319,12 +319,19 @@ def _create_indexes():
 # PUBLIC ENTRY POINT
 # ─────────────────────────────────────────────────────────────────────────────
 
+@__import__('streamlit').cache_resource(show_spinner=False)
 def create_tables():
-    _create_core_tables()    # instant after first run
-    _add_columns()           # instant after first run
-    _run_type_migrations()   # skipped automatically once columns are correct type
-    _backfill()              # no-op once all rows filled
-    _create_indexes()        # instant after first run
+    """
+    Runs ONCE per server process — st.cache_resource keeps the result cached
+    across all users and all reruns until the server restarts.
+    On every normal page interaction this is a zero-cost cache hit.
+    """
+    _create_core_tables()
+    _add_columns()
+    _run_type_migrations()
+    _backfill()
+    _create_indexes()
+    return True   # cache_resource needs a return value
 
 
 create_tables()
