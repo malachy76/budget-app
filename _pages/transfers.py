@@ -1,14 +1,83 @@
-# transfers.py — transfers page
+# transfers.py
 import re
 import streamlit as st
 from datetime import datetime
+import psycopg2.extras
 
-from db import get_db
+from db import _get_pool
+
+
+def _do_transfer(user_id, from_id, to_id, from_name, to_name, amount):
+    """
+    Execute the transfer entirely in raw psycopg2 — no context managers,
+    no Streamlit calls inside. Returns (True, None) on success or
+    (False, error_message) on failure. Commit happens here before returning.
+    """
+    conn = None
+    try:
+        conn = _get_pool().getconn()
+        conn.autocommit = False
+        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        today = datetime.now().date()
+
+        # Check balance
+        cur.execute(
+            "SELECT balance FROM banks WHERE id = %s AND user_id = %s",
+            (from_id, user_id)
+        )
+        row = cur.fetchone()
+        if row is None:
+            conn.rollback()
+            return False, "Source bank not found."
+        balance = int(row["balance"])
+        if amount > balance:
+            conn.rollback()
+            return False, f"Insufficient funds. {from_name} has ₦{balance:,} but you tried to transfer ₦{amount:,}."
+
+        # Debit source
+        cur.execute(
+            "UPDATE banks SET balance = balance - %s WHERE id = %s AND user_id = %s",
+            (amount, from_id, user_id)
+        )
+        # Credit destination
+        cur.execute(
+            "UPDATE banks SET balance = balance + %s WHERE id = %s AND user_id = %s",
+            (amount, to_id, user_id)
+        )
+        # Log debit
+        cur.execute(
+            "INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s,'debit',%s,%s,%s)",
+            (from_id, amount, f"Transfer to {to_name}", today)
+        )
+        # Log credit
+        cur.execute(
+            "INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s,'credit',%s,%s,%s)",
+            (to_id, amount, f"Transfer from {from_name}", today)
+        )
+
+        conn.commit()   # ← committed here, nothing can undo it after this line
+        cur.close()
+        return True, None
+
+    except Exception as e:
+        if conn:
+            try: conn.rollback()
+            except Exception: pass
+        return False, str(e)[:200]
+
+    finally:
+        if conn:
+            try:
+                conn.autocommit = True
+                _get_pool().putconn(conn, close=False)
+            except Exception:
+                pass
 
 
 def render_transfers(user_id):
     st.title("🔄 Transfers")
 
+    from db import get_db
     with get_db() as (conn, cursor):
         cursor.execute(
             "SELECT id, bank_name, account_number, balance FROM banks WHERE user_id=%s ORDER BY bank_name",
@@ -23,10 +92,16 @@ def render_transfers(user_id):
         }
         opts = list(bank_map.keys())
 
-        with st.form("transfer_form_pg"):
-            from_key        = st.selectbox("From Bank", opts, key="from_bank_f")
-            to_key          = st.selectbox("To Bank",   opts, key="to_bank_f")
-            transfer_amount = st.number_input("Amount (NGN)", min_value=1, step=500)
+        # Show result from previous submission if any
+        if st.session_state.get("_transfer_success"):
+            st.success(st.session_state.pop("_transfer_success"))
+        if st.session_state.get("_transfer_error"):
+            st.error(st.session_state.pop("_transfer_error"))
+
+        with st.form("transfer_form"):
+            from_key = st.selectbox("From Bank", opts, key="from_bank_sel")
+            to_key   = st.selectbox("To Bank",   opts, key="to_bank_sel")
+            amount   = st.number_input("Amount (NGN)", min_value=1, step=500)
             st.text_input("Note (optional)", placeholder="e.g. Move for savings")
             submitted = st.form_submit_button("Transfer Now", use_container_width=True, type="primary")
 
@@ -34,96 +109,26 @@ def render_transfers(user_id):
             if from_key == to_key:
                 st.warning("Please select two different banks.")
             else:
-                from_b    = bank_map[from_key]
-                to_b      = bank_map[to_key]
-                from_id   = from_b["id"]
-                to_id     = to_b["id"]
-                from_name = from_b["bank_name"]
-                to_name   = to_b["bank_name"]
-                today     = datetime.now().date()
+                from_b = bank_map[from_key]
+                to_b   = bank_map[to_key]
 
-                # ── Execute transfer, capture result BEFORE st calls ──────────
-                transfer_ok    = False
-                error_msg      = None
-                current_bal    = None
+                ok, err = _do_transfer(
+                    user_id,
+                    from_b["id"], to_b["id"],
+                    from_b["bank_name"], to_b["bank_name"],
+                    int(amount)
+                )
 
-                try:
-                    conn = None
-                    from db import get_connection, _return_connection
-                    conn   = get_connection()
-                    cursor = conn.cursor()
-
-                    # Atomic debit with built-in balance guard
-                    cursor.execute("""
-                        UPDATE banks
-                           SET balance = balance - %s
-                         WHERE id = %s AND user_id = %s AND balance >= %s
-                     RETURNING balance
-                    """, (transfer_amount, from_id, user_id, transfer_amount))
-                    row = cursor.fetchone()
-
-                    if row is None:
-                        # Insufficient funds — read current balance for message
-                        cursor.execute(
-                            "SELECT balance FROM banks WHERE id=%s AND user_id=%s",
-                            (from_id, user_id)
-                        )
-                        bal_row     = cursor.fetchone()
-                        current_bal = int(bal_row["balance"]) if bal_row else 0
-                        conn.rollback()
-                    else:
-                        # Credit destination
-                        cursor.execute(
-                            "UPDATE banks SET balance = balance + %s WHERE id=%s AND user_id=%s",
-                            (transfer_amount, to_id, user_id)
-                        )
-                        # Log debit side
-                        cursor.execute(
-                            "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
-                            "VALUES (%s,'debit',%s,%s,%s)",
-                            (from_id, transfer_amount, f"Transfer to {to_name}", today)
-                        )
-                        # Log credit side
-                        cursor.execute(
-                            "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
-                            "VALUES (%s,'credit',%s,%s,%s)",
-                            (to_id, transfer_amount, f"Transfer from {from_name}", today)
-                        )
-                        conn.commit()
-                        transfer_ok = True
-
-                    cursor.close()
-                    _return_connection(conn, error=False)
-
-                except Exception as e:
-                    if conn:
-                        try:
-                            conn.rollback()
-                        except Exception:
-                            pass
-                        try:
-                            _return_connection(conn, error=True)
-                        except Exception:
-                            pass
-                    err = str(e)
-                    if "QueryCanceled" in err or "timeout" in err.lower():
-                        error_msg = "Connection timed out — please try again."
-                    elif "could not serialize" in err.lower():
-                        error_msg = "Transfer conflict — please try again."
-                    else:
-                        error_msg = f"Transfer failed: {err[:150]}"
-
-                # ── Show result AFTER db work is fully done ───────────────────
-                if transfer_ok:
-                    st.success(f"✅ ₦{transfer_amount:,} transferred from {from_name} to {to_name}.")
-                    st.rerun()
-                elif current_bal is not None:
-                    st.error(
-                        f"Insufficient funds. {from_name} has ₦{current_bal:,} "
-                        f"but you tried to transfer ₦{transfer_amount:,}."
+                if ok:
+                    # Store success message in session_state then rerun —
+                    # rerun fires AFTER this block, session_state survives it
+                    st.session_state["_transfer_success"] = (
+                        f"✅ ₦{int(amount):,} transferred from "
+                        f"{from_b['bank_name']} to {to_b['bank_name']}."
                     )
-                elif error_msg:
-                    st.error(error_msg)
+                    st.rerun()
+                else:
+                    st.error(err)
 
         # ── Transfer History ──────────────────────────────────────────────────
         st.divider()
