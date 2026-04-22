@@ -36,25 +36,46 @@ def render_transfers(user_id):
                 to_id     = to_b["id"]
                 from_name = from_b["bank_name"]
                 to_name   = to_b["bank_name"]
-                with get_db() as (conn, cursor):
-                    cursor.execute("SELECT balance FROM banks WHERE id=%s", (from_id,))
-                    from_balance = cursor.fetchone()["balance"]
-                    if transfer_amount > from_balance:
-                        st.error(f"Insufficient funds. {from_name} only has ₦{from_balance:,}.")
+                today     = datetime.now().date()
+                try:
+                    with get_db() as (conn, cursor):
+                        # Lock both rows in consistent order (lower id first) to prevent deadlocks
+                        lock_ids = sorted([from_id, to_id])
+                        cursor.execute(
+                            "SELECT id, balance FROM banks WHERE id = ANY(%s) ORDER BY id FOR UPDATE",
+                            (lock_ids,)
+                        )
+                        rows = {r["id"]: r["balance"] for r in cursor.fetchall()}
+                        from_balance = rows.get(from_id, 0)
+                        if transfer_amount > from_balance:
+                            st.error(f"Insufficient funds. {from_name} only has ₦{from_balance:,}.")
+                        else:
+                            cursor.execute(
+                                "UPDATE banks SET balance = balance - %s WHERE id = %s",
+                                (transfer_amount, from_id)
+                            )
+                            cursor.execute(
+                                "UPDATE banks SET balance = balance + %s WHERE id = %s",
+                                (transfer_amount, to_id)
+                            )
+                            cursor.execute(
+                                "INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'debit', %s, %s, %s)",
+                                (from_id, transfer_amount, f"Transfer to {to_name}", today)
+                            )
+                            cursor.execute(
+                                "INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'credit', %s, %s, %s)",
+                                (to_id, transfer_amount, f"Transfer from {from_name}", today)
+                            )
+                            st.success(f"✅ Transferred ₦{transfer_amount:,} from {from_name} to {to_name}")
+                            st.rerun()
+                except Exception as e:
+                    err = str(e)
+                    if "QueryCanceled" in err or "statement timeout" in err.lower():
+                        st.error("Transfer timed out — please try again.")
+                    elif "insufficient" in err.lower():
+                        st.error(f"Insufficient funds in {from_name}.")
                     else:
-                        today = datetime.now().date()
-                        cursor.execute("UPDATE banks SET balance = balance - %s WHERE id=%s", (transfer_amount, from_id))
-                        cursor.execute("UPDATE banks SET balance = balance + %s WHERE id=%s", (transfer_amount, to_id))
-                        cursor.execute(
-                            "INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'debit', %s, %s, %s)",
-                            (from_id, transfer_amount, f"Transfer to {to_name}", today)
-                        )
-                        cursor.execute(
-                            "INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'credit', %s, %s, %s)",
-                            (to_id, transfer_amount, f"Transfer from {from_name}", today)
-                        )
-                        st.success(f"Transferred ₦{transfer_amount:,} from {from_name} to {to_name} ✓")
-                        st.rerun()
+                        st.error(f"Transfer failed: {err[:120]}")
 
         # ── Transfer History ──────────────────────────────────────────────────
         st.divider()
@@ -80,18 +101,16 @@ def render_transfers(user_id):
                 desc = tx["description"]
                 desc = re.sub(r"Transfer to bank \d+", "Transfer to another account", desc)
                 desc = re.sub(r"Transfer from bank \d+", "Transfer from another account", desc)
-                st.markdown(f"""
-                <div class="exp-card" style="border-left-color:{color};">
-                  <div class="exp-card-left">
-                    <div class="exp-card-name">{desc}</div>
-                    <div class="exp-card-bank">Account: {tx['bank_name']} (****{tx['account_number']})</div>
-                    <div class="exp-card-date">Date: {tx['created_at']}</div>
-                  </div>
-                  <div class="exp-card-right">
-                    <div class="exp-card-amount" style="color:{color};">{prefix}₦{tx['amount']:,}</div>
-                  </div>
-                </div>
-                """, unsafe_allow_html=True)
+                amount_fmt = "{:,}".format(tx["amount"])
+                tx_html = ('<div class="exp-card" style="border-left-color:' + color + ';">' +
+                    '<div class="exp-card-left">' +
+                    '<div class="exp-card-name">' + desc + '</div>' +
+                    '<div class="exp-card-bank">Account: ' + str(tx["bank_name"]) + ' (****' + str(tx["account_number"]) + ')</div>' +
+                    '<div class="exp-card-date">Date: ' + str(tx["created_at"]) + '</div>' +
+                    '</div>' +
+                    '<div class="exp-card-right"><div class="exp-card-amount" style="color:' + color + ';">' + prefix + '₦' + amount_fmt + '</div></div>' +
+                    '</div>')
+                st.markdown(tx_html, unsafe_allow_html=True)
         else:
             st.caption("No transfers recorded yet.")
     else:
