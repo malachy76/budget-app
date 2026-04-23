@@ -1,3 +1,4 @@
+from styles import render_page_header
 # tracker.py — Tracker page
 # Tabs: Recurring Income | Recurring Expenses | Bill Reminders | Debt/Loan | Emergency Fund
 import math
@@ -154,6 +155,7 @@ def _run_auto_posting(user_id: int, today) -> list:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render_tracker(user_id):
+    render_page_header()
     st.title("🔁 Tracker")
     st.caption("Recurring income & expenses · bill reminders · debts · emergency fund")
 
