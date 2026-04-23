@@ -168,9 +168,20 @@ def render_tracker(user_id):
         st.session_state[_ap_key] = posted
 
     if st.session_state.get(_ap_key):
-        with st.expander("⚙️ Auto-posting results (today)", expanded=True):
-            for msg in st.session_state[_ap_key]:
-                st.markdown(msg)
+        msgs_html = "".join(
+            f'<div style="padding:6px 0;font-size:0.9rem;color:#e0f0ea;border-bottom:1px solid rgba(255,255,255,0.08);line-height:1.5;">{msg}</div>'
+            for msg in st.session_state[_ap_key]
+        )
+        st.markdown(f"""
+        <div style="background:#0f2540;border:1px solid #0e7c5b;border-radius:12px;
+                    padding:14px 16px;margin-bottom:12px;">
+          <div style="font-size:0.82rem;font-weight:700;color:#a8d8c8;
+                      text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;">
+            ⚙️ Auto-posting results (today)
+          </div>
+          {msgs_html}
+        </div>
+        """, unsafe_allow_html=True)
 
     # ── Load banks once for all tabs ──────────────────────────────────────────
     with get_db() as (conn, cursor):
