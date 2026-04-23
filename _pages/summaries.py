@@ -1,3 +1,4 @@
+from styles import render_page_header
 # summaries.py — Weekly & Monthly Summaries page
 import calendar
 import streamlit as st
@@ -9,6 +10,7 @@ from db import get_db
 
 
 def render_summaries(user_id):
+    render_page_header()
     st.title("📄 Weekly & Monthly Summaries")
 
     today        = datetime.now().date()
