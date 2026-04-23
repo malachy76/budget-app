@@ -1,3 +1,4 @@
+from styles import render_page_header
 # goals.py — goals page
 import streamlit as st
 from datetime import datetime, timedelta
@@ -6,6 +7,7 @@ from db import get_db
 
 
 def render_goals(user_id, pages):
+    render_page_header()
     st.title("🎯 Savings Goals")
 
     # ── Single preflight: bank count + goals list in one connection ───────────
