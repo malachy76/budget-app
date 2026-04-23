@@ -1,3 +1,4 @@
+from styles import render_page_header
 # pages/notifications.py — Notifications inbox page
 import streamlit as st
 from datetime import datetime
@@ -125,6 +126,7 @@ def _format_time(ts) -> str:
 
 
 def render_notifications(user_id: int) -> None:
+    render_page_header()
     st.title("🔔 Notifications")
     st.markdown(_NOTIF_CSS, unsafe_allow_html=True)
 
