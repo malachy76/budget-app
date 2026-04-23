@@ -1,3 +1,4 @@
+from styles import render_page_header
 # transfers.py — transfers page
 import re
 import streamlit as st
@@ -7,7 +8,12 @@ from db import get_db
 
 
 def render_transfers(user_id):
+    render_page_header()
     st.title("🔄 Transfers")
+
+    # Show transfer success message if set (persists across rerun)
+    if st.session_state.get("_transfer_success"):
+        st.success(st.session_state.pop("_transfer_success"))
 
     with get_db() as (conn, cursor):
         cursor.execute(
@@ -27,10 +33,11 @@ def render_transfers(user_id):
             from_key        = st.selectbox("From Bank", opts, key="from_bank_f")
             to_key          = st.selectbox("To Bank",   opts, key="to_bank_f")
             transfer_amount = st.number_input("Amount (NGN)", min_value=1, step=500)
-            st.text_input("Note (optional)", placeholder="e.g. Move for savings")
+            st.text_input("Note (optional)", placeholder="e.g. Move for savings", key="transfer_note_f")
             submitted = st.form_submit_button("Transfer Now", use_container_width=True, type="primary")
 
         if submitted:
+            note = st.session_state.get("transfer_note_f", "").strip()
             if from_key == to_key:
                 st.warning("Please select two different banks.")
             else:
@@ -81,16 +88,18 @@ def render_transfers(user_id):
                         cursor.execute(
                             "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
                             "VALUES (%s,'debit',%s,%s,%s)",
-                            (from_id, transfer_amount, f"Transfer to {to_name}", today)
+                            (from_id, transfer_amount, f"Transfer to {to_name}" + (f" — {note}" if note else ""), today)
                         )
                         # Log credit side
                         cursor.execute(
                             "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
                             "VALUES (%s,'credit',%s,%s,%s)",
-                            (to_id, transfer_amount, f"Transfer from {from_name}", today)
+                            (to_id, transfer_amount, f"Transfer from {from_name}" + (f" — {note}" if note else ""), today)
                         )
                         conn.commit()
                         transfer_ok = True
+                        # Clear cached dashboard data so the transfer reflects immediately
+                        st.cache_data.clear()
 
                     cursor.close()
                     _return_connection(conn, error=False)
@@ -115,7 +124,7 @@ def render_transfers(user_id):
 
                 # ── Show result AFTER db work is fully done ───────────────────
                 if transfer_ok:
-                    st.success(f"✅ ₦{transfer_amount:,} transferred from {from_name} to {to_name}.")
+                    st.session_state["_transfer_success"] = f"✅ ₦{transfer_amount:,} transferred from {from_name} to {to_name}."
                     st.rerun()
                 elif current_bal is not None:
                     st.error(
