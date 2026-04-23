@@ -1,3 +1,4 @@
+from styles import render_page_header
 # import_csv.py — CSV import page
 import streamlit as st
 
@@ -6,6 +7,7 @@ from csv_import import csv_import_page
 
 
 def render_import_csv(user_id, pages):
+    render_page_header()
     st.title("📥 Import Bank Statement (CSV)")
 
     with get_db() as (conn, cursor):
