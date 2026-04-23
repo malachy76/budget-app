@@ -589,3 +589,14 @@ div[data-testid="stProgress"] > div {
 def inject_styles():
     """Call once at startup before any page renders."""
     st.markdown(CSS, unsafe_allow_html=True)
+
+
+def render_page_header():
+    """Render the Budget Right branded header. Call at the top of every page."""
+    st.markdown("""
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:0.2rem;padding-bottom:0.4rem;
+                border-bottom:2px solid #e0ece8;">
+      <span style="font-size:1.5rem;">💰</span>
+      <span style="font-size:1.35rem;font-weight:800;color:#1a3c5e;letter-spacing:-0.4px;">Budget Right</span>
+    </div>
+    """, unsafe_allow_html=True)
