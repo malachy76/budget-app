@@ -12,6 +12,7 @@ from utils import save_expense, apply_income_filters, apply_expense_filters, \
     render_filter_bar_income, render_filter_bar_expenses, \
     get_category_budgets, compute_daily_safe_to_spend, BUDGET_CATEGORIES, upsert_category_budget
 from auth import validate_password, change_password, get_onboarding_status, mark_onboarding_complete
+from styles import render_page_header
 
 
 
@@ -1178,6 +1179,7 @@ def _render_daily_summary(d: dict) -> None:
 
 
 def render_dashboard(user_id, pages):
+    render_page_header()
     st.markdown("## My Dashboard")
     with get_db() as (conn, cursor):
         cursor.execute("SELECT COALESCE(SUM(balance),0) AS n FROM banks WHERE user_id=%s", (user_id,))
