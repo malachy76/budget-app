@@ -1,3 +1,4 @@
+from styles import render_page_header
 # expenses.py — expenses page
 import streamlit as st
 import pandas as pd
@@ -12,6 +13,7 @@ from auth import validate_password, change_password, get_onboarding_status, mark
 
 
 def render_expenses(user_id, pages):
+    render_page_header()
     st.title("📉 Expenses")
     with get_db() as (conn, cursor):
         cursor.execute("SELECT id, bank_name, account_number, balance FROM banks WHERE user_id=%s", (user_id,))
@@ -42,6 +44,7 @@ def render_expenses(user_id, pages):
                     cursor.execute("UPDATE expenses SET name=%s, category=%s, amount=%s WHERE id=%s AND user_id=%s",
                                    (new_name, new_category, new_amount, edit_id, user_id))
                 st.success("Expense updated!")
+                st.cache_data.clear()
                 st.session_state.edit_exp_id = None
                 st.rerun()
             if cancel_clicked:
@@ -170,6 +173,7 @@ def render_expenses(user_id, pages):
             ok, result = save_expense(user_id, bank_id, expense_name, int(expense_amount), category=category)
             if ok:
                 st.success(f"'{expense_name}' ({category}) — ₦{int(expense_amount):,} added.")
+                st.cache_data.clear()
                 st.session_state.quick_add_name = ""
                 st.rerun()
             else:
