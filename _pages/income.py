@@ -1,3 +1,4 @@
+from styles import render_page_header
 # income.py — income page
 import streamlit as st
 import pandas as pd
@@ -12,6 +13,7 @@ from auth import validate_password, change_password, get_onboarding_status, mark
 
 
 def render_income(user_id):
+    render_page_header()
     st.title("📈 Income")
     with get_db() as (conn, cursor):
         cursor.execute("SELECT id, bank_name, account_number, balance FROM banks WHERE user_id=%s", (user_id,))
@@ -59,6 +61,7 @@ def render_income(user_id):
                     cursor.execute("UPDATE transactions SET amount=%s, description=%s WHERE id=%s",
                                    (new_amount, f"Income: {new_source}", inc_row["id"]))
                 st.success("Income updated!")
+                st.cache_data.clear()
                 st.session_state.edit_income_id = None
                 st.rerun()
             if cancel_clicked:
@@ -86,6 +89,7 @@ def render_income(user_id):
                         cursor.execute("INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'credit', %s, %s, %s)",
                                        (bank_id, income_amount, f"Income: {income_source}", inc_date))
                     st.success(f"₦{income_amount:,} income recorded!")
+                    st.cache_data.clear()
                     st.rerun()
                 else:
                     st.warning("Please enter a source and amount.")
