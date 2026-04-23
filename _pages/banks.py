@@ -1,3 +1,4 @@
+from styles import render_page_header
 # banks.py — banks page
 import streamlit as st
 import pandas as pd
@@ -12,6 +13,7 @@ from auth import validate_password, change_password, get_onboarding_status, mark
 
 
 def render_banks(user_id):
+    render_page_header()
     st.title("🏦 Bank Accounts")
 
     with st.expander("➕ Add Bank Account", expanded=False):
