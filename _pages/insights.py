@@ -1,3 +1,4 @@
+from styles import render_page_header
 # _pages/insights.py
 # Smart Insights page — renders all AI-style financial insights for the user
 import streamlit as st
@@ -17,6 +18,7 @@ _CAT_ORDER = ["warning", "spending", "goal", "saving", "habit"]
 
 
 def render_insights(user_id: int):
+    render_page_header()
     st.title("💡 Smart Insights")
     st.caption("Personalised financial observations updated every time you visit this page.")
 
