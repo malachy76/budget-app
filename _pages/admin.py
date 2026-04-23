@@ -1,3 +1,4 @@
+from styles import render_page_header
 # admin.py — Admin Panel and Analytics pages
 import streamlit as st
 import pandas as pd
@@ -8,6 +9,7 @@ from analytics import get_analytics, notify_admin_new_signup, send_reengagement_
 
 
 def render_admin(user_id):
+    render_page_header()
     st.title("🛡️ Admin Panel")
     tabs_admin = st.tabs(["👤 Users", "🏦 Banks", "📊 Summary"])
     with tabs_admin[0]:
