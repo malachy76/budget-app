@@ -1,3 +1,4 @@
+from styles import render_page_header
 # settings.py — Settings page
 import streamlit as st
 from db import get_db
@@ -6,6 +7,7 @@ from auth import validate_password, change_password
 
 
 def render_settings(user_id):
+    render_page_header()
     st.title("⚙️ Settings")
 
     # ── Single preflight query — load everything the page needs at once ───────
