@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Safe CSV bank-statement importer for Budget Right.
+Fixes: fingerprint date mismatch, overdraft silent block, mobile UI.
 """
 
 import re
@@ -181,8 +182,26 @@ def _clean_text(x, fallback="Imported expense"):
     return str(x).strip() or fallback
 
 
+def _to_date(val):
+    """Normalize a DB value (datetime, date, str) to a plain date object."""
+    if val is None:
+        return date.today()
+    if isinstance(val, datetime):
+        return val.date()
+    if isinstance(val, date):
+        return val
+    try:
+        return pd.to_datetime(val, dayfirst=True).date()
+    except Exception:
+        return date.today()
+
+
 def _row_fingerprint(bank_id, txn_date, amount, description):
-    raw = f"{bank_id}|{txn_date}|{amount}|{description.strip().lower()}"
+    """
+    FIX: Always use ISO date string so datetime vs date type never causes mismatches.
+    """
+    date_str = txn_date.isoformat() if hasattr(txn_date, "isoformat") else str(txn_date)[:10]
+    raw = f"{bank_id}|{date_str}|{amount}|{description.strip().lower()}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -222,14 +241,20 @@ def _auto_pick_col(columns, keywords):
 
 
 def _load_existing_fingerprints(cur, bank_id):
+    """
+    FIX: Normalize created_at to plain date before hashing so fingerprints
+    always match regardless of whether the DB returns datetime or date.
+    """
     cur.execute(
-        "SELECT amount, description, created_at FROM transactions WHERE bank_id = %s AND type = 'debit'",
+        "SELECT amount, description, created_at FROM transactions "
+        "WHERE bank_id = %s AND type = 'debit'",
         (bank_id,)
     )
     rows = cur.fetchall()
     fps  = set()
     for r in rows:
-        fp = _row_fingerprint(bank_id, r["created_at"], int(r["amount"]), r["description"] or "")
+        txn_date = _to_date(r["created_at"])          # ← FIX
+        fp = _row_fingerprint(bank_id, txn_date, int(r["amount"]), r["description"] or "")
         fps.add(fp)
     return fps
 
@@ -298,23 +323,55 @@ def _undo_batch(cur, conn, batch_id, user_id):
     return rows_reversed, total_reversed
 
 
+# ── mobile-optimised styles ────────────────────────────────────────────────────
+
+_IMPORT_CSS = """
+<style>
+.imp-badge      { display:inline-block; background:#e8f5f0; color:#0e7c5b;
+                  border-radius:20px; padding:2px 10px; font-size:0.76rem;
+                  font-weight:700; margin-left:4px; white-space:nowrap; }
+.imp-badge-warn { background:#fff3e0; color:#e65100; }
+.imp-badge-dup  { background:#f3e5f5; color:#6a1b9a; }
+.imp-section    { background:#f0f7f4; border-radius:10px;
+                  padding:12px 14px; margin-bottom:10px; }
+.fmt-chip       { display:inline-block; background:#1a3c5e; color:#a8d8c8;
+                  border-radius:8px; padding:3px 10px;
+                  font-size:0.82rem; font-weight:600; }
+.imp-stat-row   { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
+.imp-stat       { flex:1; min-width:110px; background:#fff;
+                  border:1px solid #e0ebe7; border-radius:10px;
+                  padding:10px 12px; text-align:center; }
+.imp-stat-val   { font-size:1.2rem; font-weight:800; color:#0e7c5b; line-height:1.1; }
+.imp-stat-lbl   { font-size:0.72rem; color:#6b7f8e; margin-top:2px; }
+.imp-warn-box   { background:#fff8e1; border-left:4px solid #ffb300;
+                  border-radius:8px; padding:10px 14px;
+                  font-size:0.88rem; color:#5d4037; margin:8px 0; }
+.imp-err-box    { background:#fdecea; border-left:4px solid #e53935;
+                  border-radius:8px; padding:10px 14px;
+                  font-size:0.88rem; color:#b71c1c; margin:8px 0; }
+.imp-ok-box     { background:#e8f5e9; border-left:4px solid #43a047;
+                  border-radius:8px; padding:10px 14px;
+                  font-size:0.88rem; color:#1b5e20; margin:8px 0; }
+
+/* Mobile tweaks */
+@media screen and (max-width: 640px) {
+  .imp-stat-val { font-size:1.05rem; }
+  .imp-stat     { padding:8px 8px; min-width:90px; }
+  .stSelectbox label { font-size:0.82rem !important; }
+  .stButton > button { min-height:48px !important; font-size:1rem !important; }
+  hr { margin:8px 0 !important; }
+}
+</style>
+"""
+
+
 # ── main page ─────────────────────────────────────────────────────────────────
 
 def csv_import_page(conn, user_id: int):
     cur = conn.cursor()
     _ensure_import_tables(cur, conn)
 
-    st.markdown("""
-    <style>
-    .import-badge      { display:inline-block; background:#e8f5f0; color:#0e7c5b;
-                         border-radius:20px; padding:2px 12px; font-size:0.78rem; font-weight:700; margin-left:6px; }
-    .import-badge-warn { background:#fff3e0; color:#e65100; }
-    .import-badge-dup  { background:#f3e5f5; color:#6a1b9a; }
-    .import-section    { background:#f0f7f4; border-radius:10px; padding:14px 18px; margin-bottom:12px; }
-    .format-chip       { display:inline-block; background:#1a3c5e; color:#a8d8c8;
-                         border-radius:8px; padding:4px 12px; font-size:0.82rem; font-weight:600; }
-    </style>
-    """, unsafe_allow_html=True)
+    st.markdown(_IMPORT_CSS, unsafe_allow_html=True)
 
     # 1. Load banks
     cur.execute("SELECT id, bank_name, account_number, balance FROM banks WHERE user_id = %s", (user_id,))
@@ -324,10 +381,11 @@ def csv_import_page(conn, user_id: int):
         return
 
     bank_options = {
-        f"{b['bank_name']} (****{b['account_number']}) - NGN {b['balance']:,}": b for b in banks
+        f"{b['bank_name']} (****{b['account_number']}) — \u20a6{b['balance']:,}": b
+        for b in banks
     }
-    sel_label    = st.selectbox("Which bank does this statement belong to?",
-                                list(bank_options.keys()), key="csv_bank_select")
+    sel_label     = st.selectbox("Which bank does this statement belong to?",
+                                 list(bank_options.keys()), key="csv_bank_select")
     selected_bank = bank_options[sel_label]
     bank_id       = selected_bank["id"]
 
@@ -335,27 +393,40 @@ def csv_import_page(conn, user_id: int):
     last_batch = _get_last_batch(cur, user_id)
     if last_batch:
         with st.expander(
-            f"Undo last import — {last_batch['row_count']} rows, "
-            f"NGN {last_batch['total_amount']:,} "
-            f"(imported {str(last_batch['imported_at'])[:16]})",
+            f"\u21a9 Undo last import \u2014 {last_batch['row_count']} rows \u00b7 "
+            f"\u20a6{last_batch['total_amount']:,} "
+            f"({str(last_batch['imported_at'])[:16]})",
             expanded=False
         ):
             st.warning(
                 f"This will reverse **{last_batch['row_count']} expenses** totalling "
-                f"**NGN {last_batch['total_amount']:,}** and restore your bank balance."
+                f"**\u20a6{last_batch['total_amount']:,}** and restore your bank balance."
             )
             if st.button("Undo this import", key="csv_undo_btn", type="primary"):
                 rows_rev, total_rev = _undo_batch(cur, conn, last_batch["id"], user_id)
-                st.success(f"Reversed {rows_rev} expenses — NGN {total_rev:,} restored.")
+                st.success(f"Reversed {rows_rev} expenses — \u20a6{total_rev:,} restored.")
                 st.rerun()
 
     st.divider()
 
     # 3. File upload
-    file = st.file_uploader("Upload CSV file", type=["csv"], key="csv_file")
+    file = st.file_uploader(
+        "Upload CSV file", type=["csv"], key="csv_file",
+        help="Download your bank statement as CSV from your bank's app or internet banking"
+    )
     if not file:
+        with st.expander("How does CSV import work?", expanded=False):
+            st.markdown("""
+            1. **Download your bank statement** as a CSV from your bank's app or internet banking.
+            2. **Upload it here** using the file uploader above.
+            3. **Map the columns** — Budget Right auto-detects your bank format.
+            4. **Preview and confirm** — every debit row becomes an expense and updates your balance.
+
+            **Supported:** GTB, Access, Zenith, UBA, First Bank, Opay, Kuda, Moniepoint, and more.
+            """)
         return
 
+    # Parse CSV — try UTF-8, fall back to latin-1
     try:
         df = pd.read_csv(file)
     except UnicodeDecodeError:
@@ -375,26 +446,26 @@ def csv_import_page(conn, user_id: int):
     # 4. Bank format auto-detection
     detected_bank, fmt = _detect_bank_format(csv_cols)
     st.markdown(
-        f'<div class="import-section">&#x1F4CB; <strong>Detected format:</strong> '
-        f'<span class="format-chip">{detected_bank}</span></div>',
+        f'<div class="imp-section">\U0001f4cb <strong>Detected format:</strong> '
+        f'<span class="fmt-chip">{detected_bank}</span></div>',
         unsafe_allow_html=True
     )
 
     with st.expander("Raw CSV preview (first 8 rows)", expanded=False):
         st.dataframe(df.head(8), use_container_width=True)
 
-    # 5. Smart column auto-selection
+    # 5. Column mapping
     auto_amount = _auto_pick_col(csv_cols, fmt["amount_cols"])
     auto_date   = _auto_pick_col(csv_cols, fmt["date_cols"])
     auto_desc   = _auto_pick_col(csv_cols, fmt["desc_cols"])
 
     st.subheader("Column mapping")
-    st.caption("Budget Right pre-selected the most relevant columns for your bank. Adjust if needed.")
+    st.caption("Budget Right pre-selected the most likely columns. Adjust if anything looks off.")
 
     c1, c2, c3 = st.columns(3)
     with c1:
         amount_col = st.selectbox(
-            "Amount column *", ["(none)"] + csv_cols,
+            "Amount column \u2605", ["(none)"] + csv_cols,
             index=(csv_cols.index(auto_amount) + 1) if auto_amount else 0,
             key="csv_amount_col",
             help="Column containing debit/expense amounts"
@@ -408,7 +479,7 @@ def csv_import_page(conn, user_id: int):
         )
     with c3:
         desc_col = st.selectbox(
-            "Description column *", ["(none)"] + csv_cols,
+            "Description column \u2605", ["(none)"] + csv_cols,
             index=(csv_cols.index(auto_desc) + 1) if auto_desc else 0,
             key="csv_desc_col",
             help="Narration used as the expense name"
@@ -457,7 +528,7 @@ def csv_import_page(conn, user_id: int):
         st.error("No valid rows found. Check your column mapping.")
         return
 
-    # 7. Duplicate detection
+    # 7. Duplicate detection (uses normalized date fingerprints — FIX)
     existing_fps = _load_existing_fingerprints(cur, bank_id)
     new_rows, dup_rows = [], []
     for r in rows_raw:
@@ -469,10 +540,10 @@ def csv_import_page(conn, user_id: int):
     total_new = sum(r["amount"] for r in new_rows)
     total_dup = sum(r["amount"] for r in dup_rows)
 
-    badge_new = f'<span class="import-badge">{len(new_rows)} new</span>'
-    badge_dup = (f'<span class="import-badge import-badge-dup">{len(dup_rows)} duplicates</span>'
+    badge_new = f'<span class="imp-badge">{len(new_rows)} new</span>'
+    badge_dup = (f'<span class="imp-badge imp-badge-dup">{len(dup_rows)} duplicates</span>'
                  if dup_rows else "")
-    badge_brk = (f'<span class="import-badge import-badge-warn">{len(broken_rows)} broken</span>'
+    badge_brk = (f'<span class="imp-badge imp-badge-warn">{len(broken_rows)} broken</span>'
                  if broken_rows else "")
     st.markdown(f"### Import preview &nbsp; {badge_new} {badge_dup} {badge_brk}",
                 unsafe_allow_html=True)
@@ -483,16 +554,29 @@ def csv_import_page(conn, user_id: int):
         )
         return
 
+    # Stat cards (responsive, wrap on mobile)
+    st.markdown(
+        f'<div class="imp-stat-row">'
+        f'<div class="imp-stat"><div class="imp-stat-val">{len(new_rows)}</div>'
+        f'<div class="imp-stat-lbl">Rows to import</div></div>'
+        f'<div class="imp-stat"><div class="imp-stat-val">\u20a6{total_new:,}</div>'
+        f'<div class="imp-stat-lbl">Total amount</div></div>'
+        + (f'<div class="imp-stat"><div class="imp-stat-val">{len(dup_rows)}</div>'
+           f'<div class="imp-stat-lbl">Skipped (dupes)</div></div>' if dup_rows else "")
+        + '</div>',
+        unsafe_allow_html=True
+    )
+
     preview_df = pd.DataFrame(new_rows)[["date", "description", "category", "amount"]].copy()
-    preview_df.columns = ["Date", "Description", "Category (auto-detected)", "Amount (NGN)"]
-    preview_df["Amount (NGN)"] = preview_df["Amount (NGN)"].apply(lambda v: f"{v:,}")
+    preview_df.columns = ["Date", "Description", "Category", "Amount (\u20a6)"]
+    preview_df["Amount (\u20a6)"] = preview_df["Amount (\u20a6)"].apply(lambda v: f"{v:,}")
     st.dataframe(preview_df, use_container_width=True, height=min(300, 40 + len(new_rows) * 35))
 
-    st.markdown(f"**Total to import: NGN {total_new:,.0f}**")
     if dup_rows:
-        st.info(
-            f"{len(dup_rows)} duplicate row(s) — NGN {total_dup:,.0f} — already in your "
-            f"records and will be skipped automatically."
+        st.markdown(
+            f'<div class="imp-warn-box">\u2139\ufe0f {len(dup_rows)} duplicate row(s) \u2014 '
+            f'\u20a6{total_dup:,} \u2014 already in your records and will be skipped.</div>',
+            unsafe_allow_html=True
         )
 
     # 9. Balance / overdraft check
@@ -501,27 +585,41 @@ def csv_import_page(conn, user_id: int):
     cur.execute("SELECT allow_overdraft FROM users WHERE id = %s", (user_id,))
     allow_overdraft = bool((cur.fetchone() or {}).get("allow_overdraft", 0))
 
-    if total_new > current_balance and not allow_overdraft:
-        st.error(
-            f"Import total (NGN {total_new:,.0f}) exceeds your "
-            f"{selected_bank['bank_name']} balance (NGN {current_balance:,.0f}) "
-            f"by NGN {total_new - current_balance:,.0f}. "
-            f"Enable overdraft in Settings to allow this."
-        )
-        return
-    elif total_new > current_balance:
-        st.warning(
-            f"Import (NGN {total_new:,.0f}) exceeds balance (NGN {current_balance:,.0f}). "
-            f"Overdraft is on — balance will go negative."
-        )
+    balance_ok = True
+    if total_new > current_balance:
+        shortfall = total_new - current_balance
+        if not allow_overdraft:
+            # FIX: was a silent return() — now shows a clear actionable error
+            st.markdown(
+                f'<div class="imp-err-box">\u26a0\ufe0f <strong>Insufficient balance.</strong> '
+                f'Import total (\u20a6{total_new:,}) exceeds your {selected_bank["bank_name"]} '
+                f'balance (\u20a6{current_balance:,}) by \u20a6{shortfall:,}.<br>'
+                f'<strong>Fix:</strong> Go to <em>Settings \u2192 enable Overdraft</em>, '
+                f'or increase your bank balance on the Banks page first.</div>',
+                unsafe_allow_html=True
+            )
+            balance_ok = False
+        else:
+            st.markdown(
+                f'<div class="imp-warn-box">\u26a0\ufe0f Import (\u20a6{total_new:,}) exceeds '
+                f'balance (\u20a6{current_balance:,}). Overdraft is enabled \u2014 '
+                f'balance will go negative.</div>',
+                unsafe_allow_html=True
+            )
 
-    # 10. Final import
-    if st.button(
-        f"Import {len(new_rows)} expenses into Budget Right",
-        use_container_width=True, type="primary", key="csv_import_btn"
-    ):
+    # 10. Import button — visible always, disabled when balance blocked
+    btn_label = f"Import {len(new_rows)} expenses into Budget Right"
+    if not balance_ok:
+        st.button(btn_label, use_container_width=True, type="primary",
+                  key="csv_import_btn", disabled=True)
+        return
+
+    if st.button(btn_label, use_container_width=True, type="primary", key="csv_import_btn"):
         imported      = 0
         import_errors = []
+        total_to_do   = len(new_rows)
+        progress      = st.progress(0, text="Importing\u2026")
+
         try:
             cur.execute("""
                 INSERT INTO import_batches
@@ -530,7 +628,7 @@ def csv_import_page(conn, user_id: int):
             """, (user_id, bank_id, filename, len(new_rows), total_new))
             batch_id = cur.fetchone()["id"]
 
-            for r in new_rows:
+            for i, r in enumerate(new_rows):
                 try:
                     amt      = r["amount"]
                     desc     = r["description"]
@@ -563,24 +661,36 @@ def csv_import_page(conn, user_id: int):
                 except Exception as row_exc:
                     import_errors.append(str(row_exc))
 
+                # Update progress every 10 rows to avoid UI flooding
+                if i % 10 == 0 or i == total_to_do - 1:
+                    progress.progress(
+                        (i + 1) / total_to_do,
+                        text=f"Importing\u2026 {i + 1}/{total_to_do}"
+                    )
+
             actual_total = sum(r["amount"] for r in new_rows[:imported])
             cur.execute(
                 "UPDATE import_batches SET row_count=%s, total_amount=%s WHERE id=%s",
                 (imported, actual_total, batch_id)
             )
             conn.commit()
+            progress.empty()
 
             if imported > 0:
-                st.success(
-                    f"Imported **{imported}** expenses from "
-                    f"**{selected_bank['bank_name']}** successfully! "
-                    f"Balance updated. To undo, reload and expand 'Undo last import' above."
+                st.markdown(
+                    f'<div class="imp-ok-box">\u2705 <strong>Imported {imported} expenses</strong> '
+                    f'from <strong>{selected_bank["bank_name"]}</strong> successfully! '
+                    f'Your balance has been updated.<br>'
+                    f'<em>To undo, reload this page and expand \u201cUndo last import\u201d above.</em></div>',
+                    unsafe_allow_html=True
                 )
+                st.balloons()
             if import_errors:
-                with st.expander(f"{len(import_errors)} row(s) failed"):
+                with st.expander(f"{len(import_errors)} row(s) failed during import"):
                     for err in import_errors:
                         st.caption(err)
 
         except Exception as e:
             conn.rollback()
-            st.error(f"Import failed — no data was changed. Error: {e}")
+            progress.empty()
+            st.error(f"Import failed \u2014 no data was changed. Error: {e}")
