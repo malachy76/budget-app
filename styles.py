@@ -271,6 +271,18 @@ hr { border-color: #e8f0ec !important; margin: 1rem 0 !important; }
 }
 .insight-text { font-size: 0.92rem; line-height: 1.5; }
 
+/* Suggestion action buttons — compact pill style */
+div[data-testid="stButton"]:has(button[kind="secondary"]) button {
+    border-radius: 20px !important;
+}
+.suggestion-action-wrap div[data-testid="stButton"] > button {
+    border-radius: 20px !important;
+    font-size: 0.78rem !important;
+    min-height: 1.9rem !important;
+    padding: 0.2rem 1rem !important;
+    margin-top: 4px !important;
+}
+
 /* ══════════════════════════════════════════════
    WEEKLY SUMMARY CARD
 ══════════════════════════════════════════════ */
@@ -542,6 +554,15 @@ div[data-testid="stProgress"] > div {
     /* Insight cards */
     .insight-card { padding: 10px 11px !important; }
     .insight-text  { font-size: 0.86rem !important; }
+
+    /* Suggestion action buttons on mobile */
+    div[data-testid="stButton"][class*="suggestion_btn"] > button,
+    .suggestion-action-btn > div[data-testid="stButton"] > button {
+        font-size: 0.72rem !important;
+        min-height: 1.8rem !important;
+        padding: 0.2rem 0.9rem !important;
+        border-radius: 20px !important;
+    }
 
     hr { margin: 0.5rem 0 !important; }
     div[data-testid="stProgress"] > div { height: 7px !important; }
