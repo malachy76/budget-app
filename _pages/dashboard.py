@@ -855,39 +855,47 @@ def _fetch_smart_suggestions_cached(user_id: int, spending_limit: int,
 
 def _render_smart_suggestions(suggestions: list, pages: list):
     """Render smart suggestion cards with clickable action buttons."""
-    # Map action labels to page names in the nav
     _ACTION_PAGE_MAP = {
-        "Go to Banks":            "Banks",
-        "Go to Income":           "Income",
-        "Go to Tracker":          "Tracker",
-        "Go to Savings Goals":    "Savings Goals",
-        "Check Expenses":         "Expenses",
+        "Go to Banks":               "Banks",
+        "Go to Income":              "Income",
+        "Go to Tracker":             "Tracker",
+        "Go to Savings Goals":       "Savings Goals",
+        "Check Expenses":            "Expenses",
         "Set up recurring transfer": "Transfers",
     }
 
     for idx, s in enumerate(suggestions):
-        st.markdown(
-            f'<div class="insight-card" '
-            f'style="background:{s["bg"]};border-left:4px solid {s["border"]};">'
-            f'<div class="insight-icon">{s["icon"]}</div>'
-            f'<div class="insight-body">'
-            f'<div class="insight-title" style="color:{s["border"]};">{s["label"]}</div>'
-            f'<div class="insight-text" style="color:{s["color"]};">{s["text"]}</div>'
-            f'</div></div>',
-            unsafe_allow_html=True
+        action      = s.get("action")
+        target_page = _ACTION_PAGE_MAP.get(action) if action else None
+        has_action  = bool(target_page and target_page in pages)
+
+        card_html = (
+            "<div style='background:{bg};border-left:4px solid {border};"
+            "border-radius:12px;padding:13px 15px;margin-bottom:4px;"
+            "box-shadow:0 1px 5px rgba(0,0,0,0.06);'>"
+            "<span style='font-size:1.35rem;'>{icon}</span>&nbsp;"
+            "<strong style='color:{border};text-transform:uppercase;"
+            "font-size:0.85rem;letter-spacing:0.04em;'>{label}</strong><br>"
+            "<span style='font-size:0.92rem;line-height:1.5;color:{color};'>{text}</span>"
+            "</div>"
+        ).format(
+            bg=s["bg"], border=s["border"],
+            icon=s["icon"], label=s["label"],
+            color=s["color"], text=s["text"],
         )
-        action = s.get("action")
-        if action and action in _ACTION_PAGE_MAP:
-            target_page = _ACTION_PAGE_MAP[action]
-            if target_page in pages:
-                btn_label = f"→ {action}"
+
+        with st.container():
+            st.markdown(card_html, unsafe_allow_html=True)
+            if has_action:
+                safe_key = "".join(c if c.isalnum() else "_" for c in s["label"])[:40]
                 if st.button(
-                    btn_label,
-                    key=f"suggestion_btn_{idx}",
-                    use_container_width=False,
+                    "Go to " + target_page + " \u2192",
+                    key="sug_" + str(idx) + "_" + safe_key,
+                    use_container_width=True,
                 ):
-                    st.session_state.nav_radio = pages.index(target_page)
+                    st.session_state["nav_radio"] = pages.index(target_page)
                     st.rerun()
+            st.markdown("<div style='margin-bottom:8px;'></div>", unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
