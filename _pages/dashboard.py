@@ -853,16 +853,19 @@ def _fetch_smart_suggestions_cached(user_id: int, spending_limit: int,
     return S[:8]
 
 
-def _render_smart_suggestions(suggestions: list):
-    """Render smart suggestion cards with action CTAs."""
-    for s in suggestions:
-        action_html = (
-            f'<div style="margin-top:8px;">'
-            f'<span style="background:{s["border"]};color:#fff;border-radius:20px;'
-            f'padding:3px 14px;font-size:0.75rem;font-weight:700;">'
-            f'&#x2192; {s["action"]}</span></div>'
-            if s.get("action") else ""
-        )
+def _render_smart_suggestions(suggestions: list, pages: list):
+    """Render smart suggestion cards with clickable action buttons."""
+    # Map action labels to page names in the nav
+    _ACTION_PAGE_MAP = {
+        "Go to Banks":            "Banks",
+        "Go to Income":           "Income",
+        "Go to Tracker":          "Tracker",
+        "Go to Savings Goals":    "Savings Goals",
+        "Check Expenses":         "Expenses",
+        "Set up recurring transfer": "Transfers",
+    }
+
+    for idx, s in enumerate(suggestions):
         st.markdown(
             f'<div class="insight-card" '
             f'style="background:{s["bg"]};border-left:4px solid {s["border"]};">'
@@ -870,10 +873,21 @@ def _render_smart_suggestions(suggestions: list):
             f'<div class="insight-body">'
             f'<div class="insight-title" style="color:{s["border"]};">{s["label"]}</div>'
             f'<div class="insight-text" style="color:{s["color"]};">{s["text"]}</div>'
-            f'{action_html}'
             f'</div></div>',
             unsafe_allow_html=True
         )
+        action = s.get("action")
+        if action and action in _ACTION_PAGE_MAP:
+            target_page = _ACTION_PAGE_MAP[action]
+            if target_page in pages:
+                btn_label = f"→ {action}"
+                if st.button(
+                    btn_label,
+                    key=f"suggestion_btn_{idx}",
+                    use_container_width=False,
+                ):
+                    st.session_state.nav_radio = pages.index(target_page)
+                    st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1422,7 +1436,7 @@ def render_dashboard(user_id, pages):
         st.divider()
         st.subheader("Smart Suggestions")
         st.caption("Personalised insights based on your actual spending — updated every time you visit.")
-        _render_smart_suggestions(_suggestions)
+        _render_smart_suggestions(_suggestions, pages)
 
     # ── WEEKLY SUMMARY ────────────────────────────────────────────────────────
     st.divider()
