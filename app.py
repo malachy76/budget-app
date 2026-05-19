@@ -261,6 +261,10 @@ with st.sidebar:
     if st.session_state.user_role == "admin":
         pages = ["Admin Panel", "Analytics"] + pages
 
+    # Apply any pending navigation (set by Go-to buttons in dashboard/notifications)
+    if st.session_state.get("_pending_nav") is not None:
+        st.session_state["nav_radio"] = st.session_state.pop("_pending_nav")
+
     selected_idx = st.radio(
         "Navigate",
         range(len(pages)),
