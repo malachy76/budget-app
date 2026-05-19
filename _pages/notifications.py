@@ -305,7 +305,7 @@ def render_notifications(user_id: int) -> None:
                     key="notif_nav_" + str(notif["id"]),
                     use_container_width=True,
                 ):
-                    st.session_state["nav_radio"] = _PAGES_LIST.index(action_page)
+                    st.session_state["_pending_nav"] = _PAGES_LIST.index(action_page)
                     st.rerun()
         with action_col:
             if not notif["read"]:
