@@ -237,6 +237,37 @@ def render_notifications(user_id: int) -> None:
         """, unsafe_allow_html=True)
         return
 
+    # Maps keywords found in notification title/body to page names
+    _NAV_KEYWORDS = {
+        "Expenses":      "Expenses",
+        "Expense":       "Expenses",
+        "Settings":      "Settings",
+        "Banks":         "Banks",
+        "Bank":          "Banks",
+        "Income":        "Income",
+        "Tracker":       "Tracker",
+        "Savings Goals": "Savings Goals",
+        "Savings Goal":  "Savings Goals",
+        "Transfers":     "Transfers",
+        "Transfer":      "Transfers",
+        "Summaries":     "Summaries",
+    }
+    # Build the pages list (same order as app.py) for nav_radio index
+    _PAGES_LIST = [
+        "Dashboard", "Income", "Expenses",
+        "Banks", "Transfers", "Savings Goals",
+        "Tracker", "Summaries",
+        "Notifications", "Import CSV", "Settings",
+    ]
+
+    def _detect_action_page(title: str, body: str):
+        """Return the first page name found in the notification text, or None."""
+        combined = title + " " + body
+        for keyword, page in _NAV_KEYWORDS.items():
+            if keyword in combined:
+                return page
+        return None
+
     for notif in shown:
         cfg      = _TYPE_CONFIG.get(notif["type"], _DEFAULT_CFG)
         read_cls = "read" if notif["read"] else "unread"
@@ -247,6 +278,8 @@ def render_notifications(user_id: int) -> None:
             'vertical-align:middle;"></span>'
             if not notif["read"] else ""
         )
+
+        action_page = _detect_action_page(notif["title"], notif["body"])
 
         card_col, action_col = st.columns([7, 0.6])
         with card_col:
@@ -266,6 +299,14 @@ def render_notifications(user_id: int) -> None:
                 f'</div></div>',
                 unsafe_allow_html=True
             )
+            if action_page and action_page in _PAGES_LIST:
+                if st.button(
+                    "Go to " + action_page + " \u2192",
+                    key="notif_nav_" + str(notif["id"]),
+                    use_container_width=True,
+                ):
+                    st.session_state["nav_radio"] = _PAGES_LIST.index(action_page)
+                    st.rerun()
         with action_col:
             if not notif["read"]:
                 if st.button("✓", key=f"notif_read_{notif['id']}", help="Mark as read"):
