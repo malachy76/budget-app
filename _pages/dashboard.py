@@ -854,7 +854,7 @@ def _fetch_smart_suggestions_cached(user_id: int, spending_limit: int,
 
 
 def _render_smart_suggestions(suggestions: list, pages: list):
-    """Render smart suggestion cards with clickable action buttons."""
+    """Render smart suggestion cards with clickable navigation buttons."""
     _ACTION_PAGE_MAP = {
         "Go to Banks":               "Banks",
         "Go to Income":              "Income",
@@ -871,12 +871,12 @@ def _render_smart_suggestions(suggestions: list, pages: list):
 
         card_html = (
             "<div style='background:{bg};border-left:4px solid {border};"
-            "border-radius:12px;padding:13px 15px;margin-bottom:4px;"
+            "border-radius:12px;padding:12px 15px;margin-bottom:4px;"
             "box-shadow:0 1px 5px rgba(0,0,0,0.06);'>"
-            "<span style='font-size:1.35rem;'>{icon}</span>&nbsp;"
+            "<span style='font-size:1.3rem;'>{icon}</span>&nbsp;"
             "<strong style='color:{border};text-transform:uppercase;"
-            "font-size:0.85rem;letter-spacing:0.04em;'>{label}</strong><br>"
-            "<span style='font-size:0.92rem;line-height:1.5;color:{color};'>{text}</span>"
+            "font-size:0.82rem;letter-spacing:0.04em;'>{label}</strong><br>"
+            "<span style='font-size:0.9rem;line-height:1.5;color:{color};'>{text}</span>"
             "</div>"
         ).format(
             bg=s["bg"], border=s["border"],
@@ -889,11 +889,11 @@ def _render_smart_suggestions(suggestions: list, pages: list):
             if has_action:
                 safe_key = "".join(c if c.isalnum() else "_" for c in s["label"])[:40]
                 if st.button(
-                    "Go to " + target_page + " \u2192",
+                    "Go to " + target_page + " →",
                     key="sug_" + str(idx) + "_" + safe_key,
                     use_container_width=True,
                 ):
-                    st.session_state["nav_radio"] = pages.index(target_page)
+                    st.session_state["_pending_nav"] = pages.index(target_page)
                     st.rerun()
             st.markdown("<div style='margin-bottom:8px;'></div>", unsafe_allow_html=True)
 
