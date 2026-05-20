@@ -26,18 +26,9 @@ def render_import_csv(user_id, pages):
         </div>
         """, unsafe_allow_html=True)
         if st.button("Go to Banks page", key="csv_goto_banks"):
-            st.session_state.nav_radio = pages.index("Banks")
+            st.session_state["_pending_nav"] = pages.index("Banks")
             st.rerun()
     else:
-        with st.expander("How does CSV import work?", expanded=False):
-            st.markdown("""
-            1. **Download your bank statement** as a CSV from your bank's app or internet banking portal.
-            2. **Upload it here** using the file uploader below.
-            3. **Map the columns** — Budget Right auto-detects your bank format.
-            4. **Preview and import** — every row becomes an expense and debits your bank balance.
-
-            **Supported:** GTB, Access, Zenith, UBA, First Bank, Opay, Kuda, Moniepoint, and more.
-            """)
         conn_csv = get_connection()
         try:
             csv_import_page(conn_csv, user_id)
