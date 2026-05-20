@@ -17,15 +17,32 @@ def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
     """
     return psycopg2.pool.ThreadedConnectionPool(
         minconn=1,
-        maxconn=8,           # Supabase free tier: 15 direct / 200 pooler
+        maxconn=5,           # Conservative: prevents pool exhaustion on Streamlit Cloud
         dsn=st.secrets["SUPABASE_DB_URL"],
         cursor_factory=psycopg2.extras.RealDictCursor,
     )
 
 
 def get_connection():
-    """Get a raw connection from the pool (caller must return it)."""
-    return _get_pool().getconn()
+    """Get a raw connection from the pool wrapped so .close() returns it safely."""
+    pool = _get_pool()
+    raw  = pool.getconn()
+
+    class _PooledConn:
+        """Routes .close() to putconn so the pool slot is never permanently lost."""
+        def __getattr__(self, name):
+            return getattr(raw, name)
+        def close(self):
+            try:
+                pool.putconn(raw)
+            except Exception:
+                pass
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            self.close()
+
+    return _PooledConn()
 
 
 def _return_connection(conn, error: bool = False) -> None:
@@ -38,17 +55,25 @@ def _return_connection(conn, error: bool = False) -> None:
 @contextmanager
 def get_db():
     """
-    Yield (conn, cursor).  Commits on success, rolls back on exception.
-    Returns the connection to the pool — never closes it.
-    Multiple get_db() calls within one request reuse the same pool slot.
+    Yield (conn, cursor). Commits on success, rolls back on exception.
+    Returns the connection to the pool. Auto-resets pool on exhaustion.
     """
-    conn   = _get_pool().getconn()
+    from psycopg2.pool import PoolError
+    try:
+        conn = _get_pool().getconn()
+    except PoolError:
+        # Pool exhausted — clear the cache so a fresh pool is created next call
+        _get_pool.clear()
+        conn = _get_pool().getconn()
     cursor = conn.cursor()
     try:
         yield conn, cursor
         conn.commit()
     except Exception:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         _return_connection(conn, error=True)
         raise
     else:
