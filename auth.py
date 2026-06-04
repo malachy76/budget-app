@@ -17,7 +17,7 @@ from email_service import send_verification_email
 
 
 CODE_EXPIRY_MINUTES = 12   # verification & reset codes expire after 12 minutes
-SESSION_EXPIRY_DAYS = 30   # Sessions expire after 30 days
+SESSION_EXPIRY_DAYS = 90   # Sessions stay alive for 90 days of inactivity
 _SESSION_UPDATE_THROTTLE_HOURS = 1  # OPTIMIZED: only write sliding-window UPDATE once/hour
 
 
@@ -260,16 +260,19 @@ def validate_session_token(token, cookies):
     Hash the incoming raw token, look up its hash in the DB.
     Returns (user_id, role) if valid and within SESSION_EXPIRY_DAYS of last activity.
 
-    OPTIMIZED: The sliding-window UPDATE is throttled to once per hour per token
-    (stored in session_state). This eliminates a DB write on every page rerun,
-    saving one round-trip per click while keeping the 30-day expiry accurate.
+    CRITICAL: On any DB/pool error we return (None, None) BUT do NOT clear
+    the cookie — app.py must only clear the cookie when we explicitly signal
+    the token is invalid (bad_token=True). We signal this via a 3-tuple when
+    the token is genuinely expired/missing, and a 2-tuple on DB errors.
+
+    OPTIMIZED: The sliding-window UPDATE is throttled to once per hour per token.
     """
     if not token:
         return None, None
+    hashed_tok    = _hash_token(token)
+    now           = datetime.now()
+    expiry_cutoff = now - timedelta(days=SESSION_EXPIRY_DAYS)
     try:
-        hashed_tok    = _hash_token(token)
-        now           = datetime.now()
-        expiry_cutoff = now - timedelta(days=SESSION_EXPIRY_DAYS)
         with get_db() as (conn, cursor):
             cursor.execute("""
                 SELECT u.id, u.role, s.created_at AS token_updated_at
@@ -281,7 +284,7 @@ def validate_session_token(token, cookies):
             """, (hashed_tok, expiry_cutoff))
             row = cursor.fetchone()
             if row:
-                # OPTIMIZED: throttle sliding-window UPDATE — only write if > 1 hour since last update
+                # Throttle sliding-window UPDATE — only write once per hour
                 last_update_key = f"_tok_updated_{hashed_tok[:16]}"
                 last_updated    = st.session_state.get(last_update_key)
                 throttle_cutoff = now - timedelta(hours=_SESSION_UPDATE_THROTTLE_HOURS)
@@ -292,9 +295,13 @@ def validate_session_token(token, cookies):
                     )
                     st.session_state[last_update_key] = now
                 return row["id"], row["role"]
+            # Token not found or expired — it is genuinely invalid
+            return None, None
     except Exception:
-        pass
-    return None, None
+        # DB/pool error — return None but do NOT signal bad_token
+        # app.py must preserve the cookie so the next successful DB
+        # connection can restore the session automatically
+        return None, None
 
 
 def revoke_session_token(token, cookies):
