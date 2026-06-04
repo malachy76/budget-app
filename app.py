@@ -91,17 +91,41 @@ for k, v in _DEFAULTS.items():
         st.session_state[k] = v
 
 # ── Restore session from cookie ───────────────────────────────────────────────
+# RULE: NEVER clear the cookie on a DB/pool error. Only clear it when we can
+# positively confirm the token is invalid (DB is up, token not found).
 if st.session_state.user_id is None:
     _tok = cookies.get("session_token", "")
     if _tok:
         _uid, _role = validate_session_token(_tok, cookies)
         if _uid:
+            # Token valid — restore session
             st.session_state.user_id       = _uid
             st.session_state.user_role     = _role
             st.session_state.session_token = _tok
         else:
-            cookies["session_token"] = ""
-            cookies.save()
+            # Token returned None — could be DB error OR genuinely invalid token.
+            # Only clear the cookie if a second attempt also fails AND
+            # a lightweight health-check confirms the DB is reachable.
+            # This way a Streamlit Cloud pool reset never logs users out.
+            _uid2, _role2 = validate_session_token(_tok, cookies)
+            if _uid2:
+                st.session_state.user_id       = _uid2
+                st.session_state.user_role     = _role2
+                st.session_state.session_token = _tok
+            else:
+                # Both attempts failed. Check if DB is actually reachable.
+                _db_reachable = False
+                try:
+                    with get_db() as (_hc, _hcur):
+                        _hcur.execute("SELECT 1")
+                        _db_reachable = True
+                except Exception:
+                    pass
+                if _db_reachable:
+                    # DB is up and token is genuinely missing/expired — safe to clear
+                    cookies["session_token"] = ""
+                    cookies.save()
+                # DB unreachable → keep cookie intact; user will be restored on next load
 
 # ── Not logged in → landing page ──────────────────────────────────────────────
 if st.session_state.user_id is None and not st.session_state.get("demo_mode"):
@@ -261,7 +285,7 @@ with st.sidebar:
     if st.session_state.user_role == "admin":
         pages = ["Admin Panel", "Analytics"] + pages
 
-    # Apply any pending navigation (set by Go-to buttons in dashboard/notifications)
+    # Apply pending navigation from Go-to buttons
     if st.session_state.get("_pending_nav") is not None:
         st.session_state["nav_radio"] = st.session_state.pop("_pending_nav")
 
