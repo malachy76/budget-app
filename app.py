@@ -21,12 +21,9 @@ section[data-testid="stSidebar"] ul { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
-from streamlit_cookies_manager import EncryptedCookieManager
+from cookies_compat import CookieManagerCompat
 
-cookies = EncryptedCookieManager(
-    prefix="budget_right_",
-    password=st.secrets["COOKIE_PASSWORD"]
-)
+cookies = CookieManagerCompat(prefix="budget_right_")
 if not cookies.ready():
     st.stop()
 
@@ -94,7 +91,10 @@ for k, v in _DEFAULTS.items():
 # RULE: NEVER clear the cookie on a DB/pool error. Only clear it when we can
 # positively confirm the token is invalid (DB is up, token not found).
 if st.session_state.user_id is None:
-    _tok = cookies.get("session_token", "")
+    # Prefer session_state's token (set synchronously right after login —
+    # see _pages/landing.py) over the cookie, since the cookie component
+    # can lag a render cycle behind a just-written value.
+    _tok = st.session_state.get("session_token") or cookies.get("session_token", "")
     if _tok:
         _uid, _role = validate_session_token(_tok, cookies)
         if _uid:
