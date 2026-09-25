@@ -1,7 +1,8 @@
-streamlit
+streamlit>=1.40.1
 psycopg2-binary
 bcrypt
-extra-streamlit-componentspandas
+extra-streamlit-components
+pandas
 plotly
 python-dateutil
 reportlab
