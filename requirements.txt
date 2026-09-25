@@ -1,8 +1,7 @@
 streamlit
 psycopg2-binary
 bcrypt
-streamlit-cookies-manager
-pandas
+extra-streamlit-componentspandas
 plotly
 python-dateutil
 reportlab
