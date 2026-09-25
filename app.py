@@ -21,7 +21,7 @@ section[data-testid="stSidebar"] ul { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
-   from cookies_compat import CookieManagerCompat
+from cookies_compat import CookieManagerCompat
 
 cookies = CookieManagerCompat(prefix="budget_right_")
 if not cookies.ready():
