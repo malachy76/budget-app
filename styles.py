@@ -123,6 +123,29 @@ textarea,
     caret-color: #1a2e3b !important;
     opacity: 1 !important;
 }
+/* Tag-level fallback: newer Streamlit/BaseWeb releases occasionally change
+   the wrapper markup above, which silently breaks the selectors that rely
+   on it. This catches every input/textarea/select by tag name regardless
+   of however Streamlit nests them, so text never disappears into the box
+   background again after a future Streamlit upgrade. */
+input, textarea, select {
+    color: #1a2e3b !important;
+    -webkit-text-fill-color: #1a2e3b !important;
+    background-color: #fafcfb !important;
+    caret-color: #1a2e3b !important;
+    opacity: 1 !important;
+}
+/* Chrome/Edge autofill forces its own text/background colors on
+   autofilled fields (common on login/register username+password boxes),
+   which can reproduce this exact invisible-text symptom independent of
+   anything above. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+    -webkit-text-fill-color: #1a2e3b !important;
+    -webkit-box-shadow: 0 0 0px 1000px #fafcfb inset !important;
+    caret-color: #1a2e3b !important;
+}
 /* Placeholder — muted but readable */
 div[data-baseweb="input"] input::placeholder,
 div[data-baseweb="textarea"] textarea::placeholder,
