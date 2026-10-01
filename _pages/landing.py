@@ -4,17 +4,57 @@ from datetime import datetime
 
 from db import get_db
 from auth import (
-    is_valid_email, validate_password,
+    is_valid_email, is_valid_phone, validate_password, password_strength,
     register_user, login_user,
     request_password_reset, reset_password,
+    request_password_reset_by_phone, reset_password_by_phone,
     resend_verification, verify_email_code,
     create_session_token, track_login, track_signup,
     CODE_EXPIRY_MINUTES,
 )
-from email_service import notify_admin_new_signup
+from email_service import notify_admin_new_signup, send_verification_email
+
+
+def _render_password_strength(password):
+    """Live-ish strength meter — updates whenever Streamlit reruns the
+    script (on Enter / tab-out), which is as close to 'live' as a plain
+    st.text_input supports without a custom JS component."""
+    if not password:
+        return
+    score, label, color = password_strength(password)
+    st.markdown(f"""
+    <div style="background:#e5eae8;border-radius:6px;height:7px;margin:2px 0 3px 0;overflow:hidden;">
+      <div style="background:{color};width:{score * 25}%;height:100%;border-radius:6px;"></div>
+    </div>
+    <div style="font-size:0.8rem;font-weight:600;color:{color};margin-bottom:8px;">{label}</div>
+    """, unsafe_allow_html=True)
 
 
 def render_landing(cookies):
+    # ── Cookie consent banner ───────────────────────────────────────────────
+    if cookies.get("cookie_consent", "") != "accepted":
+        st.markdown("""
+        <div style="background:#1a3c5e;border-radius:10px;padding:14px 18px;margin-bottom:14px;
+                    color:#d4eee6;font-size:0.88rem;line-height:1.5;">
+          &#x1F36A; We use one essential cookie to keep you logged in between visits.
+          We don&#x2019;t use tracking or advertising cookies.
+        </div>
+        """, unsafe_allow_html=True)
+        cc1, cc2 = st.columns([1, 4])
+        with cc1:
+            if st.button("Accept", key="cookie_accept_btn", type="primary", use_container_width=True):
+                cookies["cookie_consent"] = "accepted"
+                cookies.save()
+                st.rerun()
+        with cc2:
+            with st.expander("Why does this app use cookies?"):
+                st.caption(
+                    "Budget Right stores one cookie containing a random session token "
+                    "so you don't have to log in again every time you open the app. "
+                    "This cookie is required for login to work and is not used for "
+                    "tracking, analytics, or advertising."
+                )
+
     st.markdown("""
     <style>
     .landing-hero {
@@ -192,32 +232,75 @@ def render_landing(cookies):
 
             if st.session_state.show_forgot_password:
                 with st.expander("Reset Password", expanded=True):
-                    st.caption(f"A reset code will be sent to your email. It expires in {CODE_EXPIRY_MINUTES} minutes.")
-                    email_input = st.text_input("Enter your email", key="reset_email_input")
-                    if st.button("Send Reset Code", key="send_reset_btn"):
-                        if email_input:
-                            if not is_valid_email(email_input):
-                                st.error("Please enter a valid email address.")
-                            else:
-                                success, msg = request_password_reset(email_input)
-                                if success:
-                                    st.success(msg)
-                                    st.session_state.show_forgot_password = False
-                                    st.session_state.show_reset_form = True
-                                    st.session_state.reset_email = email_input
+                    reset_method = st.radio(
+                        "Reset via", ["Email", "Phone number"],
+                        key="reset_method", horizontal=True,
+                    )
+
+                    if reset_method == "Email":
+                        st.caption(
+                            f"Enter the email address you registered with. "
+                            f"We'll send a reset code to it, valid for {CODE_EXPIRY_MINUTES} minutes."
+                        )
+                        email_input = st.text_input(
+                            "Registered email address",
+                            key="reset_email_input",
+                            placeholder="e.g. yourname@example.com",
+                        )
+                        if st.button("Send Reset Code", key="send_reset_btn_email"):
+                            if email_input:
+                                if not is_valid_email(email_input):
+                                    st.error("Please enter a valid email address.")
                                 else:
-                                    st.error(msg)
-                        else:
-                            st.warning("Enter your email.")
+                                    success, msg = request_password_reset(email_input)
+                                    if success:
+                                        st.success(msg)
+                                        st.session_state.show_forgot_password = False
+                                        st.session_state.show_reset_form = True
+                                        st.session_state.reset_via = "email"
+                                        st.session_state.reset_identifier = email_input
+                                    else:
+                                        st.error(msg)
+                            else:
+                                st.warning("Enter your email.")
+                    else:
+                        st.caption(
+                            f"Enter the phone number you registered with. "
+                            f"We'll text a reset code to it, valid for {CODE_EXPIRY_MINUTES} minutes."
+                        )
+                        phone_input = st.text_input(
+                            "Registered phone number",
+                            key="reset_phone_input",
+                            placeholder="e.g. 08012345678",
+                        )
+                        if st.button("Send Reset Code", key="send_reset_btn_phone"):
+                            if phone_input:
+                                if not is_valid_phone(phone_input):
+                                    st.error("Please enter a valid Nigerian phone number (e.g. 08012345678 or +2348012345678).")
+                                else:
+                                    success, msg = request_password_reset_by_phone(phone_input)
+                                    if success:
+                                        st.success(msg)
+                                        st.session_state.show_forgot_password = False
+                                        st.session_state.show_reset_form = True
+                                        st.session_state.reset_via = "phone"
+                                        st.session_state.reset_identifier = phone_input
+                                    else:
+                                        st.error(msg)
+                            else:
+                                st.warning("Enter your phone number.")
+
                     if st.button("Cancel", key="cancel_reset_btn"):
                         st.session_state.show_forgot_password = False
                         st.rerun()
 
             if st.session_state.show_reset_form:
                 with st.expander("Enter Reset Code", expanded=True):
-                    st.caption(f"Enter the 6-digit code sent to your email. The code expires {CODE_EXPIRY_MINUTES} minutes after it was sent.")
+                    _dest = "email" if st.session_state.reset_via == "email" else "phone number"
+                    st.caption(f"Enter the 6-digit code sent to your {_dest}. The code expires {CODE_EXPIRY_MINUTES} minutes after it was sent.")
                     reset_code   = st.text_input("Reset code", key="reset_code")
                     new_pass     = st.text_input("New password", type="password", key="new_pass")
+                    _render_password_strength(new_pass)
                     confirm_pass = st.text_input("Confirm new password", type="password", key="confirm_pass")
                     if st.button("Reset Password", key="do_reset_btn"):
                         if reset_code and new_pass and confirm_pass:
@@ -226,11 +309,16 @@ def render_landing(cookies):
                                 if not pw_ok:
                                     st.error(pw_msg)
                                 else:
-                                    success, msg = reset_password(st.session_state.reset_email, reset_code, new_pass)
+                                    if st.session_state.reset_via == "phone":
+                                        success, msg = reset_password_by_phone(
+                                            st.session_state.reset_identifier, reset_code, new_pass)
+                                    else:
+                                        success, msg = reset_password(
+                                            st.session_state.reset_identifier, reset_code, new_pass)
                                     if success:
                                         st.success(msg)
                                         st.session_state.show_reset_form = False
-                                        st.session_state.reset_email = ""
+                                        st.session_state.reset_identifier = ""
                                     else:
                                         st.error(msg)
                             else:
@@ -239,15 +327,21 @@ def render_landing(cookies):
                             st.warning("All fields required.")
                     if st.button("Cancel Reset", key="cancel_reset_form"):
                         st.session_state.show_reset_form = False
-                        st.session_state.reset_email = ""
+                        st.session_state.reset_identifier = ""
                         st.rerun()
 
         with tabs[1]:
             reg_surname  = st.text_input("Surname", key="reg_surname")
             reg_other    = st.text_input("Other Names", key="reg_other")
             reg_email    = st.text_input("Email", key="reg_email")
+            reg_phone    = st.text_input(
+                "Phone number", key="reg_phone",
+                placeholder="e.g. 08012345678",
+            )
+            st.caption("Optional, but needed if you ever want to reset your password by SMS instead of email.")
             reg_username = st.text_input("Username", key="reg_username")
             reg_password = st.text_input("Password", type="password", key="reg_password")
+            _render_password_strength(reg_password)
             st.caption(
                 "Password must be at least 8 characters and include: "
                 "uppercase letter, lowercase letter, digit, and special character (!@#$%^&* etc.)"
@@ -255,9 +349,11 @@ def render_landing(cookies):
             if st.button("Register", key="register_btn"):
                 errors = []
                 if not all([reg_surname, reg_other, reg_email, reg_username, reg_password]):
-                    errors.append("All fields are required.")
+                    errors.append("Surname, other names, email, username, and password are required.")
                 if reg_email and not is_valid_email(reg_email):
                     errors.append("Please enter a valid email address.")
+                if reg_phone and not is_valid_phone(reg_phone):
+                    errors.append("Please enter a valid Nigerian phone number (e.g. 08012345678), or leave it blank.")
                 if reg_password:
                     pw_ok, pw_msg = validate_password(reg_password)
                     if not pw_ok:
@@ -266,7 +362,7 @@ def render_landing(cookies):
                     for e in errors:
                         st.error(e)
                 else:
-                    code, msg = register_user(reg_surname, reg_other, reg_email, reg_username, reg_password)
+                    code, msg = register_user(reg_surname, reg_other, reg_email, reg_username, reg_password, reg_phone)
                     if code:
                         with get_db() as (conn, cursor):
                             cursor.execute("SELECT id FROM users WHERE username=%s", (reg_username,))
