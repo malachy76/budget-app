@@ -230,6 +230,13 @@ def create_tables():
         cursor.execute("ALTER TABLE expenses ADD COLUMN IF NOT EXISTS category TEXT")
         cursor.execute("ALTER TABLE recurring_items ADD COLUMN IF NOT EXISTS allow_overdraft INTEGER DEFAULT 0")
         cursor.execute("ALTER TABLE recurring_items ADD COLUMN IF NOT EXISTS last_posted_at DATE")
+        cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number TEXT")
+        # Partial unique index: allows many NULLs (existing users without a
+        # phone on file) while still preventing two accounts sharing a phone.
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_number
+            ON users(phone_number) WHERE phone_number IS NOT NULL
+        """)
 
         # ── ALTER COLUMN TYPE — only if column is still TEXT ─────────────────
         # Each check is a tiny information_schema read; if already DATE it skips.
