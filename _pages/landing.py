@@ -1,5 +1,6 @@
 # landing.py — landing page, login, register, verify, forgot password
 import streamlit as st
+import time
 from datetime import datetime
 
 from db import get_db
@@ -223,6 +224,12 @@ def render_landing(cookies):
                         token = create_session_token(uid, cookies)
                         st.session_state.session_token = token
                         st.success("Logged in!")
+                        # The cookie component needs a moment to actually
+                        # write the cookie to the browser before we tear
+                        # down and rerun the script — rerunning too fast
+                        # here is what was causing the "logged out after
+                        # reload" bug.
+                        time.sleep(0.5)
                         st.rerun()
                     else:
                         st.error("Invalid credentials or email not verified")
