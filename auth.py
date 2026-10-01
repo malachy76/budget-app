@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 
 from db import get_db
 from email_service import send_verification_email
+from sms_service import send_sms
 
 
 CODE_EXPIRY_MINUTES = 12   # verification & reset codes expire after 12 minutes
@@ -26,6 +27,49 @@ _SESSION_UPDATE_THROTTLE_HOURS = 1  # OPTIMIZED: only write sliding-window UPDAT
 def is_valid_email(email: str) -> bool:
     pattern = r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
     return bool(re.match(pattern, email.strip()))
+
+
+def is_valid_phone(phone: str) -> bool:
+    """Accepts Nigerian numbers: 0XXXXXXXXXX (11 digits) or +234XXXXXXXXXX."""
+    phone = phone.strip().replace(" ", "").replace("-", "")
+    return bool(re.match(r'^(0\d{10}|\+234\d{10})$', phone))
+
+
+def normalize_phone(phone: str) -> str:
+    """Normalize to +234XXXXXXXXXX international format for storage/SMS."""
+    phone = phone.strip().replace(" ", "").replace("-", "")
+    if phone.startswith("0") and len(phone) == 11:
+        return "+234" + phone[1:]
+    return phone
+
+
+def password_strength(password: str):
+    """
+    Lightweight live strength meter (not a pass/fail gate — validate_password
+    below is still the actual requirement). Returns (score 0-4, label, color).
+    """
+    if not password:
+        return 0, "", "#d0d0d0"
+    score = 0
+    if len(password) >= 8:
+        score += 1
+    if len(password) >= 12:
+        score += 1
+    if re.search(r'[A-Z]', password) and re.search(r'[a-z]', password):
+        score += 1
+    if re.search(r'[0-9]', password):
+        score += 1
+    if re.search(r'[!@#$%^&*()_+\-=\[\]{};\':"|,.<>\/?]', password):
+        score += 1
+    score = min(score, 4)
+    label, color = {
+        0: ("Very weak",   "#c0392b"),
+        1: ("Weak",        "#e67e22"),
+        2: ("Fair",        "#f1c40f"),
+        3: ("Strong",      "#27ae60"),
+        4: ("Very strong", "#0e7c5b"),
+    }[score]
+    return score, label, color
 
 
 def validate_password(password: str):
@@ -101,21 +145,22 @@ def check_password(password, hashed):
     return bcrypt.checkpw(password.encode(), hashed)
 
 
-def register_user(surname, other, email, username, password):
+def register_user(surname, other, email, username, password, phone=None):
     code    = str(random.randint(100000, 999999))
     expires = datetime.now() + timedelta(minutes=CODE_EXPIRY_MINUTES)
+    normalized_phone = normalize_phone(phone) if phone else None
     try:
         hashed_pw = hash_password(password)
         with get_db() as (conn, cursor):
             cursor.execute("""
-                INSERT INTO users (surname, other_names, email, username, password,
+                INSERT INTO users (surname, other_names, email, username, password, phone_number,
                                    verification_code, verification_code_expires_at, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """, (surname, other, email, username, psycopg2.Binary(hashed_pw),
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (surname, other, email, username, psycopg2.Binary(hashed_pw), normalized_phone,
                   code, expires, datetime.now().date()))
         return code, "User created"
     except psycopg2.errors.UniqueViolation:
-        return None, "Username or email already exists"
+        return None, "Username, email, or phone number already exists"
     except Exception as e:
         return None, str(e)
 
@@ -177,6 +222,55 @@ def reset_password(email, code, new_password):
                 "UPDATE users SET password=%s, verification_code=NULL, "
                 "verification_code_expires_at=NULL WHERE email=%s",
                 (psycopg2.Binary(hashed_pw), email)
+            )
+        return True, "Password reset successful"
+    except Exception as e:
+        return False, str(e)
+
+
+def request_password_reset_by_phone(phone):
+    normalized = normalize_phone(phone)
+    if not _check_rate_limit(normalized, "password_reset_phone", max_attempts=3, window_minutes=15):
+        return False, "Too many reset requests. Please wait 15 minutes before trying again."
+    try:
+        code    = str(random.randint(100000, 999999))
+        expires = datetime.now() + timedelta(minutes=CODE_EXPIRY_MINUTES)
+        with get_db() as (conn, cursor):
+            cursor.execute(
+                "UPDATE users SET verification_code=%s, verification_code_expires_at=%s WHERE phone_number=%s",
+                (code, expires, normalized)
+            )
+            if cursor.rowcount == 0:
+                return False, "Phone number not found"
+        return send_sms(
+            normalized,
+            f"Your Budget Right password reset code is {code}. It expires in {CODE_EXPIRY_MINUTES} minutes."
+        )
+    except Exception as e:
+        return False, str(e)
+
+
+def reset_password_by_phone(phone, code, new_password):
+    normalized = normalize_phone(phone)
+    try:
+        now = datetime.now()
+        with get_db() as (conn, cursor):
+            cursor.execute(
+                "SELECT id, verification_code_expires_at FROM users "
+                "WHERE phone_number=%s AND verification_code=%s",
+                (normalized, code)
+            )
+            user = cursor.fetchone()
+            if not user:
+                return False, "Invalid reset code. Please request a new one."
+            if user["verification_code_expires_at"] and now > user["verification_code_expires_at"]:
+                return False, (f"This reset code has expired. Codes are only valid for "
+                               f"{CODE_EXPIRY_MINUTES} minutes. Please request a new one.")
+            hashed_pw = hash_password(new_password)
+            cursor.execute(
+                "UPDATE users SET password=%s, verification_code=NULL, "
+                "verification_code_expires_at=NULL WHERE phone_number=%s",
+                (psycopg2.Binary(hashed_pw), normalized)
             )
         return True, "Password reset successful"
     except Exception as e:
