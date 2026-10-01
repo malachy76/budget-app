@@ -28,7 +28,18 @@ logic accounts for this by checking st.session_state.session_token first,
 before falling back to the cookie — see the restore block in app.py.
 """
 
+import time
+import streamlit as st
 import extra_streamlit_components as stx
+
+# How many times to give the cookie component the benefit of the doubt
+# when it reports "no cookies" before we trust that result. This matters
+# right after a server reboot: the browser reconnects and the component
+# can report an empty result for a run or two before it actually finishes
+# reading the real cookies, which would otherwise look exactly like the
+# user being logged out.
+_MAX_EMPTY_RETRIES = 4
+_RETRY_DELAY_SECONDS = 0.2
 
 
 class CookieManagerCompat:
@@ -41,7 +52,30 @@ class CookieManagerCompat:
         self._cookies = self._cm.get_all()
 
     def ready(self):
-        return self._cookies is not None
+        if self._cookies:
+            # Got real data back — definitely ready. Remember this for the
+            # rest of the browser session so a later legitimate empty read
+            # (e.g. the user genuinely has no session cookie) is trusted
+            # immediately instead of re-running the retry loop below.
+            st.session_state["_cookies_seen_data"] = True
+            return True
+        if self._cookies is None:
+            # Component hasn't returned anything at all yet — definitely
+            # not ready. Streamlit will auto-rerun once it does.
+            return False
+        # self._cookies == {}: ambiguous. Could be a genuinely new visitor
+        # with no cookies, or the component reporting in before it has
+        # actually finished syncing from the browser (common right after a
+        # reboot). If we've already seen real data this session, trust it.
+        if st.session_state.get("_cookies_seen_data"):
+            return True
+        tries = st.session_state.get("_cookies_ready_retries", 0)
+        if tries < _MAX_EMPTY_RETRIES:
+            st.session_state["_cookies_ready_retries"] = tries + 1
+            time.sleep(_RETRY_DELAY_SECONDS)
+            st.rerun()
+        # Retries exhausted — trust the empty result and move on.
+        return True
 
     def get(self, key, default=""):
         if not self._cookies:
