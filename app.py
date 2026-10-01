@@ -55,7 +55,8 @@ _DEFAULTS = {
     "demo_mode":                 False,   # Demo Mode flag — no DB, no real user
     "show_forgot_password":      False,
     "show_reset_form":           False,
-    "reset_email":               "",
+    "reset_identifier":          "",   # the email or phone number being reset
+    "reset_via":                 "email",
     "edit_exp_id":               None,
     "edit_bank_id":              None,
     "edit_income_id":            None,
