@@ -1,6 +1,7 @@
 # app.py — entry point: config, cookies, session restore, routing
 # -*- coding: utf-8 -*-
 import streamlit as st
+import time
 
 # ── MUST be the very first Streamlit call ─────────────────────────────────────
 st.set_page_config(
@@ -308,6 +309,9 @@ with st.sidebar:
         revoke_session_token(st.session_state.get("session_token"), cookies)
         for k in list(st.session_state.keys()):
             del st.session_state[k]
+        # Same cookie-write timing issue as login — give the component a
+        # moment to actually clear the browser cookie before rerunning.
+        time.sleep(0.5)
         st.rerun()
 
 # ── Onboarding checklist (shown on all pages until complete) ──────────────────
