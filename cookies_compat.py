@@ -28,7 +28,17 @@ logic accounts for this by checking st.session_state.session_token first,
 before falling back to the cookie — see the restore block in app.py.
 """
 
+import datetime
 import extra_streamlit_components as stx
+
+# extra_streamlit_components.CookieManager.set() defaults to a 1-day cookie
+# expiry if you don't pass expires_at explicitly — far shorter than this
+# app's 90-day session window in auth.SESSION_EXPIRY_DAYS, which is what
+# was causing users to get logged out well before their session was
+# actually meant to expire. Keep this at or above SESSION_EXPIRY_DAYS so
+# the cookie is never the thing that logs someone out; 400 days is also
+# the hard cap modern browsers enforce on any cookie's lifetime anyway.
+_COOKIE_LIFETIME_DAYS = 400
 
 # NOTE: an earlier version of this file retried st.rerun() in a loop here
 # when the cookie component returned an ambiguous empty result, to work
@@ -64,7 +74,8 @@ class CookieManagerCompat:
     def __setitem__(self, key, value):
         full_key = self._prefix + key
         if value:
-            self._cm.set(full_key, value, key=f"set_{full_key}")
+            expires_at = datetime.datetime.now() + datetime.timedelta(days=_COOKIE_LIFETIME_DAYS)
+            self._cm.set(full_key, value, key=f"set_{full_key}", expires_at=expires_at)
         else:
             try:
                 self._cm.delete(full_key, key=f"del_{full_key}")
