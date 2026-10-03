@@ -318,10 +318,20 @@ with st.sidebar:
         )
         current_page = pages[selected_idx]
     else:
-        # Business Mode — Phase 1 has exactly one screen. More will be added
-        # here in later phases without touching the Personal branch above.
-        business_pages = ["My Businesses"]
-        current_page = business_pages[0]
+        # Business Mode — Phase 2 adds Products/Inventory alongside the
+        # Phase 1 business-home screen. More will be added here in later
+        # phases without touching the Personal branch above.
+        business_pages = ["Business Home", "Products / Inventory"]
+
+        # Same "Go to X" pattern already used for Personal Mode's nav_radio.
+        if st.session_state.get("_pending_biz_nav") is not None:
+            st.session_state["biz_nav_radio"] = st.session_state.pop("_pending_biz_nav")
+
+        current_page = st.radio(
+            "Business Navigate",
+            business_pages,
+            key="biz_nav_radio",
+        )
 
     st.divider()
     st.markdown(
@@ -483,8 +493,12 @@ if st.session_state.app_mode == "personal":
 
 # ── Page routing ──────────────────────────────────────────────────────────────
 if st.session_state.app_mode == "business":
-    from _pages.business_home import render_business_home
-    render_business_home(user_id)
+    if current_page == "Products / Inventory":
+        from _pages.business_inventory import render_business_inventory
+        render_business_inventory(user_id)
+    else:
+        from _pages.business_home import render_business_home
+        render_business_home(user_id)
     st.stop()
 
 if current_page == "Admin Panel":
