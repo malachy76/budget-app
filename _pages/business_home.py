@@ -5,6 +5,7 @@ from styles import render_page_header
 import streamlit as st
 
 from business import create_business, get_user_businesses, get_business, BUSINESS_TYPES
+from inventory import get_inventory_summary
 
 
 def render_business_home(user_id):
@@ -43,10 +44,26 @@ def render_business_home(user_id):
                 st.rerun()
             st.markdown(f"## {biz['business_name']}")
             st.caption(biz["business_type"] or "No category set")
-            st.info(
-                "This is your business profile. Sales, inventory, customers, "
-                "and expenses for this business will appear here in later phases."
-            )
+
+            try:
+                summary = get_inventory_summary(biz["id"], user_id)
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Products", summary["total_products"])
+                c2.metric("Low Stock", summary["low_stock"])
+                c3.metric("Out of Stock", summary["out_of_stock"])
+                st.caption(f"Estimated inventory value: \u20A6{summary['inventory_value']:,.2f}")
+            except Exception:
+                # Non-fatal here — if inventory tables aren't ready yet,
+                # the business profile itself still renders fine; the
+                # Products page below will show the real error if the
+                # person follows the link.
+                pass
+
+            st.divider()
+            if st.button("\U0001F4E6 Products & Inventory", key="goto_inventory_btn", use_container_width=True):
+                st.session_state["_pending_biz_nav"] = "Products / Inventory"
+                st.rerun()
+
             st.caption(f"Created {biz['created_at'].strftime('%d %b %Y')}")
         return
 
