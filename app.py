@@ -84,6 +84,9 @@ _DEFAULTS = {
     "_streak_cache":             None,
     "_unread_cache":             None,
     "_retention_date":           None,
+    # Business Mode (Phase 1) — kept separate from every Personal Mode key above
+    "app_mode":                  "personal",
+    "active_business_id":        None,
 }
 for k, v in _DEFAULTS.items():
     if k not in st.session_state:
@@ -278,26 +281,47 @@ with st.sidebar:
     )
     st.divider()
 
-    pages = [
-        "Dashboard", "Income", "Expenses",
-        "Banks", "Transfers", "Savings Goals",
-        "Tracker", "Summaries",
-        "Notifications", "Import CSV", "Settings",
-    ]
-    if st.session_state.user_role == "admin":
-        pages = ["Admin Panel", "Analytics"] + pages
-
-    # Apply pending navigation from Go-to buttons
-    if st.session_state.get("_pending_nav") is not None:
-        st.session_state["nav_radio"] = st.session_state.pop("_pending_nav")
-
-    selected_idx = st.radio(
-        "Navigate",
-        range(len(pages)),
-        format_func=lambda i: pages[i],
-        key="nav_radio"
+    # ── Personal / Business mode switcher ───────────────────────────────────
+    _mode_idx = st.radio(
+        "Workspace",
+        [0, 1],
+        format_func=lambda i: "\U0001F464 Personal" if i == 0 else "\U0001F3EA Business",
+        index=0 if st.session_state.app_mode == "personal" else 1,
+        key="mode_radio",
+        horizontal=True,
     )
-    current_page = pages[selected_idx]
+    _new_mode = "personal" if _mode_idx == 0 else "business"
+    if _new_mode != st.session_state.app_mode:
+        st.session_state.app_mode = _new_mode
+        st.rerun()
+    st.divider()
+
+    if st.session_state.app_mode == "personal":
+        pages = [
+            "Dashboard", "Income", "Expenses",
+            "Banks", "Transfers", "Savings Goals",
+            "Tracker", "Summaries",
+            "Notifications", "Import CSV", "Settings",
+        ]
+        if st.session_state.user_role == "admin":
+            pages = ["Admin Panel", "Analytics"] + pages
+
+        # Apply pending navigation from Go-to buttons
+        if st.session_state.get("_pending_nav") is not None:
+            st.session_state["nav_radio"] = st.session_state.pop("_pending_nav")
+
+        selected_idx = st.radio(
+            "Navigate",
+            range(len(pages)),
+            format_func=lambda i: pages[i],
+            key="nav_radio"
+        )
+        current_page = pages[selected_idx]
+    else:
+        # Business Mode — Phase 1 has exactly one screen. More will be added
+        # here in later phases without touching the Personal branch above.
+        business_pages = ["My Businesses"]
+        current_page = business_pages[0]
 
     st.divider()
     st.markdown(
@@ -315,148 +339,154 @@ with st.sidebar:
         st.rerun()
 
 # ── Onboarding checklist (shown on all pages until complete) ──────────────────
-_ob = get_onboarding_status(user_id)
-if not _ob["already_done"]:
-    if _ob["all_done"]:
-        mark_onboarding_complete(user_id)
-    else:
-        steps_done = sum([_ob["has_bank"], _ob["has_income"],
-                          _ob["has_expense"], _ob["has_budget"]])
-        st.markdown("""
-        <style>
-        .ob-step { display:flex; align-items:center; gap:10px; background:#f0f7f4;
-            border-radius:8px; padding:10px 14px; margin-bottom:6px; font-size:0.92rem; }
-        .ob-done { border-left:4px solid #0e7c5b; color:#2c7a5a; }
-        .ob-todo { border-left:4px solid #d0d0d0; color:#555; }
-        .ob-icon { font-size:1.2rem; }
-        </style>""", unsafe_allow_html=True)
+if st.session_state.app_mode == "personal":
+    _ob = get_onboarding_status(user_id)
+    if not _ob["already_done"]:
+        if _ob["all_done"]:
+            mark_onboarding_complete(user_id)
+        else:
+            steps_done = sum([_ob["has_bank"], _ob["has_income"],
+                              _ob["has_expense"], _ob["has_budget"]])
+            st.markdown("""
+            <style>
+            .ob-step { display:flex; align-items:center; gap:10px; background:#f0f7f4;
+                border-radius:8px; padding:10px 14px; margin-bottom:6px; font-size:0.92rem; }
+            .ob-done { border-left:4px solid #0e7c5b; color:#2c7a5a; }
+            .ob-todo { border-left:4px solid #d0d0d0; color:#555; }
+            .ob-icon { font-size:1.2rem; }
+            </style>""", unsafe_allow_html=True)
 
-        with st.expander(f"&#x1F680; Setup checklist — {steps_done}/4 done", expanded=(steps_done == 0)):
-            st.progress(steps_done / 4, text=f"{steps_done * 25}% set up")
+            with st.expander(f"&#x1F680; Setup checklist — {steps_done}/4 done", expanded=(steps_done == 0)):
+                st.progress(steps_done / 4, text=f"{steps_done * 25}% set up")
 
-            done1 = _ob["has_bank"]
-            st.markdown(
-                f'<div class="ob-step {"ob-done" if done1 else "ob-todo"}">'
-                f'<span class="ob-icon">{"&#x2705;" if done1 else "&#x1F3E6;"}</span>'
-                f'<span><strong>Step 1: Add your first bank account</strong>'
-                f'{"&nbsp;&mdash; done!" if done1 else ""}</span></div>',
-                unsafe_allow_html=True
-            )
-            if not done1:
-                with st.form("ob_bank_form"):
-                    ob_bank_name   = st.text_input("Bank Name (e.g. GTB, Access, Opay)")
-                    ob_acct_name   = st.text_input("Account Name")
-                    ob_acct_num    = st.text_input("Account Number (last 4 digits)")
-                    ob_opening_bal = st.number_input("Current Balance (NGN)", min_value=0, step=1000)
-                    ob_bank_submit = st.form_submit_button("Add Bank and Continue")
-                if ob_bank_submit:
-                    if ob_bank_name and ob_acct_name and ob_acct_num:
-                        with get_db() as (conn, cursor):
-                            cursor.execute(
-                                "INSERT INTO banks (user_id, bank_name, account_name, account_number, balance, min_balance_alert) "
-                                "VALUES (%s,%s,%s,%s,%s,0)",
-                                (user_id, ob_bank_name, ob_acct_name, ob_acct_num[-4:], int(ob_opening_bal))
-                            )
-                        st.success(f"Bank '{ob_bank_name}' added!")
-                        invalidate_onboarding_cache(user_id)  # OPTIMIZED
-                        st.rerun()
-                    else:
-                        st.warning("Please fill all bank fields.")
-
-            done2 = _ob["has_income"]
-            st.markdown(
-                f'<div class="ob-step {"ob-done" if done2 else "ob-todo"}">'
-                f'<span class="ob-icon">{"&#x2705;" if done2 else "&#x1F4B0;"}</span>'
-                f'<span><strong>Step 2: Record your first income</strong>'
-                f'{"&nbsp;&mdash; done!" if done2 else ""}</span></div>',
-                unsafe_allow_html=True
-            )
-            if done1 and not done2:
-                with get_db() as (conn, cursor):
-                    cursor.execute("SELECT id, bank_name, account_number FROM banks WHERE user_id=%s", (user_id,))
-                    ob_banks = cursor.fetchall()
-                ob_bank_map = {f"{b['bank_name']} (****{b['account_number']})": b["id"] for b in ob_banks}
-                with st.form("ob_income_form"):
-                    ob_inc_source = st.text_input("Income Source (e.g. Salary, Freelance)")
-                    ob_inc_amount = st.number_input("Amount (NGN)", min_value=1, step=1000)
-                    ob_inc_bank   = st.selectbox("Which bank?", list(ob_bank_map.keys()))
-                    ob_inc_submit = st.form_submit_button("Add Income and Continue")
-                if ob_inc_submit:
-                    if ob_inc_source and ob_inc_amount > 0:
-                        bk_id = ob_bank_map[ob_inc_bank]
-                        with get_db() as (conn, cursor):
-                            cursor.execute("UPDATE banks SET balance=balance+%s WHERE id=%s", (int(ob_inc_amount), bk_id))
-                            cursor.execute(
-                                "INSERT INTO transactions (bank_id,type,amount,description,created_at) VALUES (%s,'credit',%s,%s,%s)",
-                                (bk_id, int(ob_inc_amount), f"Income: {ob_inc_source}", datetime.now().date())
-                            )
-                        st.success("Income recorded!")
-                        invalidate_onboarding_cache(user_id)  # OPTIMIZED
-                        st.rerun()
-                    else:
-                        st.warning("Please enter a source and amount.")
-            elif not done1:
-                st.caption("Complete Step 1 first.")
-
-            done3 = _ob["has_expense"]
-            st.markdown(
-                f'<div class="ob-step {"ob-done" if done3 else "ob-todo"}">'
-                f'<span class="ob-icon">{"&#x2705;" if done3 else "&#x1F9FE;"}</span>'
-                f'<span><strong>Step 3: Log your first expense</strong>'
-                f'{"&nbsp;&mdash; done!" if done3 else ""}</span></div>',
-                unsafe_allow_html=True
-            )
-            if done1 and not done3:
-                with get_db() as (conn, cursor):
-                    cursor.execute("SELECT id, bank_name, account_number FROM banks WHERE user_id=%s", (user_id,))
-                    ob_banks2 = cursor.fetchall()
-                ob_bank_map2 = {f"{b['bank_name']} (****{b['account_number']})": b["id"] for b in ob_banks2}
-                with st.form("ob_expense_form"):
-                    ob_exp_name   = st.text_input("Expense Name (e.g. Transport, Food)")
-                    ob_exp_amount = st.number_input("Amount (NGN)", min_value=1, step=100, key="ob_exp_amt")
-                    ob_exp_bank   = st.selectbox("Pay From Bank", list(ob_bank_map2.keys()))
-                    ob_exp_submit = st.form_submit_button("Add Expense and Continue")
-                if ob_exp_submit:
-                    if ob_exp_name and ob_exp_amount > 0:
-                        bk_id = ob_bank_map2[ob_exp_bank]
-                        ok, result = save_expense(user_id, bk_id, ob_exp_name, ob_exp_amount)
-                        if ok:
-                            st.success("Expense logged!")
+                done1 = _ob["has_bank"]
+                st.markdown(
+                    f'<div class="ob-step {"ob-done" if done1 else "ob-todo"}">'
+                    f'<span class="ob-icon">{"&#x2705;" if done1 else "&#x1F3E6;"}</span>'
+                    f'<span><strong>Step 1: Add your first bank account</strong>'
+                    f'{"&nbsp;&mdash; done!" if done1 else ""}</span></div>',
+                    unsafe_allow_html=True
+                )
+                if not done1:
+                    with st.form("ob_bank_form"):
+                        ob_bank_name   = st.text_input("Bank Name (e.g. GTB, Access, Opay)")
+                        ob_acct_name   = st.text_input("Account Name")
+                        ob_acct_num    = st.text_input("Account Number (last 4 digits)")
+                        ob_opening_bal = st.number_input("Current Balance (NGN)", min_value=0, step=1000)
+                        ob_bank_submit = st.form_submit_button("Add Bank and Continue")
+                    if ob_bank_submit:
+                        if ob_bank_name and ob_acct_name and ob_acct_num:
+                            with get_db() as (conn, cursor):
+                                cursor.execute(
+                                    "INSERT INTO banks (user_id, bank_name, account_name, account_number, balance, min_balance_alert) "
+                                    "VALUES (%s,%s,%s,%s,%s,0)",
+                                    (user_id, ob_bank_name, ob_acct_name, ob_acct_num[-4:], int(ob_opening_bal))
+                                )
+                            st.success(f"Bank '{ob_bank_name}' added!")
                             invalidate_onboarding_cache(user_id)  # OPTIMIZED
                             st.rerun()
                         else:
-                            st.error(result)
-                    else:
-                        st.warning("Please enter a name and amount.")
-            elif not done1:
-                st.caption("Complete Step 1 first.")
+                            st.warning("Please fill all bank fields.")
 
-            done4 = _ob["has_budget"]
-            st.markdown(
-                f'<div class="ob-step {"ob-done" if done4 else "ob-todo"}">'
-                f'<span class="ob-icon">{"&#x2705;" if done4 else "&#x1F4CA;"}</span>'
-                f'<span><strong>Step 4: Set your monthly spending budget</strong>'
-                f'{"&nbsp;&mdash; done!" if done4 else ""}</span></div>',
-                unsafe_allow_html=True
-            )
-            if not done4:
-                with st.form("ob_budget_form"):
-                    ob_budget        = st.number_input("Monthly Budget (NGN)", min_value=1000, step=5000, value=100000)
-                    ob_budget_submit = st.form_submit_button("Set Budget and Finish")
-                if ob_budget_submit:
+                done2 = _ob["has_income"]
+                st.markdown(
+                    f'<div class="ob-step {"ob-done" if done2 else "ob-todo"}">'
+                    f'<span class="ob-icon">{"&#x2705;" if done2 else "&#x1F4B0;"}</span>'
+                    f'<span><strong>Step 2: Record your first income</strong>'
+                    f'{"&nbsp;&mdash; done!" if done2 else ""}</span></div>',
+                    unsafe_allow_html=True
+                )
+                if done1 and not done2:
                     with get_db() as (conn, cursor):
-                        cursor.execute("UPDATE users SET monthly_spending_limit=%s WHERE id=%s", (int(ob_budget), user_id))
-                    st.success("Budget set! You're all set up.")
-                    invalidate_onboarding_cache(user_id)  # OPTIMIZED
+                        cursor.execute("SELECT id, bank_name, account_number FROM banks WHERE user_id=%s", (user_id,))
+                        ob_banks = cursor.fetchall()
+                    ob_bank_map = {f"{b['bank_name']} (****{b['account_number']})": b["id"] for b in ob_banks}
+                    with st.form("ob_income_form"):
+                        ob_inc_source = st.text_input("Income Source (e.g. Salary, Freelance)")
+                        ob_inc_amount = st.number_input("Amount (NGN)", min_value=1, step=1000)
+                        ob_inc_bank   = st.selectbox("Which bank?", list(ob_bank_map.keys()))
+                        ob_inc_submit = st.form_submit_button("Add Income and Continue")
+                    if ob_inc_submit:
+                        if ob_inc_source and ob_inc_amount > 0:
+                            bk_id = ob_bank_map[ob_inc_bank]
+                            with get_db() as (conn, cursor):
+                                cursor.execute("UPDATE banks SET balance=balance+%s WHERE id=%s", (int(ob_inc_amount), bk_id))
+                                cursor.execute(
+                                    "INSERT INTO transactions (bank_id,type,amount,description,created_at) VALUES (%s,'credit',%s,%s,%s)",
+                                    (bk_id, int(ob_inc_amount), f"Income: {ob_inc_source}", datetime.now().date())
+                                )
+                            st.success("Income recorded!")
+                            invalidate_onboarding_cache(user_id)  # OPTIMIZED
+                            st.rerun()
+                        else:
+                            st.warning("Please enter a source and amount.")
+                elif not done1:
+                    st.caption("Complete Step 1 first.")
+
+                done3 = _ob["has_expense"]
+                st.markdown(
+                    f'<div class="ob-step {"ob-done" if done3 else "ob-todo"}">'
+                    f'<span class="ob-icon">{"&#x2705;" if done3 else "&#x1F9FE;"}</span>'
+                    f'<span><strong>Step 3: Log your first expense</strong>'
+                    f'{"&nbsp;&mdash; done!" if done3 else ""}</span></div>',
+                    unsafe_allow_html=True
+                )
+                if done1 and not done3:
+                    with get_db() as (conn, cursor):
+                        cursor.execute("SELECT id, bank_name, account_number FROM banks WHERE user_id=%s", (user_id,))
+                        ob_banks2 = cursor.fetchall()
+                    ob_bank_map2 = {f"{b['bank_name']} (****{b['account_number']})": b["id"] for b in ob_banks2}
+                    with st.form("ob_expense_form"):
+                        ob_exp_name   = st.text_input("Expense Name (e.g. Transport, Food)")
+                        ob_exp_amount = st.number_input("Amount (NGN)", min_value=1, step=100, key="ob_exp_amt")
+                        ob_exp_bank   = st.selectbox("Pay From Bank", list(ob_bank_map2.keys()))
+                        ob_exp_submit = st.form_submit_button("Add Expense and Continue")
+                    if ob_exp_submit:
+                        if ob_exp_name and ob_exp_amount > 0:
+                            bk_id = ob_bank_map2[ob_exp_bank]
+                            ok, result = save_expense(user_id, bk_id, ob_exp_name, ob_exp_amount)
+                            if ok:
+                                st.success("Expense logged!")
+                                invalidate_onboarding_cache(user_id)  # OPTIMIZED
+                                st.rerun()
+                            else:
+                                st.error(result)
+                        else:
+                            st.warning("Please enter a name and amount.")
+                elif not done1:
+                    st.caption("Complete Step 1 first.")
+
+                done4 = _ob["has_budget"]
+                st.markdown(
+                    f'<div class="ob-step {"ob-done" if done4 else "ob-todo"}">'
+                    f'<span class="ob-icon">{"&#x2705;" if done4 else "&#x1F4CA;"}</span>'
+                    f'<span><strong>Step 4: Set your monthly spending budget</strong>'
+                    f'{"&nbsp;&mdash; done!" if done4 else ""}</span></div>',
+                    unsafe_allow_html=True
+                )
+                if not done4:
+                    with st.form("ob_budget_form"):
+                        ob_budget        = st.number_input("Monthly Budget (NGN)", min_value=1000, step=5000, value=100000)
+                        ob_budget_submit = st.form_submit_button("Set Budget and Finish")
+                    if ob_budget_submit:
+                        with get_db() as (conn, cursor):
+                            cursor.execute("UPDATE users SET monthly_spending_limit=%s WHERE id=%s", (int(ob_budget), user_id))
+                        st.success("Budget set! You're all set up.")
+                        invalidate_onboarding_cache(user_id)  # OPTIMIZED
+                        st.rerun()
+
+                if st.button("Skip setup checklist", key="skip_onboarding"):
+                    mark_onboarding_complete(user_id)  # mark_onboarding_complete already invalidates cache
                     st.rerun()
 
-            if st.button("Skip setup checklist", key="skip_onboarding"):
-                mark_onboarding_complete(user_id)  # mark_onboarding_complete already invalidates cache
-                st.rerun()
-
-        st.divider()
+            st.divider()
 
 # ── Page routing ──────────────────────────────────────────────────────────────
+if st.session_state.app_mode == "business":
+    from _pages.business_home import render_business_home
+    render_business_home(user_id)
+    st.stop()
+
 if current_page == "Admin Panel":
     from _pages.admin import render_admin
     render_admin(user_id)
