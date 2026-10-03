@@ -222,6 +222,43 @@ def create_tables():
             created_at DATE DEFAULT CURRENT_DATE
         )""")
 
+        # ── Business Mode — Phase 2: products + inventory foundation ───────────
+        # NUMERIC (not FLOAT) throughout: money needs exact decimal cents, and
+        # quantities need exact fractional units (0.5 bottle, 1.5 litres, etc.)
+        # without floating-point drift.
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS products (
+            id SERIAL PRIMARY KEY,
+            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            category TEXT,
+            sku TEXT,
+            unit TEXT NOT NULL DEFAULT 'piece',
+            purchase_price NUMERIC(14,2) DEFAULT 0,
+            selling_price NUMERIC(14,2) DEFAULT 0,
+            current_stock NUMERIC(12,3) NOT NULL DEFAULT 0,
+            low_stock_threshold NUMERIC(12,3) DEFAULT 0,
+            expiry_date DATE,
+            is_active INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW()
+        )""")
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS inventory_movements (
+            id SERIAL PRIMARY KEY,
+            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+            product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            movement_type TEXT NOT NULL,
+            quantity NUMERIC(12,3) NOT NULL,
+            quantity_before NUMERIC(12,3) NOT NULL,
+            quantity_after NUMERIC(12,3) NOT NULL,
+            unit_cost NUMERIC(14,2),
+            note TEXT,
+            created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at TIMESTAMP DEFAULT NOW()
+        )""")
+
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS debt_payments (
             id           SERIAL PRIMARY KEY,
@@ -306,6 +343,9 @@ def create_tables():
             "CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(user_id, read)",
             "CREATE INDEX IF NOT EXISTS idx_user_streaks_user_id ON user_streaks(user_id)",
             "CREATE INDEX IF NOT EXISTS idx_businesses_owner_user_id ON businesses(owner_user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_products_business_id ON products(business_id)",
+            "CREATE INDEX IF NOT EXISTS idx_inventory_movements_business_id ON inventory_movements(business_id)",
+            "CREATE INDEX IF NOT EXISTS idx_inventory_movements_product_id ON inventory_movements(product_id)",
         ]:
             try:
                 cursor.execute(idx)
