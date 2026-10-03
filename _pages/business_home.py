@@ -11,7 +11,22 @@ def render_business_home(user_id):
     render_page_header()
     st.markdown("### \U0001F3EA Business Mode")
 
-    businesses = get_user_businesses(user_id)
+    try:
+        businesses = get_user_businesses(user_id)
+    except Exception as _e:
+        # Most likely cause: the `businesses` table migration hasn't run
+        # yet in this server process. models.create_tables() is cached
+        # with @st.cache_resource — it only runs once per process, so a
+        # plain code deploy doesn't always force it to re-run. A full
+        # reboot (Manage app -> Reboot) restarts the process and runs it.
+        st.error(
+            "Business Mode isn't fully set up on this server yet. "
+            "Try rebooting the app (Manage app -> Reboot) — if this "
+            "persists after that, something else is wrong."
+        )
+        with st.expander("Technical details"):
+            st.code(str(_e))
+        return
 
     # ── If a business is selected, show its (minimal, Phase 1) detail view ────
     active_id = st.session_state.get("active_business_id")
