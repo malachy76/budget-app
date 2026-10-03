@@ -212,6 +212,16 @@ def create_tables():
             last_tip_at DATE
         )""")
 
+        # ── Business Mode — Phase 1: business profile only ─────────────────────
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS businesses (
+            id SERIAL PRIMARY KEY,
+            owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            business_name TEXT NOT NULL,
+            business_type TEXT,
+            created_at DATE DEFAULT CURRENT_DATE
+        )""")
+
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS debt_payments (
             id           SERIAL PRIMARY KEY,
@@ -295,6 +305,7 @@ def create_tables():
             "CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(user_id, read)",
             "CREATE INDEX IF NOT EXISTS idx_user_streaks_user_id ON user_streaks(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_businesses_owner_user_id ON businesses(owner_user_id)",
         ]:
             try:
                 cursor.execute(idx)
