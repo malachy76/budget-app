@@ -213,8 +213,8 @@ def render_landing(cookies):
         tabs = st.tabs(["&#x1F510; Login", "&#x1F4DD; Register", "&#x1F4E7; Verify Email"])
 
         with tabs[0]:
-            login_username = st.text_input("Username", key="login_username")
-            login_password = st.text_input("Password", type="password", key="login_password")
+            login_username = st.text_input("Username", key="login_username", autocomplete="username")
+            login_password = st.text_input("Password", type="password", key="login_password", autocomplete="current-password")
             col1, col2 = st.columns(2)
             with col1:
                 if st.button("Login", key="login_btn"):
@@ -306,9 +306,9 @@ def render_landing(cookies):
                     _dest = "email" if st.session_state.reset_via == "email" else "phone number"
                     st.caption(f"Enter the 6-digit code sent to your {_dest}. The code expires {CODE_EXPIRY_MINUTES} minutes after it was sent.")
                     reset_code   = st.text_input("Reset code", key="reset_code")
-                    new_pass     = st.text_input("New password", type="password", key="new_pass")
+                    new_pass     = st.text_input("New password", type="password", key="new_pass", autocomplete="new-password")
                     _render_password_strength(new_pass)
-                    confirm_pass = st.text_input("Confirm new password", type="password", key="confirm_pass")
+                    confirm_pass = st.text_input("Confirm new password", type="password", key="confirm_pass", autocomplete="new-password")
                     if st.button("Reset Password", key="do_reset_btn"):
                         if reset_code and new_pass and confirm_pass:
                             if new_pass == confirm_pass:
@@ -340,14 +340,14 @@ def render_landing(cookies):
         with tabs[1]:
             reg_surname  = st.text_input("Surname", key="reg_surname")
             reg_other    = st.text_input("Other Names", key="reg_other")
-            reg_email    = st.text_input("Email", key="reg_email")
+            reg_email    = st.text_input("Email", key="reg_email", autocomplete="email")
             reg_phone    = st.text_input(
                 "Phone number", key="reg_phone",
                 placeholder="e.g. 08012345678",
             )
             st.caption("Optional, but needed if you ever want to reset your password by SMS instead of email.")
-            reg_username = st.text_input("Username", key="reg_username")
-            reg_password = st.text_input("Password", type="password", key="reg_password")
+            reg_username = st.text_input("Username", key="reg_username", autocomplete="username")
+            reg_password = st.text_input("Password", type="password", key="reg_password", autocomplete="new-password")
             _render_password_strength(reg_password)
             st.caption(
                 "Password must be at least 8 characters and include: "
