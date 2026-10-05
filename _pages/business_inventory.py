@@ -52,22 +52,94 @@ def render_business_inventory(user_id):
         return
 
     # ── Add product ─────────────────────────────────────────────────────────
-    with st.expander("\u2795 Add Product"):
+    with st.expander("\u2795 Add Product", expanded=True):
+        st.caption(
+            "Enter the product details below. Each field explains what you should enter."
+        )
         with st.form("add_product_form"):
-            name = st.text_input("Product name", placeholder="e.g. Paracetamol 500mg")
+            name = st.text_input(
+                "Product name",
+                placeholder="e.g. Paracetamol 500mg",
+                help="Enter the name customers will recognize. Include the strength or size when useful.",
+            )
+
             col_a, col_b = st.columns(2)
+
             with col_a:
-                category = st.text_input("Category", placeholder="e.g. Pain Relief")
-                unit = st.selectbox("Unit", UNITS)
-                purchase_price = st.number_input("Purchase price (\u20A6)", min_value=0.0, step=0.01, format="%.2f")
-                opening_stock = st.number_input("Opening stock", min_value=0.0, step=0.5, format="%.3f")
+                category = st.text_input(
+                    "Category",
+                    placeholder="e.g. Pain Relief",
+                    help="Group the product so you can identify similar items easily. Example: Pain Relief, Antibiotics, Drinks.",
+                )
+
+                unit = st.selectbox(
+                    "Unit of measurement",
+                    UNITS,
+                    help="Choose how you count or measure this product: piece, pack, bottle, tablet, litre, etc.",
+                )
+
+                purchase_price = st.number_input(
+                    "Purchase price per unit (\u20a6)",
+                    min_value=0.0,
+                    step=0.01,
+                    format="%.2f",
+                    help="Enter how much your business paid for ONE unit of this product.",
+                )
+
+                opening_stock = st.number_input(
+                    "Opening stock / quantity currently available",
+                    min_value=0.0,
+                    step=0.5,
+                    format="%.3f",
+                    help="Enter how many units you currently have before you start recording stock movements. Example: 100 tablets or 1.5 litres.",
+                )
+
             with col_b:
-                sku = st.text_input("SKU / code (optional)")
-                selling_price = st.number_input("Selling price (\u20A6)", min_value=0.0, step=0.01, format="%.2f")
-                low_stock_threshold = st.number_input("Low-stock threshold", min_value=0.0, step=0.5, format="%.3f")
-                has_expiry = st.checkbox("Has expiry date")
-                expiry_date = st.date_input("Expiry date", min_value=date.today()) if has_expiry else None
-            submitted = st.form_submit_button("Create Product")
+                sku = st.text_input(
+                    "SKU / product code (optional)",
+                    placeholder="e.g. PCM500-001",
+                    help="Optional internal code used to identify the product. Leave this blank if you do not use product codes.",
+                )
+
+                selling_price = st.number_input(
+                    "Selling price per unit (\u20a6)",
+                    min_value=0.0,
+                    step=0.01,
+                    format="%.2f",
+                    help="Enter the normal selling price for ONE unit of this product.",
+                )
+
+                low_stock_threshold = st.number_input(
+                    "Low-stock alert level",
+                    min_value=0.0,
+                    step=0.5,
+                    format="%.3f",
+                    help="When stock falls to this number or below, Budget Right will show Low Stock. Example: enter 10 to be warned when only 10 units remain.",
+                )
+
+                has_expiry = st.checkbox(
+                    "This product has an expiry date",
+                    help="Tick this if the product expires. Budget Right will then show Expired or Expiring soon when appropriate.",
+                )
+
+                expiry_date = (
+                    st.date_input(
+                        "Expiry date",
+                        min_value=date.today(),
+                        help="Enter the date printed on the product. Example: 31 Dec 2027.",
+                    )
+                    if has_expiry
+                    else None
+                )
+
+            st.caption(
+                "Tip: Purchase price and selling price are per unit. Opening stock is the quantity you have right now."
+            )
+            submitted = st.form_submit_button(
+                "Create Product",
+                use_container_width=True,
+                type="primary",
+            )
         if submitted:
             product_id, msg = create_product(
                 business_id, user_id, user_id, name, category, sku, unit,
