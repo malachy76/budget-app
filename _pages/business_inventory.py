@@ -4,7 +4,7 @@ from datetime import date
 
 from styles import render_page_header
 from inventory import (
-    create_product, get_products, get_product, adjust_stock,
+    create_product, get_products, get_product, adjust_stock, delete_product,
     get_movement_history, get_inventory_summary, stock_status, expiry_status,
     UNITS, ADD_REASONS, REMOVE_REASONS,
 )
@@ -45,7 +45,7 @@ def render_business_inventory(user_id):
     st.caption(f"Estimated inventory cost: \u20A6{summary['inventory_value']:,.2f}")
     st.divider()
 
-    # ── Detail view (adjust stock / history) takes over the whole page ────────
+    # ── Detail view (adjust stock / history / delete) takes over the page ─────
     detail_id = st.session_state.get("_inv_detail_product_id")
     if detail_id:
         _render_product_detail(detail_id, business_id, user_id)
@@ -53,98 +53,95 @@ def render_business_inventory(user_id):
 
     # ── Add product ─────────────────────────────────────────────────────────
     with st.expander("\u2795 Add Product", expanded=True):
-        st.caption(
-            "Enter the product details below. Each field explains what you should enter."
-        )
+        st.caption("Fill in the details below. Every field explains what to enter.")
         with st.form("add_product_form"):
+
+            st.markdown("##### Product Information")
             name = st.text_input(
-                "Product name",
+                "Product Name",
                 placeholder="e.g. Paracetamol 500mg",
-                help="Enter the name customers will recognize. Include the strength or size when useful.",
+                help="Enter the name of the product.",
             )
-
             col_a, col_b = st.columns(2)
-
             with col_a:
                 category = st.text_input(
                     "Category",
-                    placeholder="e.g. Pain Relief",
-                    help="Group the product so you can identify similar items easily. Example: Pain Relief, Antibiotics, Drinks.",
+                    placeholder="e.g. Medicine, Drinks, Provision, Cosmetics",
+                    help="Enter the product category.",
                 )
-
-                unit = st.selectbox(
-                    "Unit of measurement",
-                    UNITS,
-                    help="Choose how you count or measure this product: piece, pack, bottle, tablet, litre, etc.",
-                )
-
-                purchase_price = st.number_input(
-                    "Purchase price per unit (\u20a6)",
-                    min_value=0.0,
-                    step=0.01,
-                    format="%.2f",
-                    help="Enter how much your business paid for ONE unit of this product.",
-                )
-
-                opening_stock = st.number_input(
-                    "Opening stock / quantity currently available",
-                    min_value=0.0,
-                    step=0.5,
-                    format="%.3f",
-                    help="Enter how many units you currently have before you start recording stock movements. Example: 100 tablets or 1.5 litres.",
-                )
-
             with col_b:
-                sku = st.text_input(
-                    "SKU / product code (optional)",
-                    placeholder="e.g. PCM500-001",
-                    help="Optional internal code used to identify the product. Leave this blank if you do not use product codes.",
+                unit = st.selectbox(
+                    "Unit",
+                    UNITS,
+                    help="Choose what one unit represents, e.g. tablet, pack, bottle, piece.",
                 )
 
+            st.markdown("##### Pricing")
+            col_c, col_d = st.columns(2)
+            with col_c:
+                purchase_price = st.number_input(
+                    "Purchase Price (\u20a6)",
+                    min_value=0.0, value=None, step=0.01, format="%.2f",
+                    placeholder="e.g. 500",
+                    help="Enter the price you paid for one unit of this product.",
+                )
+            with col_d:
                 selling_price = st.number_input(
-                    "Selling price per unit (\u20a6)",
-                    min_value=0.0,
-                    step=0.01,
-                    format="%.2f",
-                    help="Enter the normal selling price for ONE unit of this product.",
+                    "Selling Price (\u20a6)",
+                    min_value=0.0, value=None, step=0.01, format="%.2f",
+                    placeholder="e.g. 700",
+                    help="Enter the price you normally sell one unit to customers.",
                 )
 
+            st.markdown("##### Stock")
+            col_e, col_f = st.columns(2)
+            with col_e:
+                opening_stock = st.number_input(
+                    "Opening Stock / Quantity",
+                    min_value=0.0, value=None, step=0.5, format="%.3f",
+                    placeholder="e.g. 100",
+                    help="Enter how many units you currently have in stock. "
+                         "Decimals are fine — e.g. 1.5 litres.",
+                )
+            with col_f:
                 low_stock_threshold = st.number_input(
-                    "Low-stock alert level",
-                    min_value=0.0,
-                    step=0.5,
-                    format="%.3f",
-                    help="When stock falls to this number or below, Budget Right will show Low Stock. Example: enter 10 to be warned when only 10 units remain.",
+                    "Low Stock Alert",
+                    min_value=0.0, value=None, step=0.5, format="%.3f",
+                    placeholder="e.g. 10",
+                    help="You will be alerted when stock reaches this quantity.",
                 )
 
-                has_expiry = st.checkbox(
-                    "This product has an expiry date",
-                    help="Tick this if the product expires. Budget Right will then show Expired or Expiring soon when appropriate.",
-                )
-
-                expiry_date = (
-                    st.date_input(
-                        "Expiry date",
-                        min_value=date.today(),
-                        help="Enter the date printed on the product. Example: 31 Dec 2027.",
-                    )
-                    if has_expiry
-                    else None
-                )
-
-            st.caption(
-                "Tip: Purchase price and selling price are per unit. Opening stock is the quantity you have right now."
+            st.markdown("##### Expiry")
+            has_expiry = st.checkbox(
+                "This product has an expiry date",
+                help="Tick this if the product expires. Leave it unticked if it "
+                     "doesn't (e.g. provisions, cosmetics without a printed date).",
             )
+            expiry_date = (
+                st.date_input(
+                    "Expiry Date",
+                    min_value=date.today(),
+                    help="Select the expiry date printed on the product.",
+                )
+                if has_expiry else None
+            )
+
+            st.markdown("##### Optional Information")
+            sku = st.text_input(
+                "SKU / Product Code",
+                placeholder="e.g. PARA500-001",
+                help="Optional product code used to identify this product. "
+                     "Leave blank if you don't use product codes.",
+            )
+
             submitted = st.form_submit_button(
-                "Create Product",
-                use_container_width=True,
-                type="primary",
+                "Create Product", use_container_width=True, type="primary",
             )
         if submitted:
             product_id, msg = create_product(
                 business_id, user_id, user_id, name, category, sku, unit,
-                purchase_price, selling_price, opening_stock, low_stock_threshold,
-                expiry_date,
+                purchase_price or 0, selling_price or 0, opening_stock or 0,
+                low_stock_threshold or 0, expiry_date,
             )
             if product_id:
                 st.success(f"'{name}' added.")
@@ -177,6 +174,7 @@ def render_business_inventory(user_id):
             m1, m2 = st.columns(2)
             with m1:
                 st.markdown(f"Stock: **{p['current_stock']:g} {p['unit']}**")
+                st.markdown(f"Purchase: **\u20A6{p['purchase_price']:,.2f}**")
                 st.markdown(f"Selling: **\u20A6{p['selling_price']:,.2f}**")
             with m2:
                 if status == "IN_STOCK":
@@ -187,6 +185,8 @@ def render_business_inventory(user_id):
                     st.markdown(f":red[{_EXPIRY_LABEL[exp_stat]}]")
                 elif exp_stat == "EXPIRING_SOON":
                     st.markdown(f":orange[{_EXPIRY_LABEL[exp_stat]}]")
+                elif p["expiry_date"]:
+                    st.caption(f"Expires {p['expiry_date'].strftime('%d %b %Y')}")
             b1, b2 = st.columns(2)
             with b1:
                 if st.button("Adjust Stock", key=f"adj_{p['id']}", use_container_width=True):
@@ -221,7 +221,7 @@ def _render_product_detail(product_id, business_id, user_id):
     st.caption(product["category"] or "No category")
     st.markdown(f"Current stock: **{product['current_stock']:g} {product['unit']}**")
 
-    t1, t2 = st.tabs(["Adjust Stock", "History"])
+    t1, t2, t3 = st.tabs(["Adjust Stock", "History", "Delete Product"])
 
     with t1:
         direction = st.radio("Action", ["Add stock", "Remove stock"], key="adj_direction", horizontal=True)
@@ -262,3 +262,25 @@ def _render_product_detail(product_id, business_id, user_id):
                     st.caption(f"Note: {m['note']}")
                 if m["recorded_by_username"]:
                     st.caption(f"Recorded by: {m['recorded_by_username']}")
+
+    with t3:
+        st.warning(
+            f"Are you sure you want to delete **{product['name']}**? "
+            f"This action cannot be undone."
+        )
+        confirm = st.checkbox(
+            "Yes, I'm sure I want to delete this product.",
+            key="del_confirm_checkbox",
+        )
+        if st.button(
+            "Delete Product", key="del_confirm_btn", type="primary",
+            disabled=not confirm,
+        ):
+            action, msg = delete_product(product_id, business_id, user_id)
+            if action:
+                st.success(msg)
+                st.session_state["_inv_detail_product_id"] = None
+                st.session_state.pop("del_confirm_checkbox", None)
+                st.rerun()
+            else:
+                st.error(msg)
