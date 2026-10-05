@@ -245,6 +245,53 @@ def get_movement_history(product_id, business_id, owner_user_id):
         return cursor.fetchall()
 
 
+# ── Delete ───────────────────────────────────────────────────────────────────
+
+def delete_product(product_id, business_id, owner_user_id):
+    """Permanently deletes a product that has no inventory history, or
+    archives (is_active=0) one that does, so accounting/stock history is
+    never silently lost. Returns (action, message) where action is
+    'deleted', 'archived', or None on failure."""
+    _require_business(business_id, owner_user_id)
+    try:
+        with get_db() as (conn, cursor):
+            cursor.execute(
+                "SELECT id, name FROM products WHERE id=%s AND business_id=%s",
+                (product_id, business_id),
+            )
+            product = cursor.fetchone()
+            if product is None:
+                return None, "Product not found."
+
+            cursor.execute(
+                "SELECT COUNT(*) AS cnt FROM inventory_movements "
+                "WHERE product_id=%s AND business_id=%s",
+                (product_id, business_id),
+            )
+            has_history = cursor.fetchone()["cnt"] > 0
+
+            if has_history:
+                cursor.execute(
+                    "UPDATE products SET is_active=0, updated_at=NOW() "
+                    "WHERE id=%s AND business_id=%s",
+                    (product_id, business_id),
+                )
+                return "archived", (
+                    f"'{product['name']}' has been removed from your product "
+                    f"list. Its stock history is kept for your records."
+                )
+            else:
+                cursor.execute(
+                    "DELETE FROM products WHERE id=%s AND business_id=%s",
+                    (product_id, business_id),
+                )
+                return "deleted", f"'{product['name']}' has been permanently deleted."
+    except NotOwner as e:
+        return None, str(e)
+    except Exception as e:
+        return None, str(e)
+
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 def get_inventory_summary(business_id, owner_user_id):
