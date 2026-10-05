@@ -18,7 +18,12 @@ from sms_service import send_sms
 
 
 CODE_EXPIRY_MINUTES = 12   # verification & reset codes expire after 12 minutes
-SESSION_EXPIRY_DAYS = 90   # Sessions stay alive for 90 days of inactivity
+SESSION_EXPIRY_DAYS = 1000  # DB-side ceiling, set well past the cookie's own
+# ~400-day lifetime (cookies_compat._COOKIE_LIFETIME_DAYS) so the database
+# is never the thing that logs someone out early. Note: no app can make a
+# browser cookie live forever — ~400 days is a hard cap every browser
+# enforces, independent of anything the app requests. This just makes sure
+# the server side never expires a session sooner than that.
 _SESSION_UPDATE_THROTTLE_HOURS = 1  # OPTIMIZED: only write sliding-window UPDATE once/hour
 
 
