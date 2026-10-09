@@ -1,4 +1,6 @@
-# _pages/business_inventory.py — Business Mode: Products / Inventory (Phase 2)
+# _pages/business_inventory.py — Business Mode: Products / Inventory
+# Phase 2: base functionality. Phase 3: expiry-date form bug fix + full
+# label/description redesign + delete/archive (see inline comments below).
 import streamlit as st
 from datetime import date
 
@@ -52,92 +54,112 @@ def render_business_inventory(user_id):
         return
 
     # ── Add product ─────────────────────────────────────────────────────────
+    # NOTE: this section deliberately does NOT use st.form. Streamlit forms
+    # only rerun the script once, on submit — they don't rerun when you
+    # interact with a widget inside them. The expiry date picker needs to
+    # be conditionally shown based on a checkbox, and a widget that's
+    # created for the first time only in that one submit-triggered run
+    # always returns its untouched default, never whatever the user
+    # actually clicked (it never existed as a real interactive widget
+    # before that instant) — that was the exact cause of expiry dates not
+    # saving. Using plain widgets + a plain button instead of a form
+    # sidesteps this for every field here, not just the date picker.
     with st.expander("\u2795 Add Product", expanded=True):
         st.caption("Fill in the details below. Every field explains what to enter.")
-        with st.form("add_product_form"):
 
-            st.markdown("##### Product Information")
-            name = st.text_input(
-                "Product Name",
-                placeholder="e.g. Paracetamol 500mg",
-                help="Enter the name of the product.",
+        st.markdown("##### Product Information")
+
+        st.markdown("**Product Name**")
+        st.caption("Enter the name of the medicine or item you are adding.")
+        name = st.text_input(
+            "Product Name", label_visibility="collapsed",
+            placeholder="e.g. Paracetamol 500mg",
+            key="add_product_name",
+        )
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("**Category**")
+            st.caption("Choose or enter the category this product belongs to.")
+            category = st.text_input(
+                "Category", label_visibility="collapsed",
+                placeholder="e.g. Medicine, Provision, Cosmetics",
+                key="add_product_category",
             )
-            col_a, col_b = st.columns(2)
-            with col_a:
-                category = st.text_input(
-                    "Category",
-                    placeholder="e.g. Medicine, Drinks, Provision, Cosmetics",
-                    help="Enter the product category.",
-                )
-            with col_b:
-                unit = st.selectbox(
-                    "Unit",
-                    UNITS,
-                    help="Choose what one unit represents, e.g. tablet, pack, bottle, piece.",
-                )
-
-            st.markdown("##### Pricing")
-            col_c, col_d = st.columns(2)
-            with col_c:
-                purchase_price = st.number_input(
-                    "Purchase Price (\u20a6)",
-                    min_value=0.0, value=None, step=0.01, format="%.2f",
-                    placeholder="e.g. 500",
-                    help="Enter the price you paid for one unit of this product.",
-                )
-            with col_d:
-                selling_price = st.number_input(
-                    "Selling Price (\u20a6)",
-                    min_value=0.0, value=None, step=0.01, format="%.2f",
-                    placeholder="e.g. 700",
-                    help="Enter the price you normally sell one unit to customers.",
-                )
-
-            st.markdown("##### Stock")
-            col_e, col_f = st.columns(2)
-            with col_e:
-                opening_stock = st.number_input(
-                    "Opening Stock / Quantity",
-                    min_value=0.0, value=None, step=0.5, format="%.3f",
-                    placeholder="e.g. 100",
-                    help="Enter how many units you currently have in stock. "
-                         "Decimals are fine — e.g. 1.5 litres.",
-                )
-            with col_f:
-                low_stock_threshold = st.number_input(
-                    "Low Stock Alert",
-                    min_value=0.0, value=None, step=0.5, format="%.3f",
-                    placeholder="e.g. 10",
-                    help="You will be alerted when stock reaches this quantity.",
-                )
-
-            st.markdown("##### Expiry")
-            has_expiry = st.checkbox(
-                "This product has an expiry date",
-                help="Tick this if the product expires. Leave it unticked if it "
-                     "doesn't (e.g. provisions, cosmetics without a printed date).",
-            )
-            expiry_date = (
-                st.date_input(
-                    "Expiry Date",
-                    min_value=date.today(),
-                    help="Select the expiry date printed on the product.",
-                )
-                if has_expiry else None
+        with col_b:
+            st.markdown("**Unit**")
+            st.caption("Enter what one quantity represents.")
+            unit = st.selectbox(
+                "Unit", UNITS, label_visibility="collapsed",
+                key="add_product_unit",
             )
 
-            st.markdown("##### Optional Information")
-            sku = st.text_input(
-                "SKU / Product Code",
-                placeholder="e.g. PARA500-001",
-                help="Optional product code used to identify this product. "
-                     "Leave blank if you don't use product codes.",
+        st.markdown("##### Pricing")
+        col_c, col_d = st.columns(2)
+        with col_c:
+            st.markdown("**Purchase Price**")
+            st.caption("How much you paid for one unit of this product.")
+            purchase_price = st.number_input(
+                "Purchase Price", label_visibility="collapsed",
+                min_value=0.0, value=None, step=0.01, format="%.2f",
+                placeholder="e.g. 500", key="add_product_purchase_price",
+            )
+        with col_d:
+            st.markdown("**Selling Price**")
+            st.caption("The price you sell one unit to your customer.")
+            selling_price = st.number_input(
+                "Selling Price", label_visibility="collapsed",
+                min_value=0.0, value=None, step=0.01, format="%.2f",
+                placeholder="e.g. 700", key="add_product_selling_price",
             )
 
-            submitted = st.form_submit_button(
-                "Create Product", use_container_width=True, type="primary",
+        st.markdown("##### Stock")
+        col_e, col_f = st.columns(2)
+        with col_e:
+            st.markdown("**Opening Stock**")
+            st.caption("The quantity of this product you currently have.")
+            opening_stock = st.number_input(
+                "Opening Stock", label_visibility="collapsed",
+                min_value=0.0, value=None, step=0.5, format="%.3f",
+                placeholder="e.g. 100", key="add_product_opening_stock",
             )
-        if submitted:
+        with col_f:
+            st.markdown("**Low Stock Alert**")
+            st.caption("Warn me when stock falls to this quantity.")
+            low_stock_threshold = st.number_input(
+                "Low Stock Alert", label_visibility="collapsed",
+                min_value=0.0, value=None, step=0.5, format="%.3f",
+                placeholder="e.g. 10", key="add_product_low_stock",
+            )
+
+        st.markdown("##### Expiry")
+        st.caption("Select the expiry date printed on the product, if it has one.")
+        has_expiry = st.checkbox(
+            "This product has an expiry date",
+            help="Tick this if the product expires. Leave it unticked if it "
+                 "doesn't (e.g. provisions, cosmetics without a printed date).",
+            key="add_product_has_expiry",
+        )
+        expiry_date = None
+        if has_expiry:
+            expiry_date = st.date_input(
+                "Expiry Date",
+                min_value=date.today(),
+                help="Pick the date from the calendar.",
+                key="add_product_expiry_date",
+            )
+            st.caption(f"\u2705 Selected: {expiry_date.strftime('%d %b %Y')}")
+
+        st.markdown("##### Optional Information")
+        st.markdown("**Product Code / SKU**")
+        st.caption("Optional: enter a code you use to identify this product.")
+        sku = st.text_input(
+            "SKU", label_visibility="collapsed",
+            placeholder="e.g. PARA-500-001",
+            key="add_product_sku",
+        )
+
+        if st.button("Create Product", use_container_width=True, type="primary", key="create_product_btn"):
             product_id, msg = create_product(
                 business_id, user_id, user_id, name, category, sku, unit,
                 purchase_price or 0, selling_price or 0, opening_stock or 0,
@@ -145,6 +167,11 @@ def render_business_inventory(user_id):
             )
             if product_id:
                 st.success(f"'{name}' added.")
+                for _k in ("add_product_name", "add_product_category", "add_product_purchase_price",
+                           "add_product_selling_price", "add_product_opening_stock",
+                           "add_product_low_stock", "add_product_has_expiry",
+                           "add_product_expiry_date", "add_product_sku"):
+                    st.session_state.pop(_k, None)
                 st.rerun()
             else:
                 st.error(msg)
@@ -265,8 +292,8 @@ def _render_product_detail(product_id, business_id, user_id):
 
     with t3:
         st.warning(
-            f"Are you sure you want to delete **{product['name']}**? "
-            f"This action cannot be undone."
+            f"Are you sure you want to remove **{product['name']}**? "
+            f"This may affect how the product appears in your inventory records."
         )
         confirm = st.checkbox(
             "Yes, I'm sure I want to delete this product.",
