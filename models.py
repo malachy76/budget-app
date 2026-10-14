@@ -259,6 +259,57 @@ def create_tables():
             created_at TIMESTAMP DEFAULT NOW()
         )""")
 
+        # ── Business Mode — Phase 4A: foundation for Sales, Customers, Payments ──
+        # No sales/credit UI yet — this just lays the tables down safely so
+        # Phase 4B (the actual Sales page) has something solid to build on.
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS customers (
+            id SERIAL PRIMARY KEY,
+            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            phone TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        )""")
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sales (
+            id SERIAL PRIMARY KEY,
+            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+            customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+            total_amount NUMERIC(14,2) NOT NULL,
+            amount_paid NUMERIC(14,2) NOT NULL DEFAULT 0,
+            payment_status TEXT NOT NULL DEFAULT 'unpaid',
+            payment_method TEXT,
+            created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at TIMESTAMP DEFAULT NOW()
+        )""")
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sale_items (
+            id SERIAL PRIMARY KEY,
+            sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+            product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+            product_name TEXT NOT NULL,
+            quantity NUMERIC(12,3) NOT NULL,
+            unit_price NUMERIC(14,2) NOT NULL,
+            line_total NUMERIC(14,2) NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW()
+        )""")
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS payments (
+            id SERIAL PRIMARY KEY,
+            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+            sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+            customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+            amount NUMERIC(14,2) NOT NULL,
+            payment_method TEXT,
+            note TEXT,
+            created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at TIMESTAMP DEFAULT NOW()
+        )""")
+
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS debt_payments (
             id           SERIAL PRIMARY KEY,
@@ -346,6 +397,13 @@ def create_tables():
             "CREATE INDEX IF NOT EXISTS idx_products_business_id ON products(business_id)",
             "CREATE INDEX IF NOT EXISTS idx_inventory_movements_business_id ON inventory_movements(business_id)",
             "CREATE INDEX IF NOT EXISTS idx_inventory_movements_product_id ON inventory_movements(product_id)",
+            "CREATE INDEX IF NOT EXISTS idx_customers_business_id ON customers(business_id)",
+            "CREATE INDEX IF NOT EXISTS idx_sales_business_id ON sales(business_id)",
+            "CREATE INDEX IF NOT EXISTS idx_sales_customer_id ON sales(customer_id)",
+            "CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items(sale_id)",
+            "CREATE INDEX IF NOT EXISTS idx_sale_items_business_id ON sale_items(business_id)",
+            "CREATE INDEX IF NOT EXISTS idx_payments_business_id ON payments(business_id)",
+            "CREATE INDEX IF NOT EXISTS idx_payments_sale_id ON payments(sale_id)",
         ]:
             try:
                 cursor.execute(idx)
