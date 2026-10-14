@@ -1,6 +1,7 @@
 # _pages/business_inventory.py — Business Mode: Products / Inventory
 # Phase 2: base functionality. Phase 3: expiry-date form bug fix + full
-# label/description redesign + delete/archive (see inline comments below).
+# label/description redesign + delete/archive + past-expiry-date support +
+# explicit required-field validation (see inline comments below).
 import streamlit as st
 from datetime import date
 
@@ -97,7 +98,7 @@ def render_business_inventory(user_id):
         st.markdown("##### Pricing")
         col_c, col_d = st.columns(2)
         with col_c:
-            st.markdown("**Purchase Price**")
+            st.markdown("**Purchase Price** \u00b7 required")
             st.caption("How much you paid for one unit of this product.")
             purchase_price = st.number_input(
                 "Purchase Price", label_visibility="collapsed",
@@ -105,7 +106,7 @@ def render_business_inventory(user_id):
                 placeholder="e.g. 500", key="add_product_purchase_price",
             )
         with col_d:
-            st.markdown("**Selling Price**")
+            st.markdown("**Selling Price** \u00b7 required")
             st.caption("The price you sell one unit to your customer.")
             selling_price = st.number_input(
                 "Selling Price", label_visibility="collapsed",
@@ -117,7 +118,7 @@ def render_business_inventory(user_id):
         col_e, col_f = st.columns(2)
         with col_e:
             st.markdown("**Opening Stock**")
-            st.caption("The quantity of this product you currently have.")
+            st.caption("The quantity of this product you currently have. Leave blank for 0.")
             opening_stock = st.number_input(
                 "Opening Stock", label_visibility="collapsed",
                 min_value=0.0, value=None, step=0.5, format="%.3f",
@@ -125,7 +126,7 @@ def render_business_inventory(user_id):
             )
         with col_f:
             st.markdown("**Low Stock Alert**")
-            st.caption("Warn me when stock falls to this quantity.")
+            st.caption("Warn me when stock falls to this quantity. Leave blank for 0.")
             low_stock_threshold = st.number_input(
                 "Low Stock Alert", label_visibility="collapsed",
                 min_value=0.0, value=None, step=0.5, format="%.3f",
@@ -133,7 +134,11 @@ def render_business_inventory(user_id):
             )
 
         st.markdown("##### Expiry")
-        st.caption("Select the expiry date printed on the product, if it has one.")
+        st.caption(
+            "Select the expiry date printed on the product, if it has one. "
+            "You can also record a date that has already passed, for a "
+            "product you already know is expired."
+        )
         has_expiry = st.checkbox(
             "This product has an expiry date",
             help="Tick this if the product expires. Leave it unticked if it "
@@ -142,10 +147,13 @@ def render_business_inventory(user_id):
         )
         expiry_date = None
         if has_expiry:
+            # No min_value here, deliberately: a pharmacy owner must be
+            # able to log a product that's already expired, so the app can
+            # correctly flag it. Restricting to today-or-later would make
+            # that impossible.
             expiry_date = st.date_input(
                 "Expiry Date",
-                min_value=date.today(),
-                help="Pick the date from the calendar.",
+                help="Pick the date from the calendar — past or future.",
                 key="add_product_expiry_date",
             )
             st.caption(f"\u2705 Selected: {expiry_date.strftime('%d %b %Y')}")
@@ -160,21 +168,34 @@ def render_business_inventory(user_id):
         )
 
         if st.button("Create Product", use_container_width=True, type="primary", key="create_product_btn"):
-            product_id, msg = create_product(
-                business_id, user_id, user_id, name, category, sku, unit,
-                purchase_price or 0, selling_price or 0, opening_stock or 0,
-                low_stock_threshold or 0, expiry_date,
-            )
-            if product_id:
-                st.success(f"'{name}' added.")
-                for _k in ("add_product_name", "add_product_category", "add_product_purchase_price",
-                           "add_product_selling_price", "add_product_opening_stock",
-                           "add_product_low_stock", "add_product_has_expiry",
-                           "add_product_expiry_date", "add_product_sku"):
-                    st.session_state.pop(_k, None)
-                st.rerun()
+            # Purchase/selling price are treated as required here at the
+            # page level and validated explicitly — NOT silently defaulted
+            # to 0 — because an unentered price almost always means a
+            # mistake, not an intentional free product. Opening stock and
+            # the low-stock alert legitimately default to 0 when left
+            # blank: a brand-new product with no stock recorded yet is a
+            # normal, valid state (the products table's own DEFAULT 0
+            # already treats this as acceptable).
+            if not name or not name.strip():
+                st.error("Product name is required.")
+            elif purchase_price is None or selling_price is None:
+                st.error("Please enter both Purchase Price and Selling Price.")
             else:
-                st.error(msg)
+                product_id, msg = create_product(
+                    business_id, user_id, user_id, name, category, sku, unit,
+                    purchase_price, selling_price, opening_stock or 0,
+                    low_stock_threshold or 0, expiry_date,
+                )
+                if product_id:
+                    st.success(f"'{name}' added.")
+                    for _k in ("add_product_name", "add_product_category", "add_product_purchase_price",
+                               "add_product_selling_price", "add_product_opening_stock",
+                               "add_product_low_stock", "add_product_has_expiry",
+                               "add_product_expiry_date", "add_product_sku"):
+                        st.session_state.pop(_k, None)
+                    st.rerun()
+                else:
+                    st.error(msg)
 
     st.divider()
 
