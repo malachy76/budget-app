@@ -19,9 +19,28 @@ from db import get_db
 from business import get_business
 
 UNITS = [
-    "piece", "tablet", "capsule", "bottle", "sachet", "pack", "box",
-    "carton", "kg", "litre", "dozen", "other",
+    # General / packaging
+    "piece", "pack", "box", "carton",
+    # Oral solid forms
+    "tablet", "caplet", "capsule", "syrup",
+    # Injectable forms
+    "injection", "vial", "ampoule",
+    # Other dosage/packaging forms
+    "bottle", "sachet", "tube", "strip",
+    # Measurement units
+    "ml", "litre", "gram", "kg",
+    "dozen", "other",
 ]
+# Every value that existed before this list was expanded for Phase 4
+# (piece, tablet, capsule, bottle, sachet, pack, box, carton, kg, litre,
+# dozen, other) is still present unchanged above — existing products that
+# stored one of those as their unit are unaffected; nothing to migrate.
+# Deliberately NOT added as separate entries: "tablets"/"caplets"/
+# "capsules"/"bottles" as distinct values alongside their singular forms.
+# UNITS is a closed dropdown specifically so the same real-world unit is
+# never stored as two different strings (which would silently fragment
+# stock reporting later) — the singular form already covers the plural
+# case; the UI can pluralize for display without a second stored value.
 
 # Reasons shown in the UI -> the movement_type actually stored. Several
 # reasons can share a movement_type; the specific reason stays in `note`.
