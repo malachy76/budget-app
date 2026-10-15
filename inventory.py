@@ -26,7 +26,7 @@ UNITS = [
     # Injectable forms
     "injection", "vial", "ampoule",
     # Other dosage/packaging forms
-    "bottle", "sachet", "tube", "strip",
+    "bottle", "sachet", "tube", "strip", "card", "card", "card",
     # Measurement units
     "ml", "litre", "gram", "kg",
     "dozen", "other",
