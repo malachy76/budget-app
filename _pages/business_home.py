@@ -60,9 +60,15 @@ def render_business_home(user_id):
                 pass
 
             st.divider()
-            if st.button("\U0001F4E6 Products & Inventory", key="goto_inventory_btn", use_container_width=True):
-                st.session_state["_pending_biz_nav"] = "Products / Inventory"
-                st.rerun()
+            nav_c1, nav_c2 = st.columns(2)
+            with nav_c1:
+                if st.button("\U0001F4E6 Products & Inventory", key="goto_inventory_btn", use_container_width=True):
+                    st.session_state["_pending_biz_nav"] = "Products / Inventory"
+                    st.rerun()
+            with nav_c2:
+                if st.button("\U0001F6D2 Sales / POS", key="goto_sales_btn", use_container_width=True):
+                    st.session_state["_pending_biz_nav"] = "Sales / Point of Sale"
+                    st.rerun()
 
             st.caption(f"Created {biz['created_at'].strftime('%d %b %Y')}")
         return
