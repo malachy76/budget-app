@@ -6,6 +6,7 @@ import streamlit as st
 
 from business import create_business, get_user_businesses, get_business, BUSINESS_TYPES
 from inventory import get_inventory_summary
+from customers import get_credit_summary
 
 
 def render_business_home(user_id):
@@ -59,8 +60,19 @@ def render_business_home(user_id):
                 # person follows the link.
                 pass
 
+            try:
+                credit = get_credit_summary(biz["id"], user_id)
+                if credit["total_outstanding"] > 0:
+                    st.caption(
+                        f"\U0001F4B3 Outstanding customer credit: "
+                        f"\u20A6{credit['total_outstanding']:,.2f} "
+                        f"({credit['customers_owing']} customer(s)) \u2014 this is money owed to you, not profit."
+                    )
+            except Exception:
+                pass
+
             st.divider()
-            nav_c1, nav_c2 = st.columns(2)
+            nav_c1, nav_c2, nav_c3 = st.columns(3)
             with nav_c1:
                 if st.button("\U0001F4E6 Products & Inventory", key="goto_inventory_btn", use_container_width=True):
                     st.session_state["_pending_biz_nav"] = "Products / Inventory"
@@ -68,6 +80,10 @@ def render_business_home(user_id):
             with nav_c2:
                 if st.button("\U0001F6D2 Sales / POS", key="goto_sales_btn", use_container_width=True):
                     st.session_state["_pending_biz_nav"] = "Sales / Point of Sale"
+                    st.rerun()
+            with nav_c3:
+                if st.button("\U0001F465 Customers / Credit", key="goto_customers_btn", use_container_width=True):
+                    st.session_state["_pending_biz_nav"] = "Customers / Credit"
                     st.rerun()
 
             st.caption(f"Created {biz['created_at'].strftime('%d %b %Y')}")
