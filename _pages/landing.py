@@ -33,12 +33,14 @@ def _render_password_strength(password):
 
 def render_landing(cookies):
     # ── Cookie consent banner ───────────────────────────────────────────────
+    # Consent preference is separate from the authentication session token.
     if cookies.get("cookie_consent", "") != "accepted":
         st.markdown("""
         <div style="background:#1a3c5e;border-radius:10px;padding:14px 18px;margin-bottom:14px;
-                    color:#d4eee6;font-size:0.88rem;line-height:1.5;">
-          &#x1F36A; We use one essential cookie to keep you logged in between visits.
-          We don&#x2019;t use tracking or advertising cookies.
+                    color:#d4eee6;font-size:0.92rem;line-height:1.6;">
+          &#x1F36A; <strong>Cookie notice:</strong> Budget Right uses an essential cookie
+          to help keep your login session active between visits. We do not use cookies
+          for advertising or cross-site tracking.
         </div>
         """, unsafe_allow_html=True)
         cc1, cc2 = st.columns([1, 4])
@@ -48,13 +50,20 @@ def render_landing(cookies):
                 cookies.save()
                 st.rerun()
         with cc2:
-            with st.expander("Why does this app use cookies?"):
-                st.caption(
-                    "Budget Right stores one cookie containing a random session token "
-                    "so you don't have to log in again every time you open the app. "
-                    "This cookie is required for login to work and is not used for "
-                    "tracking, analytics, or advertising."
+            if st.button("Why does this app use cookies?", key="cookie_why_btn", use_container_width=True):
+                st.session_state["show_cookie_explanation"] = not st.session_state.get(
+                    "show_cookie_explanation", False
                 )
+
+        if st.session_state.get("show_cookie_explanation", False):
+            st.info(
+                "Budget Right uses an essential browser cookie to store a random session "
+                "token, helping the app recognise your login when you refresh the page or "
+                "return later. A separate preference remembers whether you accepted this "
+                "notice. These cookies are not used for advertising or cross-site tracking. "
+                "Your login remains subject to normal session security and expiration rules. "
+                "Your password is not stored in a cookie."
+            )
 
     st.markdown("""
     <style>
