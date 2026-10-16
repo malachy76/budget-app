@@ -6,3 +6,4 @@ plotly
 python-dateutil
 reportlab
 requests
+extra-streamlit-components>=0.1.71
