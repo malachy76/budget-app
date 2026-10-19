@@ -104,35 +104,59 @@ def _render_customer_detail(customer_id, business_id, user_id):
             m3.metric("Outstanding", f"\u20A6{sale['outstanding']:,.2f}")
             st.caption(f"Status: {_STATUS_LABEL.get(sale['payment_status'], sale['payment_status'])}")
 
-            with st.expander("View items purchased"):
-                try:
-                    items = get_sale_items(sale["id"], business_id, user_id)
-                except Exception as _e:
-                    st.error("Could not load items.")
-                    items = []
-                for it in items:
-                    st.caption(
-                        f"{it['product_name']} \u2014 {it['quantity']:g} "
-                        f"@ \u20A6{it['unit_price']:,.2f} = \u20A6{it['line_total']:,.2f}"
-                    )
+            # NOTE: deliberately NOT using st.expander for these two
+            # sections. Streamlit's expander component had documented
+            # content-rendering bugs introduced in its 1.47+ redesign
+            # (text/content failing to display correctly), and this
+            # project's requirements.txt pins an unbounded streamlit
+            # version — so rather than gamble on exactly which version is
+            # deployed, this uses a plain toggle button + container, which
+            # has no such known issue.
+            ic1, ic2 = st.columns(2)
+            with ic1:
+                if st.button("View items purchased", key=f"toggle_items_{sale['id']}", use_container_width=True):
+                    st.session_state[f"_show_items_{sale['id']}"] = not st.session_state.get(f"_show_items_{sale['id']}", False)
+            with ic2:
+                if st.button("Payment history", key=f"toggle_payments_{sale['id']}", use_container_width=True):
+                    st.session_state[f"_show_payments_{sale['id']}"] = not st.session_state.get(f"_show_payments_{sale['id']}", False)
 
-            with st.expander("Payment history"):
-                try:
-                    payments = get_sale_payments(sale["id"], business_id, user_id)
-                except Exception as _e:
-                    st.error("Could not load payment history.")
-                    payments = []
-                if not payments:
-                    st.caption("No payments recorded yet.")
-                for p in payments:
-                    st.caption(
-                        f"\u20A6{p['amount']:,.2f} via {p['payment_method'] or 'unspecified'} "
-                        f"\u2014 {p['created_at'].strftime('%d %b %Y %H:%M')}"
-                        + (f" \u2014 {p['note']}" if p["note"] else "")
-                    )
+            if st.session_state.get(f"_show_items_{sale['id']}", False):
+                with st.container(border=True):
+                    try:
+                        items = get_sale_items(sale["id"], business_id, user_id)
+                    except Exception as _e:
+                        st.error("Could not load items.")
+                        items = []
+                    if not items:
+                        st.caption("No items recorded for this sale.")
+                    for it in items:
+                        st.caption(
+                            f"{it['product_name']} \u2014 {it['quantity']:g} "
+                            f"@ \u20A6{it['unit_price']:,.2f} = \u20A6{it['line_total']:,.2f}"
+                        )
+
+            if st.session_state.get(f"_show_payments_{sale['id']}", False):
+                with st.container(border=True):
+                    try:
+                        payments = get_sale_payments(sale["id"], business_id, user_id)
+                    except Exception as _e:
+                        st.error("Could not load payment history.")
+                        payments = []
+                    if not payments:
+                        st.caption("No payments recorded yet.")
+                    for p in payments:
+                        st.caption(
+                            f"\u20A6{p['amount']:,.2f} via {p['payment_method'] or 'unspecified'} "
+                            f"\u2014 {p['created_at'].strftime('%d %b %Y %H:%M')}"
+                            + (f" \u2014 {p['note']}" if p["note"] else "")
+                        )
 
             if sale["outstanding"] > 0:
-                with st.expander("Record a payment"):
+                if st.button("Record a payment", key=f"toggle_pay_{sale['id']}", use_container_width=True):
+                    st.session_state[f"_show_pay_{sale['id']}"] = not st.session_state.get(f"_show_pay_{sale['id']}", False)
+
+            if sale["outstanding"] > 0 and st.session_state.get(f"_show_pay_{sale['id']}", False):
+                with st.container(border=True):
                     st.caption(f"Enter the amount the customer is paying now (max \u20A6{sale['outstanding']:,.2f}).")
                     pay_key = f"pay_amount_{sale['id']}"
                     pay_amount = st.number_input(
