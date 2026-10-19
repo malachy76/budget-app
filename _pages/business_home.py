@@ -72,18 +72,23 @@ def render_business_home(user_id):
                 pass
 
             st.divider()
-            nav_c1, nav_c2, nav_c3 = st.columns(3)
-            with nav_c1:
+            nav_r1c1, nav_r1c2 = st.columns(2)
+            with nav_r1c1:
                 if st.button("\U0001F4E6 Products & Inventory", key="goto_inventory_btn", use_container_width=True):
                     st.session_state["_pending_biz_nav"] = "Products / Inventory"
                     st.rerun()
-            with nav_c2:
+            with nav_r1c2:
                 if st.button("\U0001F6D2 Sales / POS", key="goto_sales_btn", use_container_width=True):
                     st.session_state["_pending_biz_nav"] = "Sales / Point of Sale"
                     st.rerun()
-            with nav_c3:
+            nav_r2c1, nav_r2c2 = st.columns(2)
+            with nav_r2c1:
                 if st.button("\U0001F465 Customers / Credit", key="goto_customers_btn", use_container_width=True):
                     st.session_state["_pending_biz_nav"] = "Customers / Credit"
+                    st.rerun()
+            with nav_r2c2:
+                if st.button("\U0001F48A Treatments", key="goto_treatments_btn", use_container_width=True):
+                    st.session_state["_pending_biz_nav"] = "Treatment Management"
                     st.rerun()
 
             st.caption(f"Created {biz['created_at'].strftime('%d %b %Y')}")
