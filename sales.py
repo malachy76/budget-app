@@ -49,6 +49,25 @@ def _require_business(business_id, owner_user_id):
 
 # ── Products available to sell ──────────────────────────────────────────────
 
+def get_today_sales_summary(business_id, owner_user_id):
+    """Sales made today vs. payments actually received today — kept as two
+    separate numbers on purpose. A payment received today might be
+    against a sale made last week; a sale made today might still be
+    sitting as outstanding credit. Conflating the two would misrepresent
+    cash flow, which the project's own spec is explicit about avoiding."""
+    _require_business(business_id, owner_user_id)
+    with get_db() as (conn, cursor):
+        cursor.execute(
+            "SELECT "
+            "  COALESCE((SELECT SUM(total_amount) FROM sales "
+            "    WHERE business_id=%s AND created_at::date = CURRENT_DATE), 0) AS sales_today, "
+            "  COALESCE((SELECT SUM(amount) FROM payments "
+            "    WHERE business_id=%s AND created_at::date = CURRENT_DATE), 0) AS payments_today",
+            (business_id, business_id),
+        )
+        return cursor.fetchone()
+
+
 def get_sale_products(business_id, owner_user_id):
     _require_business(business_id, owner_user_id)
     with get_db() as (conn, cursor):
