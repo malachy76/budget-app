@@ -310,6 +310,51 @@ def create_tables():
             created_at TIMESTAMP DEFAULT NOW()
         )""")
 
+        # ── Business Mode — Phase 4D: Treatment Management ──────────────────────
+        # Deliberately 3 separate tables/events, not 1: creating a treatment
+        # plan (treatments + treatment_items) must NOT touch inventory at
+        # all. Only treatment_dispensing rows — one per actual "Record
+        # Dispensing" action — write to inventory_movements, the same
+        # ledger sales and manual adjustments already use.
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS treatments (
+            id SERIAL PRIMARY KEY,
+            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+            patient_identifier TEXT NOT NULL,
+            start_date DATE NOT NULL,
+            duration_days INTEGER,
+            status TEXT NOT NULL DEFAULT 'planned',
+            notes TEXT,
+            created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at TIMESTAMP DEFAULT NOW()
+        )""")
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS treatment_items (
+            id SERIAL PRIMARY KEY,
+            treatment_id INTEGER NOT NULL REFERENCES treatments(id) ON DELETE CASCADE,
+            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+            product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+            quantity_per_administration NUMERIC(12,3) NOT NULL,
+            administrations_per_day NUMERIC(6,2),
+            duration_days INTEGER,
+            route TEXT,
+            planned_quantity NUMERIC(12,3),
+            quantity_dispensed NUMERIC(12,3) NOT NULL DEFAULT 0,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        )""")
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS treatment_dispensing (
+            id SERIAL PRIMARY KEY,
+            treatment_item_id INTEGER NOT NULL REFERENCES treatment_items(id) ON DELETE CASCADE,
+            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+            quantity NUMERIC(12,3) NOT NULL,
+            dispensed_at TIMESTAMP DEFAULT NOW(),
+            created_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+        )""")
+
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS debt_payments (
             id           SERIAL PRIMARY KEY,
@@ -329,6 +374,13 @@ def create_tables():
         cursor.execute("ALTER TABLE recurring_items ADD COLUMN IF NOT EXISTS allow_overdraft INTEGER DEFAULT 0")
         cursor.execute("ALTER TABLE recurring_items ADD COLUMN IF NOT EXISTS last_posted_at DATE")
         cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number TEXT")
+        # Phase 4D follow-up: fuller patient info, added after the treatments
+        # table already existed in production — ALTER, not part of the
+        # CREATE TABLE above, since CREATE TABLE IF NOT EXISTS won't touch
+        # an already-existing table. Both nullable: existing treatment
+        # records are unaffected, nothing to backfill.
+        cursor.execute("ALTER TABLE treatments ADD COLUMN IF NOT EXISTS patient_phone TEXT")
+        cursor.execute("ALTER TABLE treatments ADD COLUMN IF NOT EXISTS diagnosis TEXT")
         # Partial unique index: allows many NULLs (existing users without a
         # phone on file) while still preventing two accounts sharing a phone.
         cursor.execute("""
@@ -404,6 +456,11 @@ def create_tables():
             "CREATE INDEX IF NOT EXISTS idx_sale_items_business_id ON sale_items(business_id)",
             "CREATE INDEX IF NOT EXISTS idx_payments_business_id ON payments(business_id)",
             "CREATE INDEX IF NOT EXISTS idx_payments_sale_id ON payments(sale_id)",
+            "CREATE INDEX IF NOT EXISTS idx_treatments_business_id ON treatments(business_id)",
+            "CREATE INDEX IF NOT EXISTS idx_treatment_items_treatment_id ON treatment_items(treatment_id)",
+            "CREATE INDEX IF NOT EXISTS idx_treatment_items_business_id ON treatment_items(business_id)",
+            "CREATE INDEX IF NOT EXISTS idx_treatment_dispensing_item_id ON treatment_dispensing(treatment_item_id)",
+            "CREATE INDEX IF NOT EXISTS idx_treatment_dispensing_business_id ON treatment_dispensing(business_id)",
         ]:
             try:
                 cursor.execute(idx)
