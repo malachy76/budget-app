@@ -7,6 +7,8 @@ import streamlit as st
 from business import create_business, get_user_businesses, get_business, BUSINESS_TYPES
 from inventory import get_inventory_summary
 from customers import get_credit_summary
+from sales import get_today_sales_summary
+from treatments import get_treatment_dashboard_summary
 
 
 def render_business_home(user_id):
@@ -46,12 +48,30 @@ def render_business_home(user_id):
             st.markdown(f"## {biz['business_name']}")
             st.caption(biz["business_type"] or "No category set")
 
+            # ── Today ────────────────────────────────────────────────────
+            try:
+                today = get_today_sales_summary(biz["id"], user_id)
+                t1, t2 = st.columns(2)
+                t1.metric("Sales Today", f"\u20A6{today['sales_today']:,.2f}")
+                t2.metric("Payments Received Today", f"\u20A6{today['payments_today']:,.2f}")
+                st.caption(
+                    "These are sales made and cash collected \u2014 not profit. "
+                    "Profit accounts for what products cost you, which isn't calculated yet."
+                )
+            except Exception:
+                pass
+
+            # ── Inventory alerts ─────────────────────────────────────────
             try:
                 summary = get_inventory_summary(biz["id"], user_id)
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Products", summary["total_products"])
                 c2.metric("Low Stock", summary["low_stock"])
                 c3.metric("Out of Stock", summary["out_of_stock"])
+                if summary["expiring_soon"] or summary["expired"]:
+                    e1, e2 = st.columns(2)
+                    e1.metric("Expiring Soon", summary["expiring_soon"])
+                    e2.metric("Expired", summary["expired"])
                 st.caption(f"Estimated inventory value: \u20A6{summary['inventory_value']:,.2f}")
             except Exception:
                 # Non-fatal here — if inventory tables aren't ready yet,
@@ -60,6 +80,7 @@ def render_business_home(user_id):
                 # person follows the link.
                 pass
 
+            # ── Customer credit ──────────────────────────────────────────
             try:
                 credit = get_credit_summary(biz["id"], user_id)
                 if credit["total_outstanding"] > 0:
@@ -67,6 +88,17 @@ def render_business_home(user_id):
                         f"\U0001F4B3 Outstanding customer credit: "
                         f"\u20A6{credit['total_outstanding']:,.2f} "
                         f"({credit['customers_owing']} customer(s)) \u2014 this is money owed to you, not profit."
+                    )
+            except Exception:
+                pass
+
+            # ── Treatment activity ───────────────────────────────────────
+            try:
+                tx = get_treatment_dashboard_summary(biz["id"], user_id)
+                if tx["total_treatments"] > 0:
+                    st.caption(
+                        f"\U0001F48A Treatments: {tx['in_progress']} in progress, "
+                        f"{tx['scheduled']} scheduled, {tx['completed']} completed"
                     )
             except Exception:
                 pass
