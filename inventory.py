@@ -322,8 +322,11 @@ def get_inventory_summary(business_id, owner_user_id):
             "  COUNT(*) FILTER (WHERE current_stock <= 0) AS out_of_stock, "
             "  COUNT(*) FILTER (WHERE current_stock > 0 AND current_stock <= low_stock_threshold) AS low_stock, "
             "  COUNT(*) FILTER (WHERE current_stock > low_stock_threshold) AS in_stock, "
+            "  COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date < CURRENT_DATE) AS expired, "
+            "  COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date >= CURRENT_DATE "
+            "    AND expiry_date <= CURRENT_DATE + make_interval(days => %s)) AS expiring_soon, "
             "  COALESCE(SUM(current_stock * purchase_price), 0) AS inventory_value "
             "FROM products WHERE business_id=%s AND is_active=1",
-            (business_id,),
+            (LOW_STOCK_DAYS_SOON, business_id),
         )
         return cursor.fetchone()
