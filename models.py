@@ -381,6 +381,13 @@ def create_tables():
         # records are unaffected, nothing to backfill.
         cursor.execute("ALTER TABLE treatments ADD COLUMN IF NOT EXISTS patient_phone TEXT")
         cursor.execute("ALTER TABLE treatments ADD COLUMN IF NOT EXISTS diagnosis TEXT")
+        # Phase 5A-1: historical cost preservation. Nullable — existing
+        # sale_items rows predate this column and genuinely have no
+        # recoverable cost basis; they stay NULL rather than being
+        # backfilled with an invented number (per Section 11: never
+        # invent missing historical costs). Reporting code must treat
+        # NULL unit_cost as "unavailable", not as zero.
+        cursor.execute("ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS unit_cost NUMERIC(14,2)")
         # Partial unique index: allows many NULLs (existing users without a
         # phone on file) while still preventing two accounts sharing a phone.
         cursor.execute("""
