@@ -3,11 +3,12 @@ from styles import render_page_header
 # List the user's businesses, let them create one, let them view one.
 # No products/sales/inventory yet — that's later phases.
 import streamlit as st
+from datetime import date
 
 from business import create_business, get_user_businesses, get_business, BUSINESS_TYPES
 from inventory import get_inventory_summary
 from customers import get_credit_summary
-from sales import get_today_sales_summary
+from sales import get_today_sales_summary, get_stock_sales_profit_summary
 from treatments import get_treatment_dashboard_summary
 
 
@@ -55,9 +56,32 @@ def render_business_home(user_id):
                 t1.metric("Sales Today", f"\u20A6{today['sales_today']:,.2f}")
                 t2.metric("Payments Received Today", f"\u20A6{today['payments_today']:,.2f}")
                 st.caption(
-                    "These are sales made and cash collected \u2014 not profit. "
-                    "Profit accounts for what products cost you, which isn't calculated yet."
+                    "These are sales made and cash collected \u2014 cash collected "
+                    "isn't the same as sales made, since some of today's sales may "
+                    "still be unpaid or partly paid."
                 )
+            except Exception:
+                pass
+
+            # ── Today's gross profit (stock sales only — Phase 5A-1) ───────
+            try:
+                profit = get_stock_sales_profit_summary(biz["id"], user_id, date.today(), date.today())
+                if profit["sales_count"] > 0:
+                    p1, p2 = st.columns(2)
+                    p1.metric("Cost of Goods Sold Today", f"\u20A6{profit['cogs']:,.2f}")
+                    p2.metric("Gross Profit Today", f"\u20A6{profit['gross_profit']:,.2f}")
+                    margin_text = (
+                        f"{profit['gross_margin_pct']:.1f}%" if profit["gross_margin_pct"] is not None else "n/a"
+                    )
+                    st.caption(f"Gross profit margin: {margin_text}. This is gross profit "
+                               f"from stock sales only \u2014 not net profit, since business "
+                               f"expenses aren't subtracted here.")
+                    if profit["incomplete"]:
+                        st.caption(
+                            f"\u26A0\uFE0F {profit['lines_missing_cost']} item(s) sold today have no "
+                            f"recorded cost (sold before cost tracking was added), so this figure "
+                            f"may understate today's true cost and overstate profit slightly."
+                        )
             except Exception:
                 pass
 
