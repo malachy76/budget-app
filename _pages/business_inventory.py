@@ -276,17 +276,35 @@ def _render_product_detail(product_id, business_id, user_id):
         reasons = ADD_REASONS if direction == "Add stock" else REMOVE_REASONS
         reason = st.selectbox("Reason", list(reasons.keys()), key="adj_reason")
         qty = st.number_input("Quantity", min_value=0.0, step=0.5, format="%.3f", key="adj_qty")
-        if st.button("Confirm Adjustment", key="adj_confirm_btn", type="primary"):
-            ok, msg = adjust_stock(
-                product_id, business_id, user_id, user_id,
-                "add" if direction == "Add stock" else "remove",
-                qty, reason,
+
+        is_purchase = (direction == "Add stock" and reason == "New delivery / Purchase")
+        unit_cost = None
+        if is_purchase:
+            st.caption(
+                "This updates the product's average cost per unit, used for profit "
+                "reporting. Enter what you actually paid per unit for this delivery."
             )
-            if ok:
-                st.success(msg)
-                st.rerun()
+            unit_cost = st.number_input(
+                "Unit Cost (\u20A6) \u2014 what you paid per unit",
+                min_value=0.0, value=None, step=0.01, format="%.2f",
+                placeholder="e.g. 500", key="adj_unit_cost",
+            )
+
+        if st.button("Confirm Adjustment", key="adj_confirm_btn", type="primary"):
+            if is_purchase and not unit_cost:
+                st.error("Enter the unit cost for this delivery.")
             else:
-                st.error(msg)
+                ok, msg = adjust_stock(
+                    product_id, business_id, user_id, user_id,
+                    "add" if direction == "Add stock" else "remove",
+                    qty, reason, unit_cost,
+                )
+                if ok:
+                    st.success(msg)
+                    st.session_state.pop("adj_unit_cost", None)
+                    st.rerun()
+                else:
+                    st.error(msg)
 
     with t2:
         try:
