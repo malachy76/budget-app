@@ -141,7 +141,7 @@ def create_sale(business_id, owner_user_id, created_by_user_id, items,
                 # as inventory.adjust_stock() — so two concurrent sales
                 # can't both read the same stale stock and oversell.
                 cursor.execute(
-                    "SELECT id, name, unit, selling_price, current_stock "
+                    "SELECT id, name, unit, selling_price, current_stock, purchase_price "
                     "FROM products WHERE id=%s AND business_id=%s FOR UPDATE",
                     (it["product_id"], business_id),
                 )
@@ -155,9 +155,15 @@ def create_sale(business_id, owner_user_id, created_by_user_id, items,
                     )
 
                 unit_price = product["selling_price"]
+                # Historical cost snapshot — Phase 5A-1. Whatever
+                # products.purchase_price is RIGHT NOW (the running
+                # weighted-average cost — see inventory.adjust_stock())
+                # is locked onto this line permanently. A later price or
+                # cost change must never rewrite this sale's profit.
+                unit_cost = product["purchase_price"]
                 line_total = (unit_price * it["quantity"]).quantize(Decimal("0.01"))
                 total_amount += line_total
-                line_rows.append((product, it["quantity"], unit_price, line_total))
+                line_rows.append((product, it["quantity"], unit_price, unit_cost, line_total))
 
             if amount_paid > total_amount:
                 raise SaleError("Amount paid cannot be more than the total amount due.")
@@ -180,13 +186,13 @@ def create_sale(business_id, owner_user_id, created_by_user_id, items,
             )
             sale_id = cursor.fetchone()["id"]
 
-            for product, qty, unit_price, line_total in line_rows:
+            for product, qty, unit_price, unit_cost, line_total in line_rows:
                 cursor.execute(
                     "INSERT INTO sale_items (sale_id, business_id, product_id, "
-                    "product_name, quantity, unit_price, line_total) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    "product_name, quantity, unit_price, unit_cost, line_total) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                     (sale_id, business_id, product["id"], product["name"],
-                     qty, unit_price, line_total),
+                     qty, unit_price, unit_cost, line_total),
                 )
 
                 before = product["current_stock"]
@@ -218,3 +224,58 @@ def create_sale(business_id, owner_user_id, created_by_user_id, items,
         return None, str(e)
     except Exception as e:
         return None, str(e)
+
+
+# ── Stock-sale profit reporting (Phase 5A-1) ────────────────────────────────
+
+def get_stock_sales_profit_summary(business_id, owner_user_id, start_date, end_date):
+    """
+    Net revenue, COGS, and gross profit for completed stock sales whose
+    sale.created_at falls within [start_date, end_date] (inclusive,
+    business-local dates). Scoped at the sale_items line level, not the
+    sales-row level, since COGS is a per-line figure (unit_cost × qty).
+
+    Lines with unit_cost IS NULL are sale_items written before the
+    Phase 5A-1 migration — they're excluded from the COGS sum (never
+    treated as zero cost, which would overstate profit) and counted
+    separately so the caller can show an honest "incomplete" caveat
+    instead of a falsely precise number.
+    """
+    _require_business(business_id, owner_user_id)
+    with get_db() as (conn, cursor):
+        cursor.execute(
+            "SELECT "
+            "  COUNT(DISTINCT s.id) AS sales_count, "
+            "  COALESCE(SUM(si.line_total), 0) AS net_revenue, "
+            "  COALESCE(SUM(si.line_total) FILTER (WHERE si.unit_cost IS NOT NULL), 0) "
+            "    AS revenue_with_known_cost, "
+            "  COALESCE(SUM(si.quantity * si.unit_cost) FILTER (WHERE si.unit_cost IS NOT NULL), 0) "
+            "    AS cogs, "
+            "  COUNT(*) FILTER (WHERE si.unit_cost IS NULL) AS lines_missing_cost "
+            "FROM sales s "
+            "JOIN sale_items si ON si.sale_id = s.id "
+            "WHERE s.business_id=%s AND s.created_at::date BETWEEN %s AND %s",
+            (business_id, start_date, end_date),
+        )
+        row = cursor.fetchone()
+
+        net_revenue = row["net_revenue"]
+        cogs = row["cogs"]
+        # Gross profit/margin computed only from the portion of revenue
+        # whose cost is actually known — mixing in unknown-cost revenue
+        # at an assumed cost of zero would inflate profit.
+        known_revenue = row["revenue_with_known_cost"]
+        gross_profit = known_revenue - cogs
+        gross_margin_pct = (
+            (gross_profit / known_revenue * 100) if known_revenue > 0 else None
+        )
+
+        return {
+            "sales_count": row["sales_count"],
+            "net_revenue": net_revenue,
+            "cogs": cogs,
+            "gross_profit": gross_profit,
+            "gross_margin_pct": gross_margin_pct,
+            "lines_missing_cost": row["lines_missing_cost"],
+            "incomplete": row["lines_missing_cost"] > 0,
+        }
