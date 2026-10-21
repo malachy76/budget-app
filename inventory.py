@@ -63,6 +63,14 @@ class NotOwner(Exception):
     pass
 
 
+class StockError(Exception):
+    """Raised for validation failures inside adjust_stock()'s transaction,
+    so db.get_db() rolls back instead of committing partial work — same
+    discipline as sales.SaleError / customers.CreditError /
+    treatments.TreatmentError."""
+    pass
+
+
 def _require_business(business_id, owner_user_id):
     biz = get_business(business_id, owner_user_id)
     if biz is None:
@@ -189,9 +197,22 @@ def expiry_status(product):
 # ── Stock adjustments ────────────────────────────────────────────────────────
 
 def adjust_stock(product_id, business_id, owner_user_id, created_by_user_id,
-                  direction, quantity, reason):
+                  direction, quantity, reason, unit_cost=None):
     """direction: 'add' or 'remove'. reason must be a key from ADD_REASONS /
-    REMOVE_REASONS matching the direction."""
+    REMOVE_REASONS matching the direction.
+
+    unit_cost is REQUIRED only for reason == 'New delivery / Purchase' —
+    the one ADD_REASON that represents a genuine stock receipt
+    (movement_type='purchase'). When provided, products.purchase_price
+    (used as the running weighted-average unit cost — see module
+    docstring) is recalculated as:
+        new_avg = (stock_before * old_avg_cost + quantity * unit_cost)
+                  / (stock_before + quantity)
+    Every other reason (corrections, damaged, expired, missing) does NOT
+    touch purchase_price — those aren't purchases, so they carry no cost
+    information and must not silently change the cost basis of what's
+    still on the shelf.
+    """
     _require_business(business_id, owner_user_id)
 
     if direction not in ("add", "remove"):
@@ -209,6 +230,17 @@ def adjust_stock(product_id, business_id, owner_user_id, created_by_user_id,
 
     movement_type = reasons[reason]
     signed_qty = quantity if direction == "add" else -quantity
+    is_purchase = (movement_type == "purchase")
+
+    if is_purchase:
+        try:
+            unit_cost = _to_decimal(unit_cost, "Unit cost")
+        except ValueError as e:
+            return False, str(e)
+        if unit_cost < 0:
+            return False, "Unit cost cannot be negative."
+    else:
+        unit_cost = None
 
     try:
         with get_db() as (conn, cursor):
@@ -216,34 +248,54 @@ def adjust_stock(product_id, business_id, owner_user_id, created_by_user_id,
             # concurrent adjustments can't both read the same stale
             # current_stock and overwrite each other.
             cursor.execute(
-                "SELECT current_stock FROM products "
+                "SELECT current_stock, purchase_price FROM products "
                 "WHERE id=%s AND business_id=%s FOR UPDATE",
                 (product_id, business_id),
             )
             row = cursor.fetchone()
             if row is None:
-                return False, "Product not found."
+                raise StockError("Product not found.")
 
             before = row["current_stock"]
             after = before + signed_qty
             if after < 0:
-                return False, (
-                    f"Cannot remove {quantity} — only {before} in stock."
+                raise StockError(f"Cannot remove {quantity} — only {before} in stock.")
+
+            if is_purchase:
+                old_avg_cost = row["purchase_price"] or Decimal("0")
+                if before <= 0:
+                    # Nothing to weight against (first receipt, or stock
+                    # was fully depleted) — the new cost simply becomes
+                    # the average.
+                    new_avg_cost = unit_cost
+                else:
+                    new_avg_cost = (
+                        (before * old_avg_cost) + (quantity * unit_cost)
+                    ) / (before + quantity)
+                cursor.execute(
+                    "UPDATE products SET current_stock=%s, purchase_price=%s, "
+                    "updated_at=NOW() WHERE id=%s AND business_id=%s",
+                    (after, new_avg_cost, product_id, business_id),
+                )
+            else:
+                cursor.execute(
+                    "UPDATE products SET current_stock=%s, updated_at=NOW() "
+                    "WHERE id=%s AND business_id=%s",
+                    (after, product_id, business_id),
                 )
 
             cursor.execute(
-                "UPDATE products SET current_stock=%s, updated_at=NOW() "
-                "WHERE id=%s AND business_id=%s",
-                (after, product_id, business_id),
-            )
-            cursor.execute(
                 "INSERT INTO inventory_movements (business_id, product_id, "
                 "movement_type, quantity, quantity_before, quantity_after, "
-                "note, created_by) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                "unit_cost, note, created_by) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (business_id, product_id, movement_type, signed_qty, before, after,
-                 reason, created_by_user_id),
+                 unit_cost, reason, created_by_user_id),
             )
-        return True, f"Stock updated: {before} \u2192 {after}"
+        return True, f"Stock updated: {before} \u2192 {after}" + (
+            f" (new average cost: \u20A6{new_avg_cost:,.2f}/unit)" if is_purchase else ""
+        )
+    except StockError as e:
+        return False, str(e)
     except NotOwner as e:
         return False, str(e)
     except Exception as e:
