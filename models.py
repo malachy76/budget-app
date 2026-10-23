@@ -388,6 +388,33 @@ def create_tables():
         # invent missing historical costs). Reporting code must treat
         # NULL unit_cost as "unavailable", not as zero.
         cursor.execute("ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS unit_cost NUMERIC(14,2)")
+
+        # Phase 5A-2: treatment billing. A treatment's bill is NOT a fixed
+        # number set at creation (unlike a sale) — it accrues as medicine
+        # is actually dispensed, possibly across several days. service_charge
+        # is a flat fee set once; amount_paid is a running counter updated
+        # by record_treatment_payment(); the total bill itself is computed
+        # live as service_charge + SUM(dispensing quantity x its own
+        # snapshotted unit_price) — see treatments.get_treatment_billing().
+        cursor.execute("ALTER TABLE treatments ADD COLUMN IF NOT EXISTS service_charge NUMERIC(14,2) NOT NULL DEFAULT 0")
+        cursor.execute("ALTER TABLE treatments ADD COLUMN IF NOT EXISTS amount_paid NUMERIC(14,2) NOT NULL DEFAULT 0")
+        # Both nullable: existing treatment_dispensing rows from before this
+        # migration have no recoverable price/cost — stay NULL, never
+        # backfilled, same discipline as sale_items.unit_cost above.
+        cursor.execute("ALTER TABLE treatment_dispensing ADD COLUMN IF NOT EXISTS unit_price NUMERIC(14,2)")
+        cursor.execute("ALTER TABLE treatment_dispensing ADD COLUMN IF NOT EXISTS unit_cost NUMERIC(14,2)")
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS treatment_payments (
+            id SERIAL PRIMARY KEY,
+            treatment_id INTEGER NOT NULL REFERENCES treatments(id) ON DELETE CASCADE,
+            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+            amount NUMERIC(14,2) NOT NULL,
+            payment_method TEXT,
+            note TEXT,
+            created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at TIMESTAMP DEFAULT NOW()
+        )""")
         # Partial unique index: allows many NULLs (existing users without a
         # phone on file) while still preventing two accounts sharing a phone.
         cursor.execute("""
@@ -468,6 +495,8 @@ def create_tables():
             "CREATE INDEX IF NOT EXISTS idx_treatment_items_business_id ON treatment_items(business_id)",
             "CREATE INDEX IF NOT EXISTS idx_treatment_dispensing_item_id ON treatment_dispensing(treatment_item_id)",
             "CREATE INDEX IF NOT EXISTS idx_treatment_dispensing_business_id ON treatment_dispensing(business_id)",
+            "CREATE INDEX IF NOT EXISTS idx_treatment_payments_treatment_id ON treatment_payments(treatment_id)",
+            "CREATE INDEX IF NOT EXISTS idx_treatment_payments_business_id ON treatment_payments(business_id)",
         ]:
             try:
                 cursor.execute(idx)
