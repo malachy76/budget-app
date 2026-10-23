@@ -66,11 +66,13 @@ def _require_business(business_id, owner_user_id):
 
 def create_treatment(business_id, owner_user_id, created_by_user_id,
                       patient_identifier, patient_phone, diagnosis,
-                      start_date, duration_days, notes, items):
+                      start_date, duration_days, notes, items, service_charge=0):
     """
     patient_phone and diagnosis are both optional — this records what a
     qualified person already determined (a condition name, a phone
     number for contact), never something the app infers or suggests.
+    service_charge is a flat fee (e.g. a consultation charge), separate
+    from whatever medicines end up dispensed — see get_treatment_billing().
     items: list of dicts with keys product_id, quantity_per_administration,
     administrations_per_day (optional), duration_days (optional),
     route (optional), notes (optional).
@@ -86,29 +88,33 @@ def create_treatment(business_id, owner_user_id, created_by_user_id,
     if not items:
         return None, "Add at least one product to the treatment."
 
-    clean_items = []
-    for it in items:
-        qty = _to_decimal(it.get("quantity_per_administration"), "Quantity per administration")
-        if qty <= 0:
-            return None, "Quantity per administration must be greater than zero."
-        admins_per_day = _to_decimal(it.get("administrations_per_day"), "Administrations per day", allow_none=True)
-        item_duration = it.get("duration_days") or None
-
-        planned_quantity = None
-        if admins_per_day is not None and item_duration:
-            planned_quantity = qty * admins_per_day * Decimal(str(item_duration))
-
-        clean_items.append({
-            "product_id": it["product_id"],
-            "quantity_per_administration": qty,
-            "administrations_per_day": admins_per_day,
-            "duration_days": item_duration,
-            "route": it.get("route") or None,
-            "planned_quantity": planned_quantity,
-            "notes": it.get("notes") or None,
-        })
-
     try:
+        service_charge_dec = _to_decimal(service_charge, "Service charge") if service_charge else Decimal("0")
+        if service_charge_dec < 0:
+            return None, "Service charge cannot be negative."
+
+        clean_items = []
+        for it in items:
+            qty = _to_decimal(it.get("quantity_per_administration"), "Quantity per administration")
+            if qty <= 0:
+                return None, "Quantity per administration must be greater than zero."
+            admins_per_day = _to_decimal(it.get("administrations_per_day"), "Administrations per day", allow_none=True)
+            item_duration = it.get("duration_days") or None
+
+            planned_quantity = None
+            if admins_per_day is not None and item_duration:
+                planned_quantity = qty * admins_per_day * Decimal(str(item_duration))
+
+            clean_items.append({
+                "product_id": it["product_id"],
+                "quantity_per_administration": qty,
+                "administrations_per_day": admins_per_day,
+                "duration_days": item_duration,
+                "route": it.get("route") or None,
+                "planned_quantity": planned_quantity,
+                "notes": it.get("notes") or None,
+            })
+
         with get_db() as (conn, cursor):
             # Confirm every referenced product genuinely belongs to this
             # business before writing anything — a product_id from the
@@ -124,11 +130,11 @@ def create_treatment(business_id, owner_user_id, created_by_user_id,
 
             cursor.execute(
                 "INSERT INTO treatments (business_id, patient_identifier, patient_phone, "
-                "diagnosis, start_date, duration_days, status, notes, created_by) "
-                "VALUES (%s, %s, %s, %s, %s, %s, 'planned', %s, %s) RETURNING id",
+                "diagnosis, start_date, duration_days, status, notes, service_charge, created_by) "
+                "VALUES (%s, %s, %s, %s, %s, %s, 'planned', %s, %s, %s) RETURNING id",
                 (business_id, patient_identifier, (patient_phone or "").strip() or None,
                  (diagnosis or "").strip() or None, start_date, duration_days or None,
-                 notes or None, created_by_user_id),
+                 notes or None, service_charge_dec, created_by_user_id),
             )
             treatment_id = cursor.fetchone()["id"]
 
@@ -260,11 +266,11 @@ def record_dispensing(treatment_item_id, business_id, owner_user_id,
                        created_by_user_id, quantity, note):
     _require_business(business_id, owner_user_id)
 
-    quantity = _to_decimal(quantity, "Quantity")
-    if quantity <= 0:
-        return None, "Quantity must be greater than zero."
-
     try:
+        quantity = _to_decimal(quantity, "Quantity")
+        if quantity <= 0:
+            return None, "Quantity must be greater than zero."
+
         with get_db() as (conn, cursor):
             cursor.execute(
                 "SELECT ti.id, ti.product_id, ti.quantity_dispensed "
@@ -280,8 +286,8 @@ def record_dispensing(treatment_item_id, business_id, owner_user_id,
             # and sales.py — so a sale and a dispensing happening at the
             # same moment can't both read the same stale stock.
             cursor.execute(
-                "SELECT id, name, unit, current_stock FROM products "
-                "WHERE id=%s AND business_id=%s FOR UPDATE",
+                "SELECT id, name, unit, current_stock, selling_price, purchase_price "
+                "FROM products WHERE id=%s AND business_id=%s FOR UPDATE",
                 (item["product_id"], business_id),
             )
             product = cursor.fetchone()
@@ -295,6 +301,14 @@ def record_dispensing(treatment_item_id, business_id, owner_user_id,
 
             before = product["current_stock"]
             after = before - quantity
+            # Snapshot both price (what the patient is billed for this
+            # dispensing) and cost (for treatment gross-profit reporting)
+            # at the moment stock actually leaves the shop — same
+            # immutability principle as sale_items in sales.py. A later
+            # change to the product's price/cost must never rewrite what
+            # this dispensing was actually billed or cost at the time.
+            unit_price = product["selling_price"]
+            unit_cost = product["purchase_price"]
 
             cursor.execute(
                 "UPDATE products SET current_stock=%s, updated_at=NOW() "
@@ -303,16 +317,16 @@ def record_dispensing(treatment_item_id, business_id, owner_user_id,
             )
             cursor.execute(
                 "INSERT INTO inventory_movements (business_id, product_id, movement_type, "
-                "quantity, quantity_before, quantity_after, note, created_by) "
-                "VALUES (%s, %s, 'treatment_dispensing', %s, %s, %s, %s, %s)",
-                (business_id, product["id"], -quantity, before, after,
+                "quantity, quantity_before, quantity_after, unit_cost, note, created_by) "
+                "VALUES (%s, %s, 'treatment_dispensing', %s, %s, %s, %s, %s, %s)",
+                (business_id, product["id"], -quantity, before, after, unit_cost,
                  f"Treatment item #{treatment_item_id}" + (f" \u2014 {note}" if note else ""),
                  created_by_user_id),
             )
             cursor.execute(
                 "INSERT INTO treatment_dispensing (treatment_item_id, business_id, "
-                "quantity, created_by) VALUES (%s, %s, %s, %s)",
-                (treatment_item_id, business_id, quantity, created_by_user_id),
+                "quantity, unit_price, unit_cost, created_by) VALUES (%s, %s, %s, %s, %s, %s)",
+                (treatment_item_id, business_id, quantity, unit_price, unit_cost, created_by_user_id),
             )
             cursor.execute(
                 "UPDATE treatment_items SET quantity_dispensed = quantity_dispensed + %s "
@@ -320,8 +334,152 @@ def record_dispensing(treatment_item_id, business_id, owner_user_id,
                 (quantity, treatment_item_id, business_id),
             )
 
-        return True, f"Dispensed {quantity:g} {product['unit']} of '{product['name']}'."
+        return True, (
+            f"Dispensed {quantity:g} {product['unit']} of '{product['name']}' "
+            f"\u2014 \u20A6{(quantity * unit_price):,.2f} added to the treatment bill."
+        )
     except TreatmentError as e:
         return None, str(e)
     except Exception as e:
         return None, str(e)
+
+
+# ── Treatment billing (Phase 5A-2) ──────────────────────────────────────────
+#
+# A treatment's total bill is NOT stored as a single number — it's computed
+# live as service_charge + SUM(every dispensing's own snapshotted
+# quantity x unit_price). This is deliberate: a treatment accrues charges
+# over potentially several days of dispensing, unlike a sale which is a
+# one-shot transaction with a fixed total at creation. Each individual
+# dispensing event IS immutable once recorded (its unit_price/unit_cost
+# never change after the fact), so the aggregate is always an honest sum
+# of real, historical, locked-in events — never a number that could have
+# been retroactively altered by a later price change.
+
+def get_treatment_billing(treatment_id, business_id, owner_user_id):
+    """Returns total_bill, amount_paid, outstanding, payment_status, and
+    (where every dispensing line has a known cost) cogs/gross_profit.
+    Lines dispensed before the 5A-2 migration have NULL unit_price/
+    unit_cost — excluded from the bill and cost sums, counted separately
+    as `lines_missing_price`, never treated as free or zero-cost."""
+    _require_business(business_id, owner_user_id)
+    with get_db() as (conn, cursor):
+        cursor.execute(
+            "SELECT t.service_charge, t.amount_paid, "
+            "  COALESCE(SUM(d.quantity * d.unit_price) FILTER (WHERE d.unit_price IS NOT NULL), 0) "
+            "    AS dispensed_charges, "
+            "  COALESCE(SUM(d.quantity * d.unit_cost) FILTER (WHERE d.unit_cost IS NOT NULL), 0) "
+            "    AS cogs, "
+            "  COUNT(d.id) FILTER (WHERE d.unit_price IS NULL) AS lines_missing_price "
+            "FROM treatments t "
+            "LEFT JOIN treatment_items ti ON ti.treatment_id = t.id "
+            "LEFT JOIN treatment_dispensing d ON d.treatment_item_id = ti.id "
+            "WHERE t.id=%s AND t.business_id=%s "
+            "GROUP BY t.id",
+            (treatment_id, business_id),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+
+        total_bill = row["service_charge"] + row["dispensed_charges"]
+        amount_paid = row["amount_paid"]
+        outstanding = total_bill - amount_paid
+        if outstanding <= 0 and total_bill > 0:
+            payment_status = "paid"
+        elif amount_paid > 0:
+            payment_status = "partial"
+        else:
+            payment_status = "unpaid"
+
+        gross_profit = row["dispensed_charges"] - row["cogs"]
+        return {
+            "total_bill": total_bill,
+            "service_charge": row["service_charge"],
+            "dispensed_charges": row["dispensed_charges"],
+            "amount_paid": amount_paid,
+            "outstanding": outstanding,
+            "payment_status": payment_status,
+            "cogs": row["cogs"],
+            "gross_profit": gross_profit,
+            "lines_missing_price": row["lines_missing_price"],
+            "incomplete": row["lines_missing_price"] > 0,
+        }
+
+
+def record_treatment_payment(treatment_id, business_id, owner_user_id,
+                              created_by_user_id, amount, payment_method, note):
+    _require_business(business_id, owner_user_id)
+
+    try:
+        amount = _to_decimal(amount, "Payment amount")
+        if amount <= 0:
+            return None, "Payment amount must be greater than zero."
+
+        with get_db() as (conn, cursor):
+            # Lock the treatment row for this whole transaction so two
+            # near-simultaneous payments can't both read the same stale
+            # outstanding balance. (Does not lock treatment_dispensing —
+            # a dispensing happening at the exact same instant as a
+            # payment is a rare edge case not guarded against here.)
+            cursor.execute(
+                "SELECT service_charge, amount_paid FROM treatments "
+                "WHERE id=%s AND business_id=%s FOR UPDATE",
+                (treatment_id, business_id),
+            )
+            treatment = cursor.fetchone()
+            if treatment is None:
+                raise TreatmentError("Treatment not found.")
+
+            # Compute the current bill on the SAME cursor/transaction —
+            # never call get_treatment_billing() here, since that opens
+            # its own separate connection and wouldn't see this lock.
+            cursor.execute(
+                "SELECT COALESCE(SUM(d.quantity * d.unit_price) "
+                "  FILTER (WHERE d.unit_price IS NOT NULL), 0) AS dispensed_charges "
+                "FROM treatment_items ti "
+                "LEFT JOIN treatment_dispensing d ON d.treatment_item_id = ti.id "
+                "WHERE ti.treatment_id=%s AND ti.business_id=%s",
+                (treatment_id, business_id),
+            )
+            dispensed_charges = cursor.fetchone()["dispensed_charges"]
+            total_bill = treatment["service_charge"] + dispensed_charges
+            outstanding = total_bill - treatment["amount_paid"]
+
+            if outstanding <= 0:
+                raise TreatmentError("This treatment bill is already fully paid.")
+            if amount > outstanding:
+                raise TreatmentError(
+                    f"Payment cannot exceed the outstanding balance of \u20A6{outstanding:,.2f}."
+                )
+
+            cursor.execute(
+                "INSERT INTO treatment_payments (treatment_id, business_id, amount, "
+                "payment_method, note, created_by) VALUES (%s, %s, %s, %s, %s, %s)",
+                (treatment_id, business_id, amount, payment_method, note or None,
+                 created_by_user_id),
+            )
+            cursor.execute(
+                "UPDATE treatments SET amount_paid = amount_paid + %s "
+                "WHERE id=%s AND business_id=%s",
+                (amount, treatment_id, business_id),
+            )
+
+        return True, f"Payment of \u20A6{amount:,.2f} recorded."
+    except TreatmentError as e:
+        return None, str(e)
+    except Exception as e:
+        return None, str(e)
+
+
+def get_treatment_payments(treatment_id, business_id, owner_user_id):
+    _require_business(business_id, owner_user_id)
+    with get_db() as (conn, cursor):
+        cursor.execute(
+            "SELECT p.*, u.username AS recorded_by_username "
+            "FROM treatment_payments p LEFT JOIN users u ON p.created_by = u.id "
+            "WHERE p.treatment_id=%s AND p.business_id=%s "
+            "ORDER BY p.created_at DESC",
+            (treatment_id, business_id),
+        )
+        return cursor.fetchall()
