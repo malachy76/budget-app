@@ -8,8 +8,12 @@ from treatments import (
     create_treatment, get_treatments, get_treatment, get_treatment_items,
     get_dispensing_history, get_treatment_dashboard_summary,
     update_treatment_status, record_dispensing,
+    get_treatment_billing, record_treatment_payment, get_treatment_payments,
     ROUTES, STATUSES, STATUS_LABELS,
 )
+from sales import PAYMENT_METHODS
+
+_BILLING_STATUS_LABELS = {"paid": "Paid", "partial": "Partially Paid", "unpaid": "Unpaid"}
 
 # NOTE: this page deliberately avoids st.expander for the same reason as
 # business_customers.py — a documented Streamlit rendering bug in that
@@ -140,6 +144,13 @@ def _render_add_treatment_form(business_id, user_id):
         "Treatment Notes (optional)", placeholder="Relevant administrative notes.",
         key="tx_notes",
     )
+    tx_service_charge = st.number_input(
+        "Service Charge (\u20A6, optional)", min_value=0.0, value=None, step=0.01, format="%.2f",
+        placeholder="e.g. 2000",
+        help="A flat consultation/service fee, separate from any medicines used. "
+             "Leave blank if you only bill for medicines dispensed.",
+        key="tx_service_charge",
+    )
 
     st.divider()
     st.markdown("###### Products and Medicines Used")
@@ -234,12 +245,14 @@ def _render_add_treatment_form(business_id, user_id):
                     business_id, user_id, user_id, patient_identifier, tx_phone,
                     tx_diagnosis, start_date,
                     int(tx_duration) if tx_duration else None, tx_notes, draft,
+                    tx_service_charge or 0,
                 )
                 if treatment_id:
                     st.success(msg)
                     st.session_state["_tx_items_draft"] = []
                     st.session_state["_show_add_treatment"] = False
-                    for k in ["tx_patient", "tx_phone", "tx_diagnosis", "tx_duration", "tx_notes", "tx_item_notes"]:
+                    for k in ["tx_patient", "tx_phone", "tx_diagnosis", "tx_duration",
+                              "tx_notes", "tx_item_notes", "tx_service_charge"]:
                         st.session_state.pop(k, None)
                 else:
                     st.error(msg)
@@ -298,6 +311,79 @@ def _render_treatment_detail(treatment_id, business_id, user_id):
                 (st.success if ok else st.error)(msg)
                 if ok:
                     st.rerun()
+
+    st.divider()
+    st.markdown("##### Billing")
+    try:
+        billing = get_treatment_billing(treatment_id, business_id, user_id)
+    except Exception as _e:
+        st.error("Could not load billing for this treatment.")
+        billing = None
+
+    if billing:
+        b1, b2, b3 = st.columns(3)
+        b1.metric("Total Bill", f"\u20A6{billing['total_bill']:,.2f}")
+        b2.metric("Paid", f"\u20A6{billing['amount_paid']:,.2f}")
+        b3.metric("Outstanding", f"\u20A6{billing['outstanding']:,.2f}")
+        st.caption(
+            f"Status: {_BILLING_STATUS_LABELS.get(billing['payment_status'], billing['payment_status'])} "
+            f"\u2014 service charge \u20A6{billing['service_charge']:,.2f} + "
+            f"medicines/supplies \u20A6{billing['dispensed_charges']:,.2f}"
+        )
+        if billing["incomplete"]:
+            st.caption(
+                f"\u26A0\uFE0F {billing['lines_missing_price']} dispensing record(s) predate billing "
+                f"and aren't included above \u2014 this bill may understate what's actually owed."
+            )
+
+        if billing["outstanding"] > 0:
+            if st.button("Record a payment", key="toggle_tx_pay", use_container_width=True):
+                st.session_state["_show_tx_pay"] = not st.session_state.get("_show_tx_pay", False)
+            if st.session_state.get("_show_tx_pay", False):
+                with st.container(border=True):
+                    st.caption(f"Enter the amount being paid now (max \u20A6{billing['outstanding']:,.2f}).")
+                    pay_amount = st.number_input(
+                        "Payment Amount (\u20A6)", min_value=0.0, max_value=float(billing["outstanding"]),
+                        value=None, step=0.01, format="%.2f", placeholder="e.g. 5000",
+                        key="tx_pay_amount",
+                    )
+                    pay_method = st.selectbox("Payment Method", PAYMENT_METHODS, key="tx_pay_method")
+                    pay_note = st.text_input("Note (optional)", key="tx_pay_note")
+                    processing = st.session_state.get("_tx_paying", False)
+                    if st.button("Confirm Payment", key="confirm_tx_pay", type="primary", disabled=processing):
+                        st.session_state["_tx_paying"] = True
+                        try:
+                            ok, msg = record_treatment_payment(
+                                treatment_id, business_id, user_id, user_id,
+                                pay_amount, pay_method, pay_note,
+                            )
+                            if ok:
+                                st.success(msg)
+                                st.session_state.pop("tx_pay_amount", None)
+                                st.session_state.pop("tx_pay_note", None)
+                            else:
+                                st.error(msg)
+                        finally:
+                            st.session_state["_tx_paying"] = False
+                        st.rerun()
+
+        if st.button("Payment history", key="toggle_tx_pay_hist", use_container_width=True):
+            st.session_state["_show_tx_pay_hist"] = not st.session_state.get("_show_tx_pay_hist", False)
+        if st.session_state.get("_show_tx_pay_hist", False):
+            with st.container(border=True):
+                try:
+                    payments = get_treatment_payments(treatment_id, business_id, user_id)
+                except Exception as _e:
+                    st.error("Could not load payment history.")
+                    payments = []
+                if not payments:
+                    st.caption("No payments recorded yet.")
+                for p in payments:
+                    st.caption(
+                        f"\u20A6{p['amount']:,.2f} via {p['payment_method'] or 'unspecified'} "
+                        f"\u2014 {p['created_at'].strftime('%d %b %Y %H:%M')}"
+                        + (f" \u2014 {p['note']}" if p["note"] else "")
+                    )
 
     st.divider()
     st.markdown("##### Products and Medicines")
