@@ -31,6 +31,7 @@ from decimal import Decimal, InvalidOperation
 
 from db import get_db
 from business import get_business
+from sales import get_or_create_customer
 
 ROUTES = ["Oral", "Injection", "Topical", "Other / Not specified"]
 STATUSES = ["planned", "in_progress", "completed", "cancelled"]
@@ -115,6 +116,20 @@ def create_treatment(business_id, owner_user_id, created_by_user_id,
                 "notes": it.get("notes") or None,
             })
 
+        # Link to the SAME customers table stock sales use, via the
+        # existing name-based dedup in get_or_create_customer() — so a
+        # patient who also has a stock-sale debt is the one customer
+        # record, not two. Called BEFORE opening the treatment's own
+        # transaction below: calling it from inside would open a second
+        # database connection mid-transaction, the same nested-connection
+        # bug already fixed once in record_treatment_payment().
+        # Limitation: matching is exact-name, scoped to this business —
+        # if two different anonymous patients are both given the same
+        # generic identifier (e.g. both called "Patient 001"), they will
+        # be merged into one customer record. Distinct identifiers avoid
+        # this; there's no other way to tell two "Patient 001"s apart.
+        customer_id = get_or_create_customer(business_id, owner_user_id, patient_identifier, patient_phone)
+
         with get_db() as (conn, cursor):
             # Confirm every referenced product genuinely belongs to this
             # business before writing anything — a product_id from the
@@ -130,11 +145,12 @@ def create_treatment(business_id, owner_user_id, created_by_user_id,
 
             cursor.execute(
                 "INSERT INTO treatments (business_id, patient_identifier, patient_phone, "
-                "diagnosis, start_date, duration_days, status, notes, service_charge, created_by) "
-                "VALUES (%s, %s, %s, %s, %s, %s, 'planned', %s, %s, %s) RETURNING id",
+                "diagnosis, start_date, duration_days, status, notes, service_charge, "
+                "customer_id, created_by) "
+                "VALUES (%s, %s, %s, %s, %s, %s, 'planned', %s, %s, %s, %s, %s) RETURNING id",
                 (business_id, patient_identifier, (patient_phone or "").strip() or None,
                  (diagnosis or "").strip() or None, start_date, duration_days or None,
-                 notes or None, service_charge_dec, created_by_user_id),
+                 notes or None, service_charge_dec, customer_id, created_by_user_id),
             )
             treatment_id = cursor.fetchone()["id"]
 
@@ -470,6 +486,34 @@ def record_treatment_payment(treatment_id, business_id, owner_user_id,
         return None, str(e)
     except Exception as e:
         return None, str(e)
+
+
+def get_today_treatment_summary(business_id, owner_user_id):
+    """Treatment-side revenue and collections for today, using the same
+    transaction-dated convention as sales.get_today_sales_summary():
+    revenue is dated by when it was actually earned (dispensing date for
+    medicine charges, creation date for the flat service charge),
+    collections are dated by when the payment was actually received —
+    these can be two different dates for the same treatment."""
+    _require_business(business_id, owner_user_id)
+    with get_db() as (conn, cursor):
+        cursor.execute(
+            "SELECT "
+            "  COALESCE((SELECT SUM(service_charge) FROM treatments "
+            "    WHERE business_id=%s AND created_at::date = CURRENT_DATE), 0) AS service_charges_today, "
+            "  COALESCE((SELECT SUM(d.quantity * d.unit_price) "
+            "    FROM treatment_dispensing d "
+            "    WHERE d.business_id=%s AND d.dispensed_at::date = CURRENT_DATE "
+            "    AND d.unit_price IS NOT NULL), 0) AS dispensed_charges_today, "
+            "  COALESCE((SELECT SUM(amount) FROM treatment_payments "
+            "    WHERE business_id=%s AND created_at::date = CURRENT_DATE), 0) AS payments_today",
+            (business_id, business_id, business_id),
+        )
+        row = cursor.fetchone()
+        return {
+            "revenue_today": row["service_charges_today"] + row["dispensed_charges_today"],
+            "payments_today": row["payments_today"],
+        }
 
 
 def get_treatment_payments(treatment_id, business_id, owner_user_id):
