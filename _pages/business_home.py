@@ -9,7 +9,7 @@ from business import create_business, get_user_businesses, get_business, BUSINES
 from inventory import get_inventory_summary
 from customers import get_credit_summary
 from sales import get_today_sales_summary, get_stock_sales_profit_summary
-from treatments import get_treatment_dashboard_summary
+from treatments import get_treatment_dashboard_summary, get_today_treatment_summary
 
 
 def render_business_home(user_id):
@@ -49,19 +49,50 @@ def render_business_home(user_id):
             st.markdown(f"## {biz['business_name']}")
             st.caption(biz["business_type"] or "No category set")
 
-            # ── Today ────────────────────────────────────────────────────
+            # ── Today, combined across stock sales + treatments ─────────────
+            # "Revenue" and "collected" are shown both combined (Phase
+            # 5A-3) and broken out by source — combining them into one
+            # number is fine (both are real revenue earned today), but
+            # the breakdown stays visible underneath since they're still
+            # two different kinds of business activity worth seeing
+            # separately.
+            stock_today = None
+            tx_today = None
             try:
-                today = get_today_sales_summary(biz["id"], user_id)
-                t1, t2 = st.columns(2)
-                t1.metric("Sales Today", f"\u20A6{today['sales_today']:,.2f}")
-                t2.metric("Payments Received Today", f"\u20A6{today['payments_today']:,.2f}")
-                st.caption(
-                    "These are sales made and cash collected \u2014 cash collected "
-                    "isn't the same as sales made, since some of today's sales may "
-                    "still be unpaid or partly paid."
-                )
+                stock_today = get_today_sales_summary(biz["id"], user_id)
             except Exception:
                 pass
+            try:
+                tx_today = get_today_treatment_summary(biz["id"], user_id)
+            except Exception:
+                pass
+
+            if stock_today or tx_today:
+                combined_revenue = (stock_today["sales_today"] if stock_today else 0) + \
+                                    (tx_today["revenue_today"] if tx_today else 0)
+                combined_collected = (stock_today["payments_today"] if stock_today else 0) + \
+                                      (tx_today["payments_today"] if tx_today else 0)
+                t1, t2 = st.columns(2)
+                t1.metric("Total Revenue Today", f"\u20A6{combined_revenue:,.2f}")
+                t2.metric("Total Collected Today", f"\u20A6{combined_collected:,.2f}")
+
+                bits = []
+                if stock_today:
+                    bits.append(
+                        f"Stock sales: \u20A6{stock_today['sales_today']:,.2f} revenue, "
+                        f"\u20A6{stock_today['payments_today']:,.2f} collected"
+                    )
+                if tx_today and (tx_today["revenue_today"] > 0 or tx_today["payments_today"] > 0):
+                    bits.append(
+                        f"Treatments: \u20A6{tx_today['revenue_today']:,.2f} revenue, "
+                        f"\u20A6{tx_today['payments_today']:,.2f} collected"
+                    )
+                if bits:
+                    st.caption("  \u00b7  ".join(bits))
+                st.caption(
+                    "Revenue earned and cash collected aren't the same \u2014 some of "
+                    "today's revenue may still be unpaid or only partly paid."
+                )
 
             # ── Today's gross profit (stock sales only — Phase 5A-1) ───────
             try:
@@ -104,7 +135,7 @@ def render_business_home(user_id):
                 # person follows the link.
                 pass
 
-            # ── Customer credit ──────────────────────────────────────────
+            # ── Customer credit (combined stock-sale + treatment — 5A-3) ───
             try:
                 credit = get_credit_summary(biz["id"], user_id)
                 if credit["total_outstanding"] > 0:
@@ -112,6 +143,10 @@ def render_business_home(user_id):
                         f"\U0001F4B3 Outstanding customer credit: "
                         f"\u20A6{credit['total_outstanding']:,.2f} "
                         f"({credit['customers_owing']} customer(s)) \u2014 this is money owed to you, not profit."
+                    )
+                    st.caption(
+                        f"\u20A6{credit['stock_sale_outstanding']:,.2f} from stock sales, "
+                        f"\u20A6{credit['treatment_outstanding']:,.2f} from treatments"
                     )
             except Exception:
                 pass
