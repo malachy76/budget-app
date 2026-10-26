@@ -397,6 +397,12 @@ def create_tables():
         # live as service_charge + SUM(dispensing quantity x its own
         # snapshotted unit_price) — see treatments.get_treatment_billing().
         cursor.execute("ALTER TABLE treatments ADD COLUMN IF NOT EXISTS service_charge NUMERIC(14,2) NOT NULL DEFAULT 0")
+        # Phase 5A-3: link treatments to the SAME customers table stock
+        # sales already use, so one person's debt can be summed across
+        # both without creating a second, duplicate customer record for
+        # them. Nullable — a patient with no name/phone entered has no
+        # customer to link to, and existing treatments predate this link.
+        cursor.execute("ALTER TABLE treatments ADD COLUMN IF NOT EXISTS customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL")
         cursor.execute("ALTER TABLE treatments ADD COLUMN IF NOT EXISTS amount_paid NUMERIC(14,2) NOT NULL DEFAULT 0")
         # Both nullable: existing treatment_dispensing rows from before this
         # migration have no recoverable price/cost — stay NULL, never
@@ -491,6 +497,7 @@ def create_tables():
             "CREATE INDEX IF NOT EXISTS idx_payments_business_id ON payments(business_id)",
             "CREATE INDEX IF NOT EXISTS idx_payments_sale_id ON payments(sale_id)",
             "CREATE INDEX IF NOT EXISTS idx_treatments_business_id ON treatments(business_id)",
+            "CREATE INDEX IF NOT EXISTS idx_treatments_customer_id ON treatments(customer_id)",
             "CREATE INDEX IF NOT EXISTS idx_treatment_items_treatment_id ON treatment_items(treatment_id)",
             "CREATE INDEX IF NOT EXISTS idx_treatment_items_business_id ON treatment_items(business_id)",
             "CREATE INDEX IF NOT EXISTS idx_treatment_dispensing_item_id ON treatment_dispensing(treatment_item_id)",
