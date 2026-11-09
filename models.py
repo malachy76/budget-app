@@ -421,6 +421,72 @@ def create_tables():
             created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
             created_at TIMESTAMP DEFAULT NOW()
         )""")
+
+        # ── Phase 5A-4: bad-debt write-offs, reversals and recoveries ─────────
+        # Three NEW tables; no existing table or column is altered. A
+        # write-off is an accounting adjustment stored as its own row — the
+        # original sale / treatment row (and its payments, COGS and stock
+        # movements) is never touched. Collectible debt is derived as
+        #   total - amount_paid - SUM(active write-offs)
+        # where "active" = not reversed. created_at is TIMESTAMPTZ so the
+        # actual event moment is unambiguous for Africa/Lagos reporting
+        # (Phase 5A-5). idempotency_key + UNIQUE(business_id, key) is the
+        # database-level backstop against duplicate submissions.
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS debt_write_offs (
+            id SERIAL PRIMARY KEY,
+            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+            customer_id INTEGER NOT NULL REFERENCES customers(id),
+            source_type TEXT NOT NULL CHECK (source_type IN ('sale', 'treatment')),
+            sale_id INTEGER REFERENCES sales(id),
+            treatment_id INTEGER REFERENCES treatments(id),
+            amount NUMERIC(14,2) NOT NULL CHECK (amount > 0),
+            reason_category TEXT NOT NULL,
+            reason_note TEXT,
+            idempotency_key TEXT NOT NULL,
+            created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            CONSTRAINT chk_write_off_source CHECK (
+                (source_type = 'sale' AND sale_id IS NOT NULL AND treatment_id IS NULL) OR
+                (source_type = 'treatment' AND treatment_id IS NOT NULL AND sale_id IS NULL)
+            ),
+            CONSTRAINT uq_write_off_idem UNIQUE (business_id, idempotency_key)
+        )""")
+
+        # Corrections are a separate, permanent row — the original
+        # write-off row is never edited or deleted. UNIQUE(write_off_id)
+        # means a write-off can only be reversed once.
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS debt_write_off_reversals (
+            id SERIAL PRIMARY KEY,
+            write_off_id INTEGER NOT NULL UNIQUE REFERENCES debt_write_offs(id),
+            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+            reason TEXT NOT NULL,
+            created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""")
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS debt_recoveries (
+            id SERIAL PRIMARY KEY,
+            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+            customer_id INTEGER NOT NULL REFERENCES customers(id),
+            source_type TEXT NOT NULL CHECK (source_type IN ('sale', 'treatment')),
+            sale_id INTEGER REFERENCES sales(id),
+            treatment_id INTEGER REFERENCES treatments(id),
+            amount NUMERIC(14,2) NOT NULL CHECK (amount > 0),
+            payment_method TEXT NOT NULL,
+            note TEXT,
+            idempotency_key TEXT NOT NULL,
+            created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            CONSTRAINT chk_recovery_source CHECK (
+                (source_type = 'sale' AND sale_id IS NOT NULL AND treatment_id IS NULL) OR
+                (source_type = 'treatment' AND treatment_id IS NOT NULL AND sale_id IS NULL)
+            ),
+            CONSTRAINT uq_recovery_idem UNIQUE (business_id, idempotency_key)
+        )""")
+
         # Partial unique index: allows many NULLs (existing users without a
         # phone on file) while still preventing two accounts sharing a phone.
         cursor.execute("""
@@ -498,6 +564,15 @@ def create_tables():
             "CREATE INDEX IF NOT EXISTS idx_payments_sale_id ON payments(sale_id)",
             "CREATE INDEX IF NOT EXISTS idx_treatments_business_id ON treatments(business_id)",
             "CREATE INDEX IF NOT EXISTS idx_treatments_customer_id ON treatments(customer_id)",
+            "CREATE INDEX IF NOT EXISTS idx_write_offs_business_id ON debt_write_offs(business_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_write_offs_sale_id ON debt_write_offs(sale_id)",
+            "CREATE INDEX IF NOT EXISTS idx_write_offs_treatment_id ON debt_write_offs(treatment_id)",
+            "CREATE INDEX IF NOT EXISTS idx_write_offs_customer_id ON debt_write_offs(customer_id)",
+            "CREATE INDEX IF NOT EXISTS idx_write_off_reversals_business_id ON debt_write_off_reversals(business_id)",
+            "CREATE INDEX IF NOT EXISTS idx_recoveries_business_id ON debt_recoveries(business_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_recoveries_sale_id ON debt_recoveries(sale_id)",
+            "CREATE INDEX IF NOT EXISTS idx_recoveries_treatment_id ON debt_recoveries(treatment_id)",
+            "CREATE INDEX IF NOT EXISTS idx_recoveries_customer_id ON debt_recoveries(customer_id)",
             "CREATE INDEX IF NOT EXISTS idx_treatment_items_treatment_id ON treatment_items(treatment_id)",
             "CREATE INDEX IF NOT EXISTS idx_treatment_items_business_id ON treatment_items(business_id)",
             "CREATE INDEX IF NOT EXISTS idx_treatment_dispensing_item_id ON treatment_dispensing(treatment_item_id)",
