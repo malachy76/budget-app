@@ -564,6 +564,13 @@ def create_tables():
             "CREATE INDEX IF NOT EXISTS idx_payments_sale_id ON payments(sale_id)",
             "CREATE INDEX IF NOT EXISTS idx_treatments_business_id ON treatments(business_id)",
             "CREATE INDEX IF NOT EXISTS idx_treatments_customer_id ON treatments(customer_id)",
+            # Phase 5A-5: date-range lookups for the cash-basis report
+            # (additive indexes only; no table or column is changed).
+            "CREATE INDEX IF NOT EXISTS idx_sales_business_created ON sales(business_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_payments_business_created ON payments(business_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_treatments_business_created ON treatments(business_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_treatment_payments_business_created ON treatment_payments(business_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_treatment_dispensing_business_at ON treatment_dispensing(business_id, dispensed_at)",
             "CREATE INDEX IF NOT EXISTS idx_write_offs_business_id ON debt_write_offs(business_id, created_at)",
             "CREATE INDEX IF NOT EXISTS idx_write_offs_sale_id ON debt_write_offs(sale_id)",
             "CREATE INDEX IF NOT EXISTS idx_write_offs_treatment_id ON debt_write_offs(treatment_id)",
