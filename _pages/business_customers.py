@@ -122,7 +122,13 @@ def _render_customer_detail(customer_id, business_id, user_id):
             m1.metric("Total", f"\u20A6{sale['total_amount']:,.2f}")
             m2.metric("Paid", f"\u20A6{sale['amount_paid']:,.2f}")
             m3.metric("Outstanding", f"\u20A6{sale['outstanding']:,.2f}")
-            st.caption(f"Status: {_STATUS_LABEL.get(sale['payment_status'], sale['payment_status'])}")
+            if sale["written_off"] > 0 and sale["outstanding"] <= 0:
+                sale_status = "Written Off"
+            else:
+                sale_status = _STATUS_LABEL.get(sale["payment_status"], sale["payment_status"])
+            st.caption(f"Status: {sale_status}")
+            if sale["written_off"] > 0:
+                st.caption(f"Written off as bad debt: \u20A6{sale['written_off']:,.2f}")
 
             # NOTE: deliberately NOT using st.expander for these two
             # sections. Streamlit's expander component had documented
@@ -229,9 +235,15 @@ def _render_customer_detail(customer_id, business_id, user_id):
             m1.metric("Total Bill", f"\u20A6{tx['total_bill']:,.2f}")
             m2.metric("Paid", f"\u20A6{tx['amount_paid']:,.2f}")
             m3.metric("Outstanding", f"\u20A6{tx['outstanding']:,.2f}")
-            status = "paid" if tx["outstanding"] <= 0 and tx["total_bill"] > 0 else ("partial" if tx["amount_paid"] > 0 else "unpaid")
-            st.caption(f"Payment status: {_STATUS_LABEL.get(status, status)}  \u00b7  "
+            if tx["written_off"] > 0 and tx["outstanding"] <= 0:
+                pay_status_label = "Written Off"
+            else:
+                status = "paid" if tx["outstanding"] <= 0 and tx["total_bill"] > 0 else ("partial" if tx["amount_paid"] > 0 else "unpaid")
+                pay_status_label = _STATUS_LABEL.get(status, status)
+            st.caption(f"Payment status: {pay_status_label}  \u00b7  "
                        f"Treatment status: {TX_STATUS_LABELS.get(tx['status'], tx['status'])}")
+            if tx["written_off"] > 0:
+                st.caption(f"Written off as bad debt: \u20A6{tx['written_off']:,.2f}")
 
             if st.button("Payment history", key=f"toggle_tx_hist_{tx['id']}", use_container_width=True):
                 st.session_state[f"_show_tx_hist_{tx['id']}"] = not st.session_state.get(f"_show_tx_hist_{tx['id']}", False)
