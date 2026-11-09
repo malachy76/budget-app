@@ -13,7 +13,7 @@ from treatments import (
 )
 from sales import PAYMENT_METHODS
 
-_BILLING_STATUS_LABELS = {"paid": "Paid", "partial": "Partially Paid", "unpaid": "Unpaid"}
+_BILLING_STATUS_LABELS = {"paid": "Paid", "partial": "Partially Paid", "unpaid": "Unpaid", "written_off": "Written Off"}
 
 # NOTE: this page deliberately avoids st.expander for the same reason as
 # business_customers.py — a documented Streamlit rendering bug in that
@@ -330,6 +330,8 @@ def _render_treatment_detail(treatment_id, business_id, user_id):
             f"\u2014 service charge \u20A6{billing['service_charge']:,.2f} + "
             f"medicines/supplies \u20A6{billing['dispensed_charges']:,.2f}"
         )
+        if billing["written_off"] > 0:
+            st.caption(f"Written off as bad debt: \u20A6{billing['written_off']:,.2f} (the bill and payments above are unchanged).")
         if billing["incomplete"]:
             st.caption(
                 f"\u26A0\uFE0F {billing['lines_missing_price']} dispensing record(s) predate billing "
