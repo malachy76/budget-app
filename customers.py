@@ -22,6 +22,10 @@ from decimal import Decimal, InvalidOperation
 
 from db import get_db
 from business import get_business
+# Phase 5A-4: collectible debt = total - paid - ACTIVE write-offs. The SQL
+# fragment lives in baddebt.py so every balance in the app uses the identical
+# definition of "active write-off" (not reversed).
+from baddebt import active_write_off_sql, SOURCE_SALE, SOURCE_TREATMENT
 
 
 class CreditError(Exception):
@@ -64,7 +68,10 @@ def _get_treatment_outstanding_by_customer(business_id, cursor):
     cursor.execute(
         "SELECT t.id, t.customer_id, t.created_at, t.amount_paid, "
         "  t.service_charge + COALESCE(SUM(d.quantity * d.unit_price) "
-        "    FILTER (WHERE d.unit_price IS NOT NULL), 0) AS total_bill "
+        "    FILTER (WHERE d.unit_price IS NOT NULL), 0) AS total_bill, "
+        # Scalar subquery, NOT a join — a join would multiply the written-off
+        # amount by the number of item/dispensing rows.
+        f"  {active_write_off_sql(SOURCE_TREATMENT, 't')} AS written_off "
         "FROM treatments t "
         "LEFT JOIN treatment_items ti ON ti.treatment_id = t.id "
         "LEFT JOIN treatment_dispensing d ON d.treatment_item_id = ti.id "
@@ -78,7 +85,7 @@ def _get_treatment_outstanding_by_customer(business_id, cursor):
         if cid is None:
             continue
         agg = by_customer.setdefault(cid, {"outstanding": Decimal("0"), "unpaid_count": 0, "last_at": None})
-        outstanding = t["total_bill"] - t["amount_paid"]
+        outstanding = t["total_bill"] - t["amount_paid"] - t["written_off"]
         if outstanding > 0:
             agg["outstanding"] += outstanding
             agg["unpaid_count"] += 1
@@ -100,12 +107,18 @@ def get_customers_with_balance(business_id, owner_user_id):
         )
         customers = cursor.fetchall()
 
+        # collectible = total - paid - active write-offs (Phase 5A-4). A
+        # fully written-off sale keeps payment_status 'unpaid'/'partial'
+        # (the sale row is never edited), so "is it still owed?" is decided
+        # by the derived balance, not by payment_status.
         cursor.execute(
             "SELECT customer_id, "
-            "  COALESCE(SUM(total_amount - amount_paid) FILTER (WHERE payment_status != 'paid'), 0) AS outstanding, "
-            "  COUNT(*) FILTER (WHERE payment_status != 'paid') AS unpaid_count, "
+            "  COALESCE(SUM(collectible) FILTER (WHERE collectible > 0), 0) AS outstanding, "
+            "  COUNT(*) FILTER (WHERE collectible > 0) AS unpaid_count, "
             "  MAX(created_at) AS last_at "
-            "FROM sales WHERE business_id=%s GROUP BY customer_id",
+            "FROM (SELECT s.customer_id, s.created_at, "
+            f"  s.total_amount - s.amount_paid - {active_write_off_sql(SOURCE_SALE, 's')} AS collectible "
+            "  FROM sales s WHERE s.business_id=%s) x GROUP BY customer_id",
             (business_id,),
         )
         sale_by_customer = {r["customer_id"]: r for r in cursor.fetchall()}
@@ -174,9 +187,11 @@ def get_customer_sales(customer_id, business_id, owner_user_id):
     _require_business(business_id, owner_user_id)
     with get_db() as (conn, cursor):
         cursor.execute(
-            "SELECT *, (total_amount - amount_paid) AS outstanding "
-            "FROM sales WHERE customer_id=%s AND business_id=%s "
-            "ORDER BY created_at DESC",
+            "SELECT s.*, "
+            f"  {active_write_off_sql(SOURCE_SALE, 's')} AS written_off, "
+            f"  (s.total_amount - s.amount_paid - {active_write_off_sql(SOURCE_SALE, 's')}) AS outstanding "
+            "FROM sales s WHERE s.customer_id=%s AND s.business_id=%s "
+            "ORDER BY s.created_at DESC",
             (customer_id, business_id),
         )
         return cursor.fetchall()
@@ -191,7 +206,8 @@ def get_customer_treatments(customer_id, business_id, owner_user_id):
         cursor.execute(
             "SELECT t.*, "
             "  t.service_charge + COALESCE(SUM(d.quantity * d.unit_price) "
-            "    FILTER (WHERE d.unit_price IS NOT NULL), 0) AS total_bill "
+            "    FILTER (WHERE d.unit_price IS NOT NULL), 0) AS total_bill, "
+            f"  {active_write_off_sql(SOURCE_TREATMENT, 't')} AS written_off "
             "FROM treatments t "
             "LEFT JOIN treatment_items ti ON ti.treatment_id = t.id "
             "LEFT JOIN treatment_dispensing d ON d.treatment_item_id = ti.id "
@@ -204,7 +220,7 @@ def get_customer_treatments(customer_id, business_id, owner_user_id):
         results = []
         for r in rows:
             r = dict(r)
-            r["outstanding"] = r["total_bill"] - r["amount_paid"]
+            r["outstanding"] = r["total_bill"] - r["amount_paid"] - r["written_off"]
             results.append(r)
         return results
 
@@ -258,8 +274,24 @@ def record_payment(sale_id, business_id, owner_user_id, created_by_user_id,
             if sale is None:
                 raise CreditError("Sale not found.")
 
-            outstanding = sale["total_amount"] - sale["amount_paid"]
+            # Phase 5A-4: written-off money is no longer collectible, so an
+            # ordinary payment may only go against what is still collectible.
+            # (Money received against a written-off amount is a RECOVERY —
+            # baddebt.record_recovery — never an ordinary payment.)
+            cursor.execute(
+                "SELECT COALESCE(SUM(w.amount), 0) AS wo FROM debt_write_offs w "
+                "WHERE w.business_id=%s AND w.sale_id=%s AND NOT EXISTS "
+                "(SELECT 1 FROM debt_write_off_reversals r WHERE r.write_off_id = w.id)",
+                (business_id, sale_id),
+            )
+            written_off = cursor.fetchone()["wo"]
+            outstanding = sale["total_amount"] - sale["amount_paid"] - written_off
             if outstanding <= 0:
+                if written_off > 0:
+                    raise CreditError(
+                        "Nothing is left to collect on this sale — the balance was written off. "
+                        "Use Bad Debts \u2192 Record Recovery if the customer is paying it back."
+                    )
                 raise CreditError("This sale is already fully paid.")
             if amount > outstanding:
                 raise CreditError(
