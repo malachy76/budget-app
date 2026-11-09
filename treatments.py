@@ -147,7 +147,7 @@ def create_treatment(business_id, owner_user_id, created_by_user_id,
                 "INSERT INTO treatments (business_id, patient_identifier, patient_phone, "
                 "diagnosis, start_date, duration_days, status, notes, service_charge, "
                 "customer_id, created_by) "
-                "VALUES (%s, %s, %s, %s, %s, %s, 'planned', %s, %s, %s, %s, %s) RETURNING id",
+                "VALUES (%s, %s, %s, %s, %s, %s, 'planned', %s, %s, %s, %s) RETURNING id",
                 (business_id, patient_identifier, (patient_phone or "").strip() or None,
                  (diagnosis or "").strip() or None, start_date, duration_days or None,
                  notes or None, service_charge_dec, customer_id, created_by_user_id),
@@ -400,8 +400,20 @@ def get_treatment_billing(treatment_id, business_id, owner_user_id):
 
         total_bill = row["service_charge"] + row["dispensed_charges"]
         amount_paid = row["amount_paid"]
-        outstanding = total_bill - amount_paid
-        if outstanding <= 0 and total_bill > 0:
+        # Phase 5A-4: written-off money is no longer collectible, so
+        # `outstanding` here is the COLLECTIBLE balance. The bill itself
+        # (total_bill) and amount_paid are unchanged by a write-off.
+        cursor.execute(
+            "SELECT COALESCE(SUM(w.amount), 0) AS wo FROM debt_write_offs w "
+            "WHERE w.business_id=%s AND w.treatment_id=%s AND NOT EXISTS "
+            "(SELECT 1 FROM debt_write_off_reversals r WHERE r.write_off_id = w.id)",
+            (business_id, treatment_id),
+        )
+        written_off = cursor.fetchone()["wo"]
+        outstanding = total_bill - amount_paid - written_off
+        if outstanding <= 0 and written_off > 0:
+            payment_status = "written_off"
+        elif outstanding <= 0 and total_bill > 0:
             payment_status = "paid"
         elif amount_paid > 0:
             payment_status = "partial"
@@ -414,6 +426,7 @@ def get_treatment_billing(treatment_id, business_id, owner_user_id):
             "service_charge": row["service_charge"],
             "dispensed_charges": row["dispensed_charges"],
             "amount_paid": amount_paid,
+            "written_off": written_off,
             "outstanding": outstanding,
             "payment_status": payment_status,
             "cogs": row["cogs"],
@@ -460,9 +473,24 @@ def record_treatment_payment(treatment_id, business_id, owner_user_id,
             )
             dispensed_charges = cursor.fetchone()["dispensed_charges"]
             total_bill = treatment["service_charge"] + dispensed_charges
-            outstanding = total_bill - treatment["amount_paid"]
+            # Phase 5A-4: only the still-collectible part can receive an
+            # ordinary payment; written-off money is recovered through
+            # baddebt.record_recovery instead.
+            cursor.execute(
+                "SELECT COALESCE(SUM(w.amount), 0) AS wo FROM debt_write_offs w "
+                "WHERE w.business_id=%s AND w.treatment_id=%s AND NOT EXISTS "
+                "(SELECT 1 FROM debt_write_off_reversals r WHERE r.write_off_id = w.id)",
+                (business_id, treatment_id),
+            )
+            written_off = cursor.fetchone()["wo"]
+            outstanding = total_bill - treatment["amount_paid"] - written_off
 
             if outstanding <= 0:
+                if written_off > 0:
+                    raise TreatmentError(
+                        "Nothing is left to collect on this bill \u2014 the balance was written off. "
+                        "Use Bad Debts \u2192 Record Recovery if the customer is paying it back."
+                    )
                 raise TreatmentError("This treatment bill is already fully paid.")
             if amount > outstanding:
                 raise TreatmentError(
