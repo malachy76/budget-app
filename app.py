@@ -321,7 +321,7 @@ with st.sidebar:
         # Business Mode — Phase 2 adds Products/Inventory alongside the
         # Phase 1 business-home screen. More will be added here in later
         # phases without touching the Personal branch above.
-        business_pages = ["Business Home", "Products / Inventory", "Sales / Point of Sale", "Customers / Credit", "Bad Debts", "Treatment Management"]
+        business_pages = ["Business Home", "Products / Inventory", "Sales / Point of Sale", "Customers / Credit", "End-of-Day Summary", "Bad Debts", "Treatment Management"]
 
         # Same "Go to X" pattern already used for Personal Mode's nav_radio.
         if st.session_state.get("_pending_biz_nav") is not None:
@@ -502,6 +502,9 @@ if st.session_state.app_mode == "business":
     elif current_page == "Customers / Credit":
         from _pages.business_customers import render_business_customers
         render_business_customers(user_id)
+    elif current_page == "End-of-Day Summary":
+        from _pages.business_daily_report import render_business_daily_report
+        render_business_daily_report(user_id)
     elif current_page == "Bad Debts":
         from _pages.business_baddebt import render_business_baddebt
         render_business_baddebt(user_id)
