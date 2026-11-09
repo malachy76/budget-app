@@ -8,8 +8,8 @@ from datetime import date
 from business import create_business, get_user_businesses, get_business, BUSINESS_TYPES
 from inventory import get_inventory_summary
 from customers import get_credit_summary
-from sales import get_today_sales_summary, get_stock_sales_profit_summary
-from treatments import get_treatment_dashboard_summary, get_today_treatment_summary
+from daily_report import get_cash_basis_report, business_today
+from treatments import get_treatment_dashboard_summary
 
 
 def render_business_home(user_id):
@@ -49,69 +49,38 @@ def render_business_home(user_id):
             st.markdown(f"## {biz['business_name']}")
             st.caption(biz["business_type"] or "No category set")
 
-            # ── Today, combined across stock sales + treatments ─────────────
-            # "Revenue" and "collected" are shown both combined (Phase
-            # 5A-3) and broken out by source — combining them into one
-            # number is fine (both are real revenue earned today), but
-            # the breakdown stays visible underneath since they're still
-            # two different kinds of business activity worth seeing
-            # separately.
-            stock_today = None
-            tx_today = None
+            # ── Today, cash basis (Phase 5A-5) ──────────────────────────────
+            # Only money actually received counts as revenue or profit.
+            # Invoice value (sales made on credit) is shown separately as
+            # activity. Full breakdown: End-of-Day Summary.
             try:
-                stock_today = get_today_sales_summary(biz["id"], user_id)
-            except Exception:
-                pass
-            try:
-                tx_today = get_today_treatment_summary(biz["id"], user_id)
-            except Exception:
-                pass
-
-            if stock_today or tx_today:
-                combined_revenue = (stock_today["sales_today"] if stock_today else 0) + \
-                                    (tx_today["revenue_today"] if tx_today else 0)
-                combined_collected = (stock_today["payments_today"] if stock_today else 0) + \
-                                      (tx_today["payments_today"] if tx_today else 0)
-                t1, t2 = st.columns(2)
-                t1.metric("Total Revenue Today", f"\u20A6{combined_revenue:,.2f}")
-                t2.metric("Total Collected Today", f"\u20A6{combined_collected:,.2f}")
-
-                bits = []
-                if stock_today:
-                    bits.append(
-                        f"Stock sales: \u20A6{stock_today['sales_today']:,.2f} revenue, "
-                        f"\u20A6{stock_today['payments_today']:,.2f} collected"
-                    )
-                if tx_today and (tx_today["revenue_today"] > 0 or tx_today["payments_today"] > 0):
-                    bits.append(
-                        f"Treatments: \u20A6{tx_today['revenue_today']:,.2f} revenue, "
-                        f"\u20A6{tx_today['payments_today']:,.2f} collected"
-                    )
-                if bits:
-                    st.caption("  \u00b7  ".join(bits))
-                st.caption(
-                    "Revenue earned and cash collected aren't the same \u2014 some of "
-                    "today's revenue may still be unpaid or only partly paid."
-                )
-
-            # ── Today's gross profit (stock sales only — Phase 5A-1) ───────
-            try:
-                profit = get_stock_sales_profit_summary(biz["id"], user_id, date.today(), date.today())
-                if profit["sales_count"] > 0:
+                today_lagos = business_today()
+                rep = get_cash_basis_report(biz["id"], user_id, today_lagos, today_lagos)
+                if rep["sales_count"] > 0 or rep["treatments_started"] > 0 or rep["money_collected_total"] > 0:
+                    t1, t2 = st.columns(2)
+                    t1.metric("Money Collected Today", f"\u20A6{rep['money_collected_total']:,.2f}")
+                    t2.metric("Realised Revenue Today", f"\u20A6{rep['realised_operating_revenue']:,.2f}")
                     p1, p2 = st.columns(2)
-                    p1.metric("Cost of Goods Sold Today", f"\u20A6{profit['cogs']:,.2f}")
-                    p2.metric("Gross Profit Today", f"\u20A6{profit['gross_profit']:,.2f}")
-                    margin_text = (
-                        f"{profit['gross_margin_pct']:.1f}%" if profit["gross_margin_pct"] is not None else "n/a"
+                    p1.metric("Cost of Goods (on money collected)", f"\u20A6{rep['cogs_on_collected']:,.2f}")
+                    p2.metric("Realised Gross Profit Today", f"\u20A6{rep['realised_gross_profit']:,.2f}")
+                    st.caption(
+                        f"Sales made today (including unpaid): \u20A6{rep['sales_activity']:,.2f} \u00b7 "
+                        f"Treatment bills today: \u20A6{rep['treatment_activity']:,.2f}. "
+                        f"Unpaid amounts are not counted as revenue or profit."
                     )
-                    st.caption(f"Gross profit margin: {margin_text}. This is gross profit "
-                               f"from stock sales only \u2014 not net profit, since business "
-                               f"expenses aren't subtracted here.")
-                    if profit["incomplete"]:
+                    if rep["recoveries"] > 0:
                         st.caption(
-                            f"\u26A0\uFE0F {profit['lines_missing_cost']} item(s) sold today have no "
-                            f"recorded cost (sold before cost tracking was added), so this figure "
-                            f"may understate today's true cost and overstate profit slightly."
+                            f"Also received today: \u20A6{rep['recoveries']:,.2f} recovered from "
+                            f"written-off debts (not counted in revenue or profit)."
+                        )
+                    st.caption(
+                        "This is gross profit, not net profit \u2014 business expenses aren't "
+                        "subtracted. See End-of-Day Summary for the full report."
+                    )
+                    if rep["profit_incomplete"]:
+                        st.caption(
+                            "\u26A0\uFE0F Some money collected today is for items with no recorded "
+                            "cost (sold before cost tracking), so profit is incomplete."
                         )
             except Exception:
                 pass
