@@ -422,6 +422,28 @@ def create_tables():
             created_at TIMESTAMP DEFAULT NOW()
         )""")
 
+        # ── Phase 5B-1: Treatment Management is a per-business setting ────────
+        # Additive and safe to run any number of times:
+        #  1. ADD COLUMN IF NOT EXISTS — nullable, no default, so existing
+        #     rows start as NULL ("not decided yet").
+        #  2. The backfill only touches rows that are still NULL, so it can
+        #     never re-enable a feature the owner later switched off, nor
+        #     overwrite any owner decision. Rule for existing businesses:
+        #     ON if it is a Pharmacy OR it already has treatment records
+        #     (nobody loses access to existing history); OFF otherwise.
+        #  Nothing is dropped or deleted.
+        cursor.execute(
+            "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS treatment_management_enabled BOOLEAN"
+        )
+        cursor.execute("""
+            UPDATE businesses b
+            SET treatment_management_enabled = (
+                b.business_type = 'Pharmacy'
+                OR EXISTS (SELECT 1 FROM treatments t WHERE t.business_id = b.id)
+            )
+            WHERE b.treatment_management_enabled IS NULL
+        """)
+
         # ── Phase 5A-4: bad-debt write-offs, reversals and recoveries ─────────
         # Three NEW tables; no existing table or column is altered. A
         # write-off is an accounting adjustment stored as its own row — the
