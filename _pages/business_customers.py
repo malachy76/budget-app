@@ -5,12 +5,29 @@ from styles import render_page_header
 from customers import (
     get_customers_with_balance, get_credit_summary, get_customer,
     get_customer_sales, get_sale_items, get_sale_payments, record_payment,
-    get_customer_treatments,
+    get_customer_treatments, update_customer_phone,
 )
+from business import is_treatment_management_enabled
 from treatments import get_treatment_payments, record_treatment_payment, STATUS_LABELS as TX_STATUS_LABELS
 from sales import PAYMENT_METHODS
 
 _STATUS_LABEL = {"paid": "Paid", "partial": "Partially Paid", "unpaid": "Unpaid / Credit"}
+
+
+def _render_phone_editor(customer_id, business_id, user_id, key_prefix):
+    """Phase 5B-1: add or correct a customer's phone number. Blank and
+    whitespace-only values are rejected by the backend."""
+    new_phone = st.text_input(
+        "Phone number", placeholder="e.g. 08012345678", key=f"{key_prefix}_phone_{customer_id}",
+    )
+    if st.button("Save phone number", key=f"{key_prefix}_save_phone_{customer_id}", type="primary"):
+        ok, msg = update_customer_phone(customer_id, business_id, user_id, new_phone)
+        if ok:
+            st.session_state[f"_phone_flash_{customer_id}"] = msg
+            st.session_state.pop(f"{key_prefix}_phone_{customer_id}", None)
+            st.rerun()
+        else:
+            st.error(msg)
 
 
 def render_business_customers(user_id):
@@ -36,15 +53,23 @@ def render_business_customers(user_id):
             st.code(str(_e))
         return
 
+    _tm_on = is_treatment_management_enabled(business_id, user_id)
+    _show_tx = _tm_on or summary["open_treatments_count"] > 0 or summary["treatment_outstanding"] > 0
+    _missing_phone = [c for c in customers if not (c["phone"] or "").strip() and c["total_outstanding"] > 0]
+    if _missing_phone:
+        st.warning(
+            f"\u260E\uFE0F {len(_missing_phone)} customer(s) who owe you money have no phone number. "
+            f"Open them and add one."
+        )
     c1, c2, c3 = st.columns(3)
     c1.metric("Total Outstanding Debt", f"\u20A6{summary['total_outstanding']:,.2f}")
     c2.metric("Customers Owing", summary["customers_owing"])
     c3.metric("Open Transactions", summary["open_sales_count"] + summary["open_treatments_count"])
     st.caption(
         f"Stock-sale debt: \u20A6{summary['stock_sale_outstanding']:,.2f} "
-        f"({summary['open_sales_count']} sale(s))  \u00b7  "
-        f"Treatment debt: \u20A6{summary['treatment_outstanding']:,.2f} "
-        f"({summary['open_treatments_count']} bill(s))"
+        f"({summary['open_sales_count']} sale(s))"
+        + (f"  \u00b7  Treatment debt: \u20A6{summary['treatment_outstanding']:,.2f} "
+           f"({summary['open_treatments_count']} bill(s))" if _show_tx else "")
     )
     st.caption("This is money owed to you — not profit, and not yet collected.")
     st.divider()
@@ -58,7 +83,10 @@ def render_business_customers(user_id):
             cc1, cc2 = st.columns([3, 1])
             with cc1:
                 st.markdown(f"**{c['name']}**")
-                st.caption(c["phone"] or "No phone on file")
+                if (c["phone"] or "").strip():
+                    st.caption(f"\U0001F4DE {c['phone']}")
+                else:
+                    st.markdown(":red[\u26A0\uFE0F No phone number \u2014 open to add one]")
                 if c["total_outstanding"] > 0:
                     st.markdown(f":red[Owes **\u20A6{c['total_outstanding']:,.2f}**]")
                     bits = []
@@ -96,7 +124,18 @@ def _render_customer_detail(customer_id, business_id, user_id):
         st.rerun()
 
     st.markdown(f"## {customer['name']}")
-    st.caption(customer["phone"] or "No phone on file")
+    _flash = st.session_state.pop(f"_phone_flash_{customer_id}", None)
+    if _flash:
+        st.success(_flash)
+    if (customer["phone"] or "").strip():
+        st.caption(f"\U0001F4DE {customer['phone']}")
+        if st.button("Change phone number", key=f"chg_phone_btn_{customer_id}"):
+            st.session_state[f"_chg_phone_{customer_id}"] = not st.session_state.get(f"_chg_phone_{customer_id}", False)
+        if st.session_state.get(f"_chg_phone_{customer_id}", False):
+            _render_phone_editor(customer_id, business_id, user_id, "chg")
+    else:
+        st.markdown(":red[\u26A0\uFE0F No phone number on file. Add one \u2014 it is required for credit.]")
+        _render_phone_editor(customer_id, business_id, user_id, "add")
 
     try:
         sales = get_customer_sales(customer_id, business_id, user_id)
@@ -224,6 +263,9 @@ def _render_customer_detail(customer_id, business_id, user_id):
                         st.rerun()
 
     st.divider()
+    _tm_on = is_treatment_management_enabled(business_id, user_id)
+    if not (_tm_on or tx_list):
+        return
     st.markdown("##### Treatments")
     if not tx_list:
         st.caption("No treatments for this customer yet.")
