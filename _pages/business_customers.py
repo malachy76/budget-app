@@ -1,352 +1,481 @@
-# _pages/business_customers.py — Business Mode: Customers / Credit (Phase 4C)
+# _pages/business_treatments.py — Business Mode: Treatment Management (Phase 4D)
 import streamlit as st
+from datetime import date
 
 from styles import render_page_header
-from customers import (
-    get_customers_with_balance, get_credit_summary, get_customer,
-    get_customer_sales, get_sale_items, get_sale_payments, record_payment,
-    get_customer_treatments, update_customer_phone,
+from inventory import get_products
+from treatments import (
+    create_treatment, get_treatments, get_treatment, get_treatment_items,
+    get_dispensing_history, get_treatment_dashboard_summary,
+    update_treatment_status, record_dispensing,
+    get_treatment_billing, record_treatment_payment, get_treatment_payments,
+    ROUTES, STATUSES, STATUS_LABELS,
 )
-from business import is_treatment_management_enabled
-from treatments import get_treatment_payments, record_treatment_payment, STATUS_LABELS as TX_STATUS_LABELS
 from sales import PAYMENT_METHODS
+from business import is_treatment_management_enabled
 
-_STATUS_LABEL = {"paid": "Paid", "partial": "Partially Paid", "unpaid": "Unpaid / Credit"}
+_BILLING_STATUS_LABELS = {"paid": "Paid", "partial": "Partially Paid", "unpaid": "Unpaid", "written_off": "Written Off"}
 
-
-def _render_phone_editor(customer_id, business_id, user_id, key_prefix):
-    """Phase 5B-1: add or correct a customer's phone number. Blank and
-    whitespace-only values are rejected by the backend."""
-    new_phone = st.text_input(
-        "Phone number", placeholder="e.g. 08012345678", key=f"{key_prefix}_phone_{customer_id}",
-    )
-    if st.button("Save phone number", key=f"{key_prefix}_save_phone_{customer_id}", type="primary"):
-        ok, msg = update_customer_phone(customer_id, business_id, user_id, new_phone)
-        if ok:
-            st.session_state[f"_phone_flash_{customer_id}"] = msg
-            st.session_state.pop(f"{key_prefix}_phone_{customer_id}", None)
-            st.rerun()
-        else:
-            st.error(msg)
+# NOTE: this page deliberately avoids st.expander for the same reason as
+# business_customers.py — a documented Streamlit rendering bug in that
+# component — using toggle buttons + plain containers instead.
 
 
-def render_business_customers(user_id):
+def render_business_treatments(user_id):
     render_page_header()
-    st.markdown("### \U0001F465 Customers / Credit")
+    st.markdown("### \U0001F48A Treatment Management")
 
     business_id = st.session_state.get("active_business_id")
     if not business_id:
         st.info("Select or create a business first, from Business Home.")
         return
 
-    detail_id = st.session_state.get("_credit_detail_customer_id")
+    # Phase 5B-1: page-level access check (the backend functions enforce the
+    # same setting, so this is not the only barrier).
+    if not is_treatment_management_enabled(business_id, user_id):
+        st.info(
+            "Treatment Management is turned off for this business. "
+            "You can turn it on from Business Home \u2192 Settings. "
+            "Any treatment records you already have are kept, and any money "
+            "customers owe you for them still appears under Customers / Credit."
+        )
+        return
+
+    detail_id = st.session_state.get("_treatment_detail_id")
     if detail_id:
-        _render_customer_detail(detail_id, business_id, user_id)
+        _render_treatment_detail(detail_id, business_id, user_id)
         return
 
     try:
-        summary = get_credit_summary(business_id, user_id)
-        customers = get_customers_with_balance(business_id, user_id)
+        summary = get_treatment_dashboard_summary(business_id, user_id)
     except Exception as _e:
-        st.error("Could not load customer credit data.")
+        st.error("Could not load treatment data.")
         with st.expander("Technical details"):
             st.code(str(_e))
         return
 
-    _tm_on = is_treatment_management_enabled(business_id, user_id)
-    _show_tx = _tm_on or summary["open_treatments_count"] > 0 or summary["treatment_outstanding"] > 0
-    _missing_phone = [c for c in customers if not (c["phone"] or "").strip() and c["total_outstanding"] > 0]
-    if _missing_phone:
-        st.warning(
-            f"\u260E\uFE0F {len(_missing_phone)} customer(s) who owe you money have no phone number. "
-            f"Open them and add one."
-        )
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total Outstanding Debt", f"\u20A6{summary['total_outstanding']:,.2f}")
-    c2.metric("Customers Owing", summary["customers_owing"])
-    c3.metric("Open Transactions", summary["open_sales_count"] + summary["open_treatments_count"])
-    st.caption(
-        f"Stock-sale debt: \u20A6{summary['stock_sale_outstanding']:,.2f} "
-        f"({summary['open_sales_count']} sale(s))"
-        + (f"  \u00b7  Treatment debt: \u20A6{summary['treatment_outstanding']:,.2f} "
-           f"({summary['open_treatments_count']} bill(s))" if _show_tx else "")
-    )
-    st.caption("This is money owed to you — not profit, and not yet collected.")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total", summary["total_treatments"])
+    c2.metric("In Progress", summary["in_progress"])
+    c3.metric("Completed", summary["completed"])
+    c4.metric("Scheduled", summary["scheduled"])
     st.divider()
 
-    if not customers:
-        st.info("No customers recorded yet. Customers are added automatically when you name one during a sale.")
+    if st.button("\u2795 Add New Treatment", key="show_add_treatment_btn", use_container_width=True):
+        st.session_state["_show_add_treatment"] = not st.session_state.get("_show_add_treatment", False)
+
+    if st.session_state.get("_show_add_treatment", False):
+        _render_add_treatment_form(business_id, user_id)
+
+    st.divider()
+
+    st.markdown("##### Treatments")
+    filter_status = st.selectbox(
+        "Filter by status", ["All"] + [STATUS_LABELS[s] for s in STATUSES],
+        key="treatment_status_filter",
+    )
+    status_filter = None
+    if filter_status != "All":
+        status_filter = {v: k for k, v in STATUS_LABELS.items()}[filter_status]
+
+    try:
+        treatments = get_treatments(business_id, user_id, status_filter)
+    except Exception as _e:
+        st.error("Could not load treatments.")
+        with st.expander("Technical details"):
+            st.code(str(_e))
         return
 
-    for c in customers:
+    if not treatments:
+        st.caption("No treatments recorded yet.")
+        return
+
+    for t in treatments:
         with st.container(border=True):
-            cc1, cc2 = st.columns([3, 1])
-            with cc1:
-                st.markdown(f"**{c['name']}**")
-                if (c["phone"] or "").strip():
-                    st.caption(f"\U0001F4DE {c['phone']}")
-                else:
-                    st.markdown(":red[\u26A0\uFE0F No phone number \u2014 open to add one]")
-                if c["total_outstanding"] > 0:
-                    st.markdown(f":red[Owes **\u20A6{c['total_outstanding']:,.2f}**]")
-                    bits = []
-                    if c["unpaid_sales_count"]:
-                        bits.append(f"\u20A6{c['stock_sale_outstanding']:,.2f} from {c['unpaid_sales_count']} stock sale(s)")
-                    if c["unpaid_treatments_count"]:
-                        bits.append(f"\u20A6{c['treatment_outstanding']:,.2f} from {c['unpaid_treatments_count']} treatment(s)")
-                    if bits:
-                        st.caption(" \u00b7 ".join(bits))
-                else:
-                    st.markdown(":green[No outstanding balance]")
-                if c["last_activity_at"]:
-                    st.caption(f"Last activity: {c['last_activity_at'].strftime('%d %b %Y')}")
-            with cc2:
-                if st.button("View Details", key=f"view_cust_{c['id']}", use_container_width=True):
-                    st.session_state["_credit_detail_customer_id"] = c["id"]
+            c1, c2 = st.columns([3, 1])
+            with c1:
+                st.markdown(f"**{t['patient_identifier']}**")
+                if t["patient_phone"]:
+                    st.caption(f"\U0001F4DE {t['patient_phone']}")
+                if t["diagnosis"]:
+                    st.caption(f"Condition: {t['diagnosis']}")
+                st.caption(f"Started {t['start_date'].strftime('%d %b %Y')}" + (
+                    f" \u2014 {t['duration_days']} day(s)" if t["duration_days"] else " \u2014 duration not set"
+                ))
+                st.caption(f"Drugs used: {t['drug_names'] or 'None added'}")
+                st.caption(f"Status: {STATUS_LABELS.get(t['status'], t['status'])}")
+            with c2:
+                if st.button("View", key=f"view_treatment_{t['id']}", use_container_width=True):
+                    st.session_state["_treatment_detail_id"] = t["id"]
                     st.rerun()
 
 
-def _render_customer_detail(customer_id, business_id, user_id):
+def _render_add_treatment_form(business_id, user_id):
     try:
-        customer = get_customer(customer_id, business_id, user_id)
+        products = get_products(business_id, user_id)
     except Exception as _e:
-        st.error("Could not load this customer.")
-        with st.expander("Technical details"):
-            st.code(str(_e))
+        st.error("Could not load products.")
         return
-    if customer is None:
-        st.session_state["_credit_detail_customer_id"] = None
-        st.rerun()
+    if not products:
+        st.warning("No products in inventory yet. Add products first, in Products / Inventory.")
         return
+    product_lookup = {p["id"]: p for p in products}
 
-    if st.button("\u2190 Back to Customers", key="cust_back_btn"):
-        st.session_state["_credit_detail_customer_id"] = None
-        st.rerun()
+    st.markdown("##### Add New Treatment")
 
-    st.markdown(f"## {customer['name']}")
-    _flash = st.session_state.pop(f"_phone_flash_{customer_id}", None)
-    if _flash:
-        st.success(_flash)
-    if (customer["phone"] or "").strip():
-        st.caption(f"\U0001F4DE {customer['phone']}")
-        if st.button("Change phone number", key=f"chg_phone_btn_{customer_id}"):
-            st.session_state[f"_chg_phone_{customer_id}"] = not st.session_state.get(f"_chg_phone_{customer_id}", False)
-        if st.session_state.get(f"_chg_phone_{customer_id}", False):
-            _render_phone_editor(customer_id, business_id, user_id, "chg")
-    else:
-        st.markdown(":red[\u26A0\uFE0F No phone number on file. Add one \u2014 it is required for credit.]")
-        _render_phone_editor(customer_id, business_id, user_id, "add")
+    st.markdown("###### Patient Information")
+    patient_identifier = st.text_input(
+        "Patient Name", placeholder="e.g. John Okafor, or Patient 001",
+        help="Enter the patient's full name, or an identifier if you'd rather not record a name.",
+        key="tx_patient",
+    )
+    col_a, col_b = st.columns(2)
+    with col_a:
+        tx_phone = st.text_input(
+            "Phone Number (required)", placeholder="e.g. 08012345678",
+            help="Required: treatments are billed to the patient and may leave a balance to collect.", key="tx_phone",
+        )
+    with col_b:
+        start_date = st.date_input(
+            "Treatment Date", value=date.today(),
+            help="Select the date this treatment begins.", key="tx_start_date",
+        )
+    tx_diagnosis = st.text_input(
+        "Condition / Diagnosis Being Treated (optional)",
+        placeholder="e.g. Malaria, Typhoid, Wound dressing",
+        help="Record the condition already determined by a qualified person. "
+             "This field does not diagnose or suggest anything — it just documents it.",
+        key="tx_diagnosis",
+    )
+    tx_duration = st.number_input(
+        "Treatment Duration (days)", min_value=0, value=None, step=1,
+        placeholder="e.g. 3",
+        help="How many days the treatment is scheduled to last.", key="tx_duration",
+    )
+    tx_notes = st.text_area(
+        "Treatment Notes (optional)", placeholder="Relevant administrative notes.",
+        key="tx_notes",
+    )
+    tx_service_charge = st.number_input(
+        "Service Charge (\u20A6, optional)", min_value=0.0, value=None, step=0.01, format="%.2f",
+        placeholder="e.g. 2000",
+        help="A flat consultation/service fee, separate from any medicines used. "
+             "Leave blank if you only bill for medicines dispensed.",
+        key="tx_service_charge",
+    )
 
-    try:
-        sales = get_customer_sales(customer_id, business_id, user_id)
-        tx_list = get_customer_treatments(customer_id, business_id, user_id)
-    except Exception as _e:
-        st.error("Could not load this customer's transactions.")
-        with st.expander("Technical details"):
-            st.code(str(_e))
-        return
+    st.divider()
+    st.markdown("###### Products and Medicines Used")
+    st.caption("Add each product used in this treatment, with its already-established instructions.")
 
-    if not sales and not tx_list:
-        st.caption("No transactions recorded for this customer yet.")
-        return
+    draft = st.session_state.setdefault("_tx_items_draft", [])
 
-    st.markdown("##### Stock Sales")
-    if not sales:
-        st.caption("No stock sales for this customer yet.")
+    def _fmt(pid):
+        p = product_lookup[pid]
+        return f"{p['name']} ({p['unit']}) \u2014 {p['current_stock']:g} available"
 
-    for sale in sales:
-        with st.container(border=True):
-            st.markdown(f"**Sale #{sale['id']}** \U0001F3EA Stock Sale \u2014 {sale['created_at'].strftime('%d %b %Y %H:%M')}")
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Total", f"\u20A6{sale['total_amount']:,.2f}")
-            m2.metric("Paid", f"\u20A6{sale['amount_paid']:,.2f}")
-            m3.metric("Outstanding", f"\u20A6{sale['outstanding']:,.2f}")
-            if sale["written_off"] > 0 and sale["outstanding"] <= 0:
-                sale_status = "Written Off"
-            else:
-                sale_status = _STATUS_LABEL.get(sale["payment_status"], sale["payment_status"])
-            st.caption(f"Status: {sale_status}")
-            if sale["written_off"] > 0:
-                st.caption(f"Written off as bad debt: \u20A6{sale['written_off']:,.2f}")
+    pcol1, pcol2 = st.columns(2)
+    with pcol1:
+        item_product_id = st.selectbox(
+            "Product", list(product_lookup.keys()), format_func=_fmt,
+            help="Select a medicine or product already registered in this business's inventory.",
+            key="tx_item_product",
+        )
+    with pcol2:
+        item_route = st.selectbox("Route / Method", ROUTES, key="tx_item_route")
 
-            # NOTE: deliberately NOT using st.expander for these two
-            # sections. Streamlit's expander component had documented
-            # content-rendering bugs introduced in its 1.47+ redesign
-            # (text/content failing to display correctly), and this
-            # project's requirements.txt pins an unbounded streamlit
-            # version — so rather than gamble on exactly which version is
-            # deployed, this uses a plain toggle button + container, which
-            # has no such known issue.
-            ic1, ic2 = st.columns(2)
-            with ic1:
-                if st.button("View items purchased", key=f"toggle_items_{sale['id']}", use_container_width=True):
-                    st.session_state[f"_show_items_{sale['id']}"] = not st.session_state.get(f"_show_items_{sale['id']}", False)
-            with ic2:
-                if st.button("Payment history", key=f"toggle_payments_{sale['id']}", use_container_width=True):
-                    st.session_state[f"_show_payments_{sale['id']}"] = not st.session_state.get(f"_show_payments_{sale['id']}", False)
+    qcol1, qcol2, qcol3 = st.columns(3)
+    with qcol1:
+        item_qty = st.number_input(
+            "Quantity per Administration", min_value=0.0, value=None, step=0.5, format="%.3f",
+            placeholder="e.g. 1",
+            help="Quantity used each time this item is administered.", key="tx_item_qty",
+        )
+    with qcol2:
+        item_admins = st.number_input(
+            "Administrations per Day", min_value=0.0, value=None, step=1.0, format="%.2f",
+            placeholder="e.g. 2",
+            help="Number of times per day per the approved instructions.", key="tx_item_admins",
+        )
+    with qcol3:
+        item_days = st.number_input(
+            "Duration (days)", min_value=0, value=None, step=1,
+            placeholder="e.g. 3",
+            help="Number of days this item is scheduled to be used.", key="tx_item_days",
+        )
+    item_notes = st.text_input("Item Notes (optional)", key="tx_item_notes")
 
-            if st.session_state.get(f"_show_items_{sale['id']}", False):
-                with st.container(border=True):
-                    try:
-                        items = get_sale_items(sale["id"], business_id, user_id)
-                    except Exception as _e:
-                        st.error("Could not load items.")
-                        items = []
-                    if not items:
-                        st.caption("No items recorded for this sale.")
-                    for it in items:
-                        st.caption(
-                            f"{it['product_name']} \u2014 {it['quantity']:g} "
-                            f"@ \u20A6{it['unit_price']:,.2f} = \u20A6{it['line_total']:,.2f}"
-                        )
+    if item_qty and item_admins and item_days:
+        planned = item_qty * item_admins * item_days
+        st.caption(f"Planned quantity: **{planned:g} {product_lookup[item_product_id]['unit']}** "
+                   f"({item_qty:g} \u00d7 {item_admins:g} \u00d7 {item_days:g})")
 
-            if st.session_state.get(f"_show_payments_{sale['id']}", False):
-                with st.container(border=True):
-                    try:
-                        payments = get_sale_payments(sale["id"], business_id, user_id)
-                    except Exception as _e:
-                        st.error("Could not load payment history.")
-                        payments = []
-                    if not payments:
-                        st.caption("No payments recorded yet.")
-                    for p in payments:
-                        st.caption(
-                            f"\u20A6{p['amount']:,.2f} via {p['payment_method'] or 'unspecified'} "
-                            f"\u2014 {p['created_at'].strftime('%d %b %Y %H:%M')}"
-                            + (f" \u2014 {p['note']}" if p["note"] else "")
-                        )
+    if st.button("Add Another Product", key="add_tx_item_btn", use_container_width=True):
+        if not item_qty or item_qty <= 0:
+            st.error("Enter a quantity per administration greater than zero.")
+        else:
+            p = product_lookup[item_product_id]
+            draft.append({
+                "product_id": item_product_id, "product_name": p["name"], "unit": p["unit"],
+                "quantity_per_administration": item_qty,
+                "administrations_per_day": item_admins,
+                "duration_days": int(item_days) if item_days else None,
+                "route": item_route, "notes": item_notes or None,
+            })
+            st.session_state["_tx_items_draft"] = draft
+            st.rerun()
 
-            if sale["outstanding"] > 0:
-                if st.button("Record a payment", key=f"toggle_pay_{sale['id']}", use_container_width=True):
-                    st.session_state[f"_show_pay_{sale['id']}"] = not st.session_state.get(f"_show_pay_{sale['id']}", False)
-
-            if sale["outstanding"] > 0 and st.session_state.get(f"_show_pay_{sale['id']}", False):
-                with st.container(border=True):
-                    st.caption(f"Enter the amount the customer is paying now (max \u20A6{sale['outstanding']:,.2f}).")
-                    pay_key = f"pay_amount_{sale['id']}"
-                    pay_amount = st.number_input(
-                        "Payment Amount (\u20A6)", min_value=0.0,
-                        max_value=float(sale["outstanding"]),
-                        value=None, step=0.01, format="%.2f",
-                        placeholder="e.g. 5000", key=pay_key,
-                    )
-                    pay_method = st.selectbox(
-                        "Payment Method", PAYMENT_METHODS, key=f"pay_method_{sale['id']}",
-                    )
-                    pay_note = st.text_input(
-                        "Note (optional)", key=f"pay_note_{sale['id']}",
-                        placeholder="e.g. Paid at shop counter",
-                    )
-                    processing_key = f"_paying_{sale['id']}"
-                    processing = st.session_state.get(processing_key, False)
-                    if st.button(
-                        "Confirm Payment", key=f"confirm_pay_{sale['id']}",
-                        type="primary", disabled=processing,
-                    ):
-                        st.session_state[processing_key] = True
-                        try:
-                            if not pay_amount or pay_amount <= 0:
-                                st.error("Enter a payment amount greater than zero.")
-                            else:
-                                ok, msg = record_payment(
-                                    sale["id"], business_id, user_id, user_id,
-                                    pay_amount, pay_method, pay_note,
-                                )
-                                if ok:
-                                    st.success(msg)
-                                    st.session_state.pop(pay_key, None)
-                                    st.session_state.pop(f"pay_note_{sale['id']}", None)
-                                else:
-                                    st.error(msg)
-                        finally:
-                            st.session_state[processing_key] = False
+    if draft:
+        st.markdown("**Items added so far:**")
+        for i, it in enumerate(draft):
+            with st.container(border=True):
+                dcol1, dcol2 = st.columns([4, 1])
+                with dcol1:
+                    st.markdown(f"**{it['product_name']}** ({it['unit']}) \u2014 {it['route']}")
+                    bits = [f"{it['quantity_per_administration']:g} per administration"]
+                    if it["administrations_per_day"]:
+                        bits.append(f"{it['administrations_per_day']:g}/day")
+                    if it["duration_days"]:
+                        bits.append(f"{it['duration_days']} day(s)")
+                    st.caption(" \u00b7 ".join(bits))
+                with dcol2:
+                    if st.button("Remove", key=f"remove_tx_item_{i}", use_container_width=True):
+                        draft.pop(i)
+                        st.session_state["_tx_items_draft"] = draft
                         st.rerun()
 
     st.divider()
-    _tm_on = is_treatment_management_enabled(business_id, user_id)
-    if not (_tm_on or tx_list):
-        return
-    st.markdown("##### Treatments")
-    if not tx_list:
-        st.caption("No treatments for this customer yet.")
-
-    for tx in tx_list:
-        with st.container(border=True):
-            st.markdown(f"**{tx['patient_identifier']}** \U0001F48A Treatment \u2014 {tx['created_at'].strftime('%d %b %Y %H:%M')}")
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Total Bill", f"\u20A6{tx['total_bill']:,.2f}")
-            m2.metric("Paid", f"\u20A6{tx['amount_paid']:,.2f}")
-            m3.metric("Outstanding", f"\u20A6{tx['outstanding']:,.2f}")
-            if tx["written_off"] > 0 and tx["outstanding"] <= 0:
-                pay_status_label = "Written Off"
+    processing = st.session_state.get("_tx_processing", False)
+    if st.button("Create Treatment", key="create_treatment_btn", type="primary",
+                 use_container_width=True, disabled=processing):
+        st.session_state["_tx_processing"] = True
+        try:
+            if not draft:
+                st.error("Add at least one product before creating the treatment.")
             else:
-                status = "paid" if tx["outstanding"] <= 0 and tx["total_bill"] > 0 else ("partial" if tx["amount_paid"] > 0 else "unpaid")
-                pay_status_label = _STATUS_LABEL.get(status, status)
-            st.caption(f"Payment status: {pay_status_label}  \u00b7  "
-                       f"Treatment status: {TX_STATUS_LABELS.get(tx['status'], tx['status'])}")
-            if tx["written_off"] > 0:
-                st.caption(f"Written off as bad debt: \u20A6{tx['written_off']:,.2f}")
+                treatment_id, msg = create_treatment(
+                    business_id, user_id, user_id, patient_identifier, tx_phone,
+                    tx_diagnosis, start_date,
+                    int(tx_duration) if tx_duration else None, tx_notes, draft,
+                    tx_service_charge or 0,
+                )
+                if treatment_id:
+                    st.success(msg)
+                    st.session_state["_tx_items_draft"] = []
+                    st.session_state["_show_add_treatment"] = False
+                    for k in ["tx_patient", "tx_phone", "tx_diagnosis", "tx_duration",
+                              "tx_notes", "tx_item_notes", "tx_service_charge"]:
+                        st.session_state.pop(k, None)
+                else:
+                    st.error(msg)
+        finally:
+            st.session_state["_tx_processing"] = False
+        st.rerun()
 
-            if st.button("Payment history", key=f"toggle_tx_hist_{tx['id']}", use_container_width=True):
-                st.session_state[f"_show_tx_hist_{tx['id']}"] = not st.session_state.get(f"_show_tx_hist_{tx['id']}", False)
-            if st.session_state.get(f"_show_tx_hist_{tx['id']}", False):
+
+def _render_treatment_detail(treatment_id, business_id, user_id):
+    try:
+        treatment = get_treatment(treatment_id, business_id, user_id)
+    except Exception as _e:
+        st.error("Could not load this treatment.")
+        with st.expander("Technical details"):
+            st.code(str(_e))
+        return
+    if treatment is None:
+        st.session_state["_treatment_detail_id"] = None
+        st.rerun()
+        return
+
+    if st.button("\u2190 Back to Treatments", key="tx_back_btn"):
+        st.session_state["_treatment_detail_id"] = None
+        st.rerun()
+
+    st.markdown(f"## {treatment['patient_identifier']}")
+    if treatment["patient_phone"]:
+        st.caption(f"\U0001F4DE {treatment['patient_phone']}")
+    if treatment["diagnosis"]:
+        st.caption(f"**Condition:** {treatment['diagnosis']}")
+    st.caption(f"Started {treatment['start_date'].strftime('%d %b %Y')}" + (
+        f" \u2014 planned {treatment['duration_days']} day(s)" if treatment["duration_days"] else " \u2014 duration not set"
+    ))
+    st.markdown(f"**Status:** {STATUS_LABELS.get(treatment['status'], treatment['status'])}")
+    if treatment["notes"]:
+        st.caption(f"Notes: {treatment['notes']}")
+
+    # Status changes — always an explicit action, never date-driven.
+    status = treatment["status"]
+    if status in ("planned", "in_progress"):
+        sc1, sc2 = st.columns(2)
+        with sc1:
+            if status == "planned" and st.button("Start Treatment", key="start_tx_btn", use_container_width=True):
+                ok, msg = update_treatment_status(treatment_id, business_id, user_id, "in_progress")
+                (st.success if ok else st.error)(msg)
+                if ok:
+                    st.rerun()
+            if status == "in_progress" and st.button("Mark Completed", key="complete_tx_btn", use_container_width=True):
+                ok, msg = update_treatment_status(treatment_id, business_id, user_id, "completed")
+                (st.success if ok else st.error)(msg)
+                if ok:
+                    st.rerun()
+        with sc2:
+            if st.button("Cancel Treatment", key="cancel_tx_btn", use_container_width=True):
+                ok, msg = update_treatment_status(treatment_id, business_id, user_id, "cancelled")
+                (st.success if ok else st.error)(msg)
+                if ok:
+                    st.rerun()
+
+    st.divider()
+    st.markdown("##### Billing")
+    try:
+        billing = get_treatment_billing(treatment_id, business_id, user_id)
+    except Exception as _e:
+        st.error("Could not load billing for this treatment.")
+        billing = None
+
+    if billing:
+        b1, b2, b3 = st.columns(3)
+        b1.metric("Total Bill", f"\u20A6{billing['total_bill']:,.2f}")
+        b2.metric("Paid", f"\u20A6{billing['amount_paid']:,.2f}")
+        b3.metric("Outstanding", f"\u20A6{billing['outstanding']:,.2f}")
+        st.caption(
+            f"Status: {_BILLING_STATUS_LABELS.get(billing['payment_status'], billing['payment_status'])} "
+            f"\u2014 service charge \u20A6{billing['service_charge']:,.2f} + "
+            f"medicines/supplies \u20A6{billing['dispensed_charges']:,.2f}"
+        )
+        if billing["written_off"] > 0:
+            st.caption(f"Written off as bad debt: \u20A6{billing['written_off']:,.2f} (the bill and payments above are unchanged).")
+        if billing["incomplete"]:
+            st.caption(
+                f"\u26A0\uFE0F {billing['lines_missing_price']} dispensing record(s) predate billing "
+                f"and aren't included above \u2014 this bill may understate what's actually owed."
+            )
+
+        if billing["outstanding"] > 0:
+            if st.button("Record a payment", key="toggle_tx_pay", use_container_width=True):
+                st.session_state["_show_tx_pay"] = not st.session_state.get("_show_tx_pay", False)
+            if st.session_state.get("_show_tx_pay", False):
+                with st.container(border=True):
+                    st.caption(f"Enter the amount being paid now (max \u20A6{billing['outstanding']:,.2f}).")
+                    pay_amount = st.number_input(
+                        "Payment Amount (\u20A6)", min_value=0.0, max_value=float(billing["outstanding"]),
+                        value=None, step=0.01, format="%.2f", placeholder="e.g. 5000",
+                        key="tx_pay_amount",
+                    )
+                    pay_method = st.selectbox("Payment Method", PAYMENT_METHODS, key="tx_pay_method")
+                    pay_note = st.text_input("Note (optional)", key="tx_pay_note")
+                    processing = st.session_state.get("_tx_paying", False)
+                    if st.button("Confirm Payment", key="confirm_tx_pay", type="primary", disabled=processing):
+                        st.session_state["_tx_paying"] = True
+                        try:
+                            ok, msg = record_treatment_payment(
+                                treatment_id, business_id, user_id, user_id,
+                                pay_amount, pay_method, pay_note,
+                            )
+                            if ok:
+                                st.success(msg)
+                                st.session_state.pop("tx_pay_amount", None)
+                                st.session_state.pop("tx_pay_note", None)
+                            else:
+                                st.error(msg)
+                        finally:
+                            st.session_state["_tx_paying"] = False
+                        st.rerun()
+
+        if st.button("Payment history", key="toggle_tx_pay_hist", use_container_width=True):
+            st.session_state["_show_tx_pay_hist"] = not st.session_state.get("_show_tx_pay_hist", False)
+        if st.session_state.get("_show_tx_pay_hist", False):
+            with st.container(border=True):
+                try:
+                    payments = get_treatment_payments(treatment_id, business_id, user_id)
+                except Exception as _e:
+                    st.error("Could not load payment history.")
+                    payments = []
+                if not payments:
+                    st.caption("No payments recorded yet.")
+                for p in payments:
+                    st.caption(
+                        f"\u20A6{p['amount']:,.2f} via {p['payment_method'] or 'unspecified'} "
+                        f"\u2014 {p['created_at'].strftime('%d %b %Y %H:%M')}"
+                        + (f" \u2014 {p['note']}" if p["note"] else "")
+                    )
+
+    st.divider()
+    st.markdown("##### Products and Medicines")
+
+    try:
+        items = get_treatment_items(treatment_id, business_id, user_id)
+    except Exception as _e:
+        st.error("Could not load treatment items.")
+        with st.expander("Technical details"):
+            st.code(str(_e))
+        return
+
+    for it in items:
+        with st.container(border=True):
+            st.markdown(f"**{it['product_name']}** ({it['product_unit']}) \u2014 {it['route'] or 'Route not specified'}")
+            bits = [f"{it['quantity_per_administration']:g} per administration"]
+            if it["administrations_per_day"]:
+                bits.append(f"{it['administrations_per_day']:g}/day")
+            if it["duration_days"]:
+                bits.append(f"{it['duration_days']} day(s)")
+            st.caption(" \u00b7 ".join(bits))
+            if it["planned_quantity"]:
+                st.caption(f"Planned quantity: {it['planned_quantity']:g} {it['product_unit']}")
+            st.caption(f"Dispensed so far: **{it['quantity_dispensed']:g} {it['product_unit']}**")
+            if it["notes"]:
+                st.caption(f"Note: {it['notes']}")
+
+            dcol1, dcol2 = st.columns(2)
+            with dcol1:
+                if st.button("Record Dispensing", key=f"toggle_dispense_{it['id']}", use_container_width=True):
+                    st.session_state[f"_show_dispense_{it['id']}"] = not st.session_state.get(f"_show_dispense_{it['id']}", False)
+            with dcol2:
+                if st.button("Dispensing History", key=f"toggle_disp_hist_{it['id']}", use_container_width=True):
+                    st.session_state[f"_show_disp_hist_{it['id']}"] = not st.session_state.get(f"_show_disp_hist_{it['id']}", False)
+
+            if st.session_state.get(f"_show_dispense_{it['id']}", False):
+                with st.container(border=True):
+                    st.caption(f"Available stock: {it['product_current_stock']:g} {it['product_unit']}")
+                    dispense_qty = st.number_input(
+                        "Quantity to dispense", min_value=0.0, value=None, step=0.5, format="%.3f",
+                        placeholder="e.g. 10", key=f"dispense_qty_{it['id']}",
+                    )
+                    dispense_note = st.text_input(
+                        "Note (optional)", key=f"dispense_note_{it['id']}",
+                        placeholder="e.g. Day 1 dose issued",
+                    )
+                    proc_key = f"_dispensing_{it['id']}"
+                    processing = st.session_state.get(proc_key, False)
+                    if st.button("Confirm Dispensing", key=f"confirm_dispense_{it['id']}",
+                                 type="primary", disabled=processing):
+                        st.session_state[proc_key] = True
+                        try:
+                            ok, msg = record_dispensing(
+                                it["id"], business_id, user_id, user_id,
+                                dispense_qty, dispense_note,
+                            )
+                            if ok:
+                                st.success(msg)
+                                st.session_state.pop(f"dispense_qty_{it['id']}", None)
+                                st.session_state.pop(f"dispense_note_{it['id']}", None)
+                            else:
+                                st.error(msg)
+                        finally:
+                            st.session_state[proc_key] = False
+                        st.rerun()
+
+            if st.session_state.get(f"_show_disp_hist_{it['id']}", False):
                 with st.container(border=True):
                     try:
-                        tx_payments = get_treatment_payments(tx["id"], business_id, user_id)
+                        history = get_dispensing_history(it["id"], business_id, user_id)
                     except Exception as _e:
-                        st.error("Could not load payment history.")
-                        tx_payments = []
-                    if not tx_payments:
-                        st.caption("No payments recorded yet.")
-                    for p in tx_payments:
+                        st.error("Could not load dispensing history.")
+                        history = []
+                    if not history:
+                        st.caption("No dispensing recorded yet for this item.")
+                    for h in history:
                         st.caption(
-                            f"\u20A6{p['amount']:,.2f} via {p['payment_method'] or 'unspecified'} "
-                            f"\u2014 {p['created_at'].strftime('%d %b %Y %H:%M')}"
-                            + (f" \u2014 {p['note']}" if p["note"] else "")
+                            f"{h['quantity']:g} {it['product_unit']} \u2014 "
+                            f"{h['dispensed_at'].strftime('%d %b %Y %H:%M')}"
+                            + (f" \u2014 by {h['recorded_by_username']}" if h["recorded_by_username"] else "")
                         )
-
-            if tx["outstanding"] > 0:
-                if st.button("Record a payment", key=f"toggle_tx_pay2_{tx['id']}", use_container_width=True):
-                    st.session_state[f"_show_tx_pay2_{tx['id']}"] = not st.session_state.get(f"_show_tx_pay2_{tx['id']}", False)
-
-            if tx["outstanding"] > 0 and st.session_state.get(f"_show_tx_pay2_{tx['id']}", False):
-                with st.container(border=True):
-                    st.caption(f"Enter the amount being paid now (max \u20A6{tx['outstanding']:,.2f}).")
-                    pay_key = f"tx_pay2_amount_{tx['id']}"
-                    pay_amount = st.number_input(
-                        "Payment Amount (\u20A6)", min_value=0.0,
-                        max_value=float(tx["outstanding"]),
-                        value=None, step=0.01, format="%.2f",
-                        placeholder="e.g. 5000", key=pay_key,
-                    )
-                    pay_method = st.selectbox(
-                        "Payment Method", PAYMENT_METHODS, key=f"tx_pay2_method_{tx['id']}",
-                    )
-                    pay_note = st.text_input(
-                        "Note (optional)", key=f"tx_pay2_note_{tx['id']}",
-                        placeholder="e.g. Paid at shop counter",
-                    )
-                    processing_key = f"_tx_paying2_{tx['id']}"
-                    processing = st.session_state.get(processing_key, False)
-                    if st.button(
-                        "Confirm Payment", key=f"tx_confirm_pay2_{tx['id']}",
-                        type="primary", disabled=processing,
-                    ):
-                        st.session_state[processing_key] = True
-                        try:
-                            if not pay_amount or pay_amount <= 0:
-                                st.error("Enter a payment amount greater than zero.")
-                            else:
-                                ok, msg = record_treatment_payment(
-                                    tx["id"], business_id, user_id, user_id,
-                                    pay_amount, pay_method, pay_note,
-                                )
-                                if ok:
-                                    st.success(msg)
-                                    st.session_state.pop(pay_key, None)
-                                    st.session_state.pop(f"tx_pay2_note_{tx['id']}", None)
-                                else:
-                                    st.error(msg)
-                        finally:
-                            st.session_state[processing_key] = False
-                        st.rerun()
