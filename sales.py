@@ -22,6 +22,7 @@ from decimal import Decimal, InvalidOperation
 
 from db import get_db
 from business import get_business
+from contacts import normalize_phone, PHONE_REQUIRED_MSG
 
 PAYMENT_METHODS = ["Cash", "Bank Transfer", "POS", "Other"]
 
@@ -81,27 +82,56 @@ def get_sale_products(business_id, owner_user_id):
 
 # ── Customers (minimal, for Phase 4B — full customer management is 4C) ──────
 
-def get_or_create_customer(business_id, owner_user_id, name, phone):
+def get_or_create_customer(business_id, owner_user_id, name, phone, require_phone=False):
     """Exact-name match against existing customers for this business, to
     avoid duplicate rows for a repeat customer typed the same way. Not
     fuzzy matching — a proper customer picker is Phase 4C. Returns None
-    for a blank name (walk-in customer, not tracked)."""
+    for a blank name (walk-in customer, not tracked).
+
+    Phase 5B-1 phone rules:
+      * require_phone=True (used whenever money will be owed): the customer
+        MUST end up with a valid phone number — either the one typed now, or
+        one already on file. Blank/whitespace/invalid -> SaleError, and no
+        customer row is created or changed.
+      * require_phone=False (ordinary cash sale): a phone is optional, but
+        if one is typed it must still be valid.
+      * A phone typed for an existing customer who has none on file is saved
+        onto that customer (previously it was silently dropped)."""
     _require_business(business_id, owner_user_id)
     name = (name or "").strip()
     if not name:
         return None
+
+    typed = (phone or "").strip()
+    clean = None
+    if typed:
+        clean, err = normalize_phone(typed)
+        if err:
+            raise SaleError(err)          # a typed number must always be sane
+
     with get_db() as (conn, cursor):
         cursor.execute(
-            "SELECT id FROM customers WHERE business_id=%s AND name=%s",
+            "SELECT id, phone FROM customers WHERE business_id=%s AND name=%s",
             (business_id, name),
         )
         existing = cursor.fetchone()
         if existing:
+            on_file_ok = normalize_phone(existing["phone"])[0] is not None
+            if clean and not on_file_ok:
+                # Customer had no (valid) number: save the one just typed.
+                cursor.execute(
+                    "UPDATE customers SET phone=%s WHERE id=%s AND business_id=%s",
+                    (clean, existing["id"], business_id),
+                )
+            elif require_phone and not on_file_ok:
+                raise SaleError(PHONE_REQUIRED_MSG)
             return existing["id"]
+        if require_phone and not clean:
+            raise SaleError(PHONE_REQUIRED_MSG)
         cursor.execute(
             "INSERT INTO customers (business_id, name, phone) "
             "VALUES (%s, %s, %s) RETURNING id",
-            (business_id, name, (phone or "").strip() or None),
+            (business_id, name, clean),
         )
         return cursor.fetchone()["id"]
 
@@ -167,6 +197,32 @@ def create_sale(business_id, owner_user_id, created_by_user_id, items,
 
             if amount_paid > total_amount:
                 raise SaleError("Amount paid cannot be more than the total amount due.")
+
+            # Phase 5B-1: customer checks, enforced here in the backend (not
+            # just in the form) inside the same transaction as the sale.
+            #  * Any customer_id must belong to THIS business.
+            #  * Anything that leaves money owing (credit or part-payment)
+            #    needs a named customer WITH a valid phone number. A fully
+            #    paid walk-in cash sale needs neither.
+            customer_row = None
+            if customer_id is not None:
+                cursor.execute(
+                    "SELECT id, phone FROM customers WHERE id=%s AND business_id=%s",
+                    (customer_id, business_id),
+                )
+                customer_row = cursor.fetchone()
+                if customer_row is None:
+                    raise SaleError("The selected customer was not found in this business.")
+            if amount_paid < total_amount:
+                if customer_row is None:
+                    raise SaleError(
+                        "A credit sale needs a customer. Enter the customer's name and phone number."
+                    )
+                _, phone_err = normalize_phone(customer_row["phone"])
+                if phone_err:
+                    raise SaleError(
+                        "This customer has no valid phone number on file. " + phone_err
+                    )
 
             if amount_paid >= total_amount:
                 payment_status = "paid"
