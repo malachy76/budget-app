@@ -94,12 +94,16 @@ def render_business_sales(user_id):
 
     # ── Customer ────────────────────────────────────────────────────────────
     st.markdown("##### Customer")
-    st.caption("Optional. Leave blank for a walk-in customer you don't need to track.")
+    st.caption(
+        "Leave blank for a walk-in customer who pays in full. "
+        "If any amount will be owed, the customer's name and phone number are required."
+    )
     customer_name = st.text_input(
         "Customer Name", placeholder="e.g. John Okafor", key="sale_customer_name",
     )
     customer_phone = st.text_input(
-        "Phone Number (optional)", placeholder="e.g. 08012345678", key="sale_customer_phone",
+        "Phone Number", placeholder="e.g. 08012345678", key="sale_customer_phone",
+        help="Required whenever any amount is left unpaid.",
     )
 
     # ── Payment ─────────────────────────────────────────────────────────────
@@ -113,7 +117,10 @@ def render_business_sales(user_id):
 
     outstanding = total - Decimal(str(amount_paid))
     if outstanding > 0:
-        st.warning(f"Outstanding balance: \u20A6{outstanding:,.2f} \u2014 this will be recorded as customer credit.")
+        st.warning(
+            f"Outstanding balance: \u20A6{outstanding:,.2f} \u2014 this will be recorded as customer credit. "
+            f"\u260E\uFE0F Customer name and phone number are required."
+        )
     else:
         st.success("This sale will be fully paid.")
 
@@ -127,12 +134,21 @@ def render_business_sales(user_id):
         st.session_state["_sale_processing"] = True
         try:
             customer_id = None
+            is_credit = outstanding > 0
+            if is_credit and not (customer_name or "").strip():
+                st.error("Enter the customer's name and phone number \u2014 they are required when money is owed.")
+                st.session_state["_sale_processing"] = False
+                return
             try:
+                # require_phone=True when money will be owed: validated BEFORE
+                # anything is saved, so a rejected credit sale leaves no
+                # half-created customer behind.
                 customer_id = get_or_create_customer(
                     business_id, user_id, customer_name, customer_phone,
+                    require_phone=is_credit,
                 )
             except Exception as _e:
-                st.error(f"Could not save customer details: {_e}")
+                st.error(str(_e))
                 st.session_state["_sale_processing"] = False
                 return
 
