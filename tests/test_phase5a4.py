@@ -182,8 +182,10 @@ def test_validation_reason_amount_method_customer():
     assert wo(w, s, "100", src="bogus")[0] is None
     assert rec(w, s, "10", method="Bitcoin")[0] is None
     # transaction with no customer linked cannot be written off
-    from sales import create_sale
-    sid, _ = create_sale(w.bid, w.uid, w.uid, [{"product_id": w.pid, "quantity": 1}], None, "0", "Cash")
+    # (since Phase 5B-1 create_sale refuses a credit sale without a customer, so
+    #  this simulates an OLDER record created before that rule existed)
+    sid = one("INSERT INTO sales (business_id, customer_id, total_amount, amount_paid, payment_status, created_by) "
+              "VALUES (%s, NULL, 1000, 0, 'unpaid', %s) RETURNING id", (w.bid, w.uid))["id"]
     wid, msg = wo(w, sid, "100")
     assert wid is None and "no customer" in msg.lower()
 
