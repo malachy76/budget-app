@@ -321,11 +321,27 @@ with st.sidebar:
         # Business Mode — Phase 2 adds Products/Inventory alongside the
         # Phase 1 business-home screen. More will be added here in later
         # phases without touching the Personal branch above.
-        business_pages = ["Business Home", "Products / Inventory", "Sales / Point of Sale", "Customers / Credit", "End-of-Day Summary", "Bad Debts", "Treatment Management"]
+        business_pages = ["Business Home", "Products / Inventory", "Sales / Point of Sale", "Customers / Credit", "End-of-Day Summary", "Bad Debts"]
+
+        # Phase 5B-1: Treatment Management only appears when this business
+        # has it switched on. Fails closed: any error => hidden.
+        try:
+            from business import is_treatment_management_enabled
+            _biz_id = st.session_state.get("active_business_id")
+            _tm_on = bool(_biz_id) and is_treatment_management_enabled(_biz_id, user_id)
+        except Exception:
+            _tm_on = False
+        if _tm_on:
+            business_pages.append("Treatment Management")
 
         # Same "Go to X" pattern already used for Personal Mode's nav_radio.
-        if st.session_state.get("_pending_biz_nav") is not None:
-            st.session_state["biz_nav_radio"] = st.session_state.pop("_pending_biz_nav")
+        _pending = st.session_state.pop("_pending_biz_nav", None)
+        if _pending is not None and _pending in business_pages:
+            st.session_state["biz_nav_radio"] = _pending
+        # A remembered selection that is no longer in the menu (feature
+        # switched off, or a different business) falls back to Business Home.
+        if st.session_state.get("biz_nav_radio") not in business_pages:
+            st.session_state["biz_nav_radio"] = "Business Home"
 
         current_page = st.radio(
             "Business Navigate",
@@ -509,6 +525,7 @@ if st.session_state.app_mode == "business":
         from _pages.business_baddebt import render_business_baddebt
         render_business_baddebt(user_id)
     elif current_page == "Treatment Management":
+        # The page re-checks the setting itself (render_business_treatments).
         from _pages.business_treatments import render_business_treatments
         render_business_treatments(user_id)
     else:
