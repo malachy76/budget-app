@@ -31,6 +31,7 @@ from decimal import Decimal, InvalidOperation
 
 from db import get_db
 from business import get_business
+from contacts import normalize_phone
 from sales import get_or_create_customer
 
 ROUTES = ["Oral", "Injection", "Topical", "Other / Not specified"]
@@ -43,6 +44,18 @@ STATUS_LABELS = {
 
 class TreatmentError(Exception):
     pass
+
+
+# Phase 5B-1: Treatment Management is a per-business setting. These write
+# paths refuse to run when it is off — enforced here in the backend, not only
+# by hiding menus. Deliberately NOT guarded: reads (history, billing,
+# reports) and record_treatment_payment, so existing treatment debts can
+# still be collected and every balance/report stays accurate after the
+# feature is switched off. Nothing is ever deleted by switching it off.
+TREATMENT_OFF_MSG = (
+    "Treatment Management is turned off for this business. "
+    "Turn it on in Business Home \u2192 Settings to add or change treatments."
+)
 
 
 def _to_decimal(value, field_name, allow_none=False):
@@ -79,11 +92,19 @@ def create_treatment(business_id, owner_user_id, created_by_user_id,
     route (optional), notes (optional).
     Writes treatments + treatment_items only — no inventory effect.
     """
-    _require_business(business_id, owner_user_id)
+    biz = _require_business(business_id, owner_user_id)
+    if not biz["treatment_management_enabled"]:
+        return None, TREATMENT_OFF_MSG
 
     patient_identifier = (patient_identifier or "").strip()
     if not patient_identifier:
         return None, "Patient name or identifier is required."
+    # Phase 5B-1: a treatment is billed to the patient and can leave a debt,
+    # so the patient's phone number is compulsory.
+    patient_phone, phone_err = normalize_phone(patient_phone)
+    if phone_err:
+        return None, ("Patient phone number is required for treatment billing. Please enter it."
+                      if "required" in phone_err else phone_err)
     if not start_date:
         return None, "Treatment date is required."
     if not items:
@@ -128,7 +149,8 @@ def create_treatment(business_id, owner_user_id, created_by_user_id,
         # generic identifier (e.g. both called "Patient 001"), they will
         # be merged into one customer record. Distinct identifiers avoid
         # this; there's no other way to tell two "Patient 001"s apart.
-        customer_id = get_or_create_customer(business_id, owner_user_id, patient_identifier, patient_phone)
+        customer_id = get_or_create_customer(business_id, owner_user_id, patient_identifier,
+                                             patient_phone, require_phone=True)
 
         with get_db() as (conn, cursor):
             # Confirm every referenced product genuinely belongs to this
@@ -258,7 +280,9 @@ def get_treatment_dashboard_summary(business_id, owner_user_id):
 # ── Status changes (always explicit — never date-driven) ────────────────────
 
 def update_treatment_status(treatment_id, business_id, owner_user_id, new_status):
-    _require_business(business_id, owner_user_id)
+    biz = _require_business(business_id, owner_user_id)
+    if not biz["treatment_management_enabled"]:
+        return None, TREATMENT_OFF_MSG
     if new_status not in STATUSES:
         return None, "Invalid status."
     try:
@@ -280,7 +304,9 @@ def update_treatment_status(treatment_id, business_id, owner_user_id, new_status
 
 def record_dispensing(treatment_item_id, business_id, owner_user_id,
                        created_by_user_id, quantity, note):
-    _require_business(business_id, owner_user_id)
+    biz = _require_business(business_id, owner_user_id)
+    if not biz["treatment_management_enabled"]:
+        return None, TREATMENT_OFF_MSG
 
     try:
         quantity = _to_decimal(quantity, "Quantity")
