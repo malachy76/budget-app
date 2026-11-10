@@ -22,6 +22,7 @@ from decimal import Decimal, InvalidOperation
 
 from db import get_db
 from business import get_business
+from contacts import normalize_phone
 # Phase 5A-4: collectible debt = total - paid - ACTIVE write-offs. The SQL
 # fragment lives in baddebt.py so every balance in the app uses the identical
 # definition of "active write-off" (not reversed).
@@ -318,5 +319,27 @@ def record_payment(sale_id, business_id, owner_user_id, created_by_user_id,
         return True, f"Payment of \u20A6{amount:,.2f} recorded."
     except CreditError as e:
         return None, str(e)
+    except Exception as e:
+        return None, str(e)
+
+
+def update_customer_phone(customer_id, business_id, owner_user_id, phone):
+    """Add or correct an existing customer's phone number (Phase 5B-1).
+    Blank / whitespace-only / invalid numbers are rejected and nothing is
+    changed. Scoped to the business AND its verified owner. Returns
+    (True, message) or (None, error)."""
+    try:
+        _require_business(business_id, owner_user_id)
+        clean, err = normalize_phone(phone)
+        if err:
+            return None, err
+        with get_db() as (conn, cursor):
+            cursor.execute(
+                "UPDATE customers SET phone=%s WHERE id=%s AND business_id=%s",
+                (clean, customer_id, business_id),
+            )
+            if cursor.rowcount == 0:
+                raise CreditError("Customer not found.")
+        return True, "Phone number saved."
     except Exception as e:
         return None, str(e)
