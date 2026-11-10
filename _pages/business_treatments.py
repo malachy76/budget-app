@@ -12,6 +12,7 @@ from treatments import (
     ROUTES, STATUSES, STATUS_LABELS,
 )
 from sales import PAYMENT_METHODS
+from business import is_treatment_management_enabled
 
 _BILLING_STATUS_LABELS = {"paid": "Paid", "partial": "Partially Paid", "unpaid": "Unpaid", "written_off": "Written Off"}
 
@@ -27,6 +28,17 @@ def render_business_treatments(user_id):
     business_id = st.session_state.get("active_business_id")
     if not business_id:
         st.info("Select or create a business first, from Business Home.")
+        return
+
+    # Phase 5B-1: page-level access check (the backend functions enforce the
+    # same setting, so this is not the only barrier).
+    if not is_treatment_management_enabled(business_id, user_id):
+        st.info(
+            "Treatment Management is turned off for this business. "
+            "You can turn it on from Business Home \u2192 Settings. "
+            "Any treatment records you already have are kept, and any money "
+            "customers owe you for them still appears under Customers / Credit."
+        )
         return
 
     detail_id = st.session_state.get("_treatment_detail_id")
@@ -120,8 +132,8 @@ def _render_add_treatment_form(business_id, user_id):
     col_a, col_b = st.columns(2)
     with col_a:
         tx_phone = st.text_input(
-            "Phone Number (optional)", placeholder="e.g. 08012345678",
-            help="Optional: for contact purposes.", key="tx_phone",
+            "Phone Number (required)", placeholder="e.g. 08012345678",
+            help="Required: treatments are billed to the patient and may leave a balance to collect.", key="tx_phone",
         )
     with col_b:
         start_date = st.date_input(
