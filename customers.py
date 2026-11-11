@@ -68,7 +68,7 @@ def _get_treatment_outstanding_by_customer(business_id, cursor):
     every dispensing's own locked-in price — never a stored total."""
     cursor.execute(
         "SELECT t.id, t.customer_id, t.created_at, t.amount_paid, "
-        "  t.service_charge + COALESCE(SUM(d.quantity * d.unit_price) "
+        "  t.service_charge + COALESCE(SUM(ROUND(d.quantity * d.unit_price, 2)) "
         "    FILTER (WHERE d.unit_price IS NOT NULL), 0) AS total_bill, "
         # Scalar subquery, NOT a join — a join would multiply the written-off
         # amount by the number of item/dispensing rows.
@@ -206,7 +206,7 @@ def get_customer_treatments(customer_id, business_id, owner_user_id):
     with get_db() as (conn, cursor):
         cursor.execute(
             "SELECT t.*, "
-            "  t.service_charge + COALESCE(SUM(d.quantity * d.unit_price) "
+            "  t.service_charge + COALESCE(SUM(ROUND(d.quantity * d.unit_price, 2)) "
             "    FILTER (WHERE d.unit_price IS NOT NULL), 0) AS total_bill, "
             f"  {active_write_off_sql(SOURCE_TREATMENT, 't')} AS written_off "
             "FROM treatments t "
