@@ -344,10 +344,15 @@ def _render_treatment_detail(treatment_id, business_id, user_id):
         )
         if billing["written_off"] > 0:
             st.caption(f"Written off as bad debt: \u20A6{billing['written_off']:,.2f} (the bill and payments above are unchanged).")
-        if billing["incomplete"]:
+        if billing["lines_missing_price"] > 0:
             st.caption(
                 f"\u26A0\uFE0F {billing['lines_missing_price']} dispensing record(s) predate billing "
                 f"and aren't included above \u2014 this bill may understate what's actually owed."
+            )
+        if billing["lines_missing_cost"] > 0:
+            st.caption(
+                f"\u26A0\uFE0F {billing['lines_missing_cost']} medicine(s) dispensed have no recorded cost, "
+                f"so profit on this treatment can't be fully calculated."
             )
 
         if billing["outstanding"] > 0:
