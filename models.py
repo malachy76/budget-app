@@ -422,6 +422,31 @@ def create_tables():
             created_at TIMESTAMP DEFAULT NOW()
         )""")
 
+        # ── Phase 5B-2: product-costing precision + known/unknown cost ────────
+        # Additive / non-destructive, safe to run any number of times.
+        #  1. cost_known flags (nullable BOOLEAN): NULL = a record written
+        #     before this phase ("legacy"). No backfill and no rewrite of any
+        #     historical value: reports treat a legacy cost of exactly 0 as
+        #     unverified and a legacy positive cost as trusted (see costing.py).
+        #  2. Widen the four unit-cost columns from NUMERIC(14,2) to
+        #     NUMERIC(18,6) so weighted-average costs are no longer rounded to
+        #     kobo before being multiplied by quantities. Widening keeps every
+        #     existing value exactly (120.59 stays 120.590000); the guard makes
+        #     the ALTER run only while a column still has scale < 6.
+        cursor.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS cost_known BOOLEAN")
+        cursor.execute("ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS cost_known BOOLEAN")
+        cursor.execute("ALTER TABLE treatment_dispensing ADD COLUMN IF NOT EXISTS cost_known BOOLEAN")
+        for _tbl, _col in (("products", "purchase_price"), ("inventory_movements", "unit_cost"),
+                           ("sale_items", "unit_cost"), ("treatment_dispensing", "unit_cost")):
+            cursor.execute(
+                "SELECT numeric_scale FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND table_name = %s AND column_name = %s",
+                (_tbl, _col),
+            )
+            _row = cursor.fetchone()
+            if _row is not None and (_row["numeric_scale"] is None or _row["numeric_scale"] < 6):
+                cursor.execute(f"ALTER TABLE {_tbl} ALTER COLUMN {_col} TYPE NUMERIC(18,6)")
+
         # ── Phase 5B-1: Treatment Management is a per-business setting ────────
         # Additive and safe to run any number of times:
         #  1. ADD COLUMN IF NOT EXISTS — nullable, no default, so existing
