@@ -143,7 +143,7 @@ def _treatment_total_sql(alias="t"):
     # service charge + every dispensing's own locked-in price. Scalar
     # subquery (not a JOIN) so nothing can multiply rows.
     return (
-        f"{alias}.service_charge + COALESCE((SELECT SUM(d.quantity * d.unit_price) "
+        f"{alias}.service_charge + COALESCE((SELECT SUM(ROUND(d.quantity * d.unit_price, 2)) "
         "FROM treatment_items ti JOIN treatment_dispensing d ON d.treatment_item_id = ti.id "
         f"WHERE ti.treatment_id = {alias}.id AND ti.business_id = {alias}.business_id "
         "AND d.unit_price IS NOT NULL), 0)"
@@ -209,7 +209,7 @@ def _snapshot(cursor, source_type, tx_id, business_id, lock=False):
         if row is None:
             return None
         cursor.execute(
-            "SELECT COALESCE(SUM(d.quantity * d.unit_price) "
+            "SELECT COALESCE(SUM(ROUND(d.quantity * d.unit_price, 2)) "
             "  FILTER (WHERE d.unit_price IS NOT NULL), 0) AS dispensed "
             "FROM treatment_items ti "
             "LEFT JOIN treatment_dispensing d ON d.treatment_item_id = ti.id "
