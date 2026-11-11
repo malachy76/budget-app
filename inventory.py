@@ -17,6 +17,8 @@ from decimal import Decimal, InvalidOperation
 
 from db import get_db
 from business import get_business
+import costing
+from costing import CostingError, snapshot_cost
 
 UNITS = [
     # General / packaging
@@ -91,18 +93,26 @@ def _to_decimal(value, field_name):
 def create_product(business_id, owner_user_id, created_by_user_id, name, category, sku,
                     unit, purchase_price, selling_price, opening_stock,
                     low_stock_threshold, expiry_date):
+    """purchase_price semantics (Phase 5B-2):
+      * a number (including an explicit 0)  -> the cost is KNOWN. 0 means the
+        owner states the product genuinely costs nothing.
+      * None / blank                         -> the cost is UNKNOWN. Sales of
+        it will be recorded with an unknown cost and excluded from gross
+        profit (with a warning) until the owner sets a cost.
+    Unit costs are stored to 6 decimals; quantities must have <= 3 decimals."""
     _require_business(business_id, owner_user_id)
 
     name = (name or "").strip()
     if not name:
         return None, "Product name is required."
 
+    cost_known = not (purchase_price is None or str(purchase_price).strip() == "")
     try:
-        purchase_price = _to_decimal(purchase_price, "Purchase price")
+        purchase_price = costing.unit_cost(purchase_price, "Purchase price") if cost_known else Decimal("0")
         selling_price = _to_decimal(selling_price, "Selling price")
-        opening_stock = _to_decimal(opening_stock, "Opening stock")
-        low_stock_threshold = _to_decimal(low_stock_threshold, "Low-stock threshold")
-    except ValueError as e:
+        opening_stock = costing.quantity(opening_stock, "Opening stock")
+        low_stock_threshold = costing.quantity(low_stock_threshold, "Low-stock threshold")
+    except (ValueError, CostingError) as e:
         return None, str(e)
 
     if purchase_price < 0 or selling_price < 0:
@@ -120,11 +130,11 @@ def create_product(business_id, owner_user_id, created_by_user_id, name, categor
             cursor.execute(
                 "INSERT INTO products (business_id, name, category, sku, unit, "
                 "purchase_price, selling_price, current_stock, low_stock_threshold, "
-                "expiry_date) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "expiry_date, cost_known) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 "RETURNING id",
                 (business_id, name, category or None, sku or None, unit,
                  purchase_price, selling_price, opening_stock, low_stock_threshold,
-                 expiry_date),
+                 expiry_date, cost_known),
             )
             product_id = cursor.fetchone()["id"]
 
@@ -135,7 +145,7 @@ def create_product(business_id, owner_user_id, created_by_user_id, name, categor
                     "unit_cost, note, created_by) "
                     "VALUES (%s, %s, 'opening_stock', %s, 0, %s, %s, %s, %s)",
                     (business_id, product_id, opening_stock, opening_stock,
-                     purchase_price, "Opening stock", created_by_user_id),
+                     purchase_price if cost_known else None, "Opening stock", created_by_user_id),
                 )
         return product_id, "Product created"
     except NotOwner as e:
@@ -201,17 +211,20 @@ def adjust_stock(product_id, business_id, owner_user_id, created_by_user_id,
     """direction: 'add' or 'remove'. reason must be a key from ADD_REASONS /
     REMOVE_REASONS matching the direction.
 
-    unit_cost is REQUIRED only for reason == 'New delivery / Purchase' —
-    the one ADD_REASON that represents a genuine stock receipt
-    (movement_type='purchase'). When provided, products.purchase_price
-    (used as the running weighted-average unit cost — see module
-    docstring) is recalculated as:
-        new_avg = (stock_before * old_avg_cost + quantity * unit_cost)
-                  / (stock_before + quantity)
-    Every other reason (corrections, damaged, expired, missing) does NOT
-    touch purchase_price — those aren't purchases, so they carry no cost
-    information and must not silently change the cost basis of what's
-    still on the shelf.
+    WEIGHTED-AVERAGE COSTING (Phase 5B-2) applies ONLY to the one reason that
+    is a genuine stock receipt: 'New delivery / Purchase'
+    (movement_type='purchase'). unit_cost is required for it (0 is allowed =
+    a free delivery) and products.purchase_price — the running average cost
+    per unit — becomes
+        (stock_before x avg_cost + qty x unit_cost) / (stock_before + qty)
+    at 6-decimal precision (costing.weighted_average). Special cases:
+      * no stock on hand       -> the new cost simply becomes the cost.
+      * stock on hand has an UNKNOWN cost -> the average cannot be known, so
+        the product's cost STAYS unknown (the delivery's own cost is still
+        recorded on the movement). The owner can fix it with set_product_cost
+        or it resolves itself once the old stock is gone. Never guessed as 0.
+    Sales, debt payments, corrections, damaged/expired/lost stock never touch
+    the cost: they carry no purchase information.
     """
     _require_business(business_id, owner_user_id)
 
@@ -222,8 +235,8 @@ def adjust_stock(product_id, business_id, owner_user_id, created_by_user_id,
         return False, "Invalid reason."
 
     try:
-        quantity = _to_decimal(quantity, "Quantity")
-    except ValueError as e:
+        quantity = costing.quantity(quantity, "Quantity")
+    except CostingError as e:
         return False, str(e)
     if quantity <= 0:
         return False, "Quantity must be greater than zero."
@@ -234,21 +247,22 @@ def adjust_stock(product_id, business_id, owner_user_id, created_by_user_id,
 
     if is_purchase:
         try:
-            unit_cost = _to_decimal(unit_cost, "Unit cost")
-        except ValueError as e:
+            unit_cost = costing.unit_cost(unit_cost, "Unit cost")
+        except CostingError as e:
             return False, str(e)
         if unit_cost < 0:
             return False, "Unit cost cannot be negative."
     else:
         unit_cost = None
 
+    note_suffix = ""
     try:
         with get_db() as (conn, cursor):
             # Lock the row for the duration of this transaction so two
             # concurrent adjustments can't both read the same stale
             # current_stock and overwrite each other.
             cursor.execute(
-                "SELECT current_stock, purchase_price FROM products "
+                "SELECT current_stock, purchase_price, cost_known FROM products "
                 "WHERE id=%s AND business_id=%s FOR UPDATE",
                 (product_id, business_id),
             )
@@ -259,24 +273,31 @@ def adjust_stock(product_id, business_id, owner_user_id, created_by_user_id,
             before = row["current_stock"]
             after = before + signed_qty
             if after < 0:
-                raise StockError(f"Cannot remove {quantity} — only {before} in stock.")
+                raise StockError(f"Cannot remove {quantity} \u2014 only {before} in stock.")
 
             if is_purchase:
-                old_avg_cost = row["purchase_price"] or Decimal("0")
+                old_cost = snapshot_cost(row)          # None = unknown
                 if before <= 0:
-                    # Nothing to weight against (first receipt, or stock
-                    # was fully depleted) — the new cost simply becomes
-                    # the average.
-                    new_avg_cost = unit_cost
+                    new_avg_cost, known = unit_cost, True
+                elif old_cost is not None:
+                    new_avg_cost = costing.weighted_average(before, old_cost, quantity, unit_cost)
+                    known = True
                 else:
-                    new_avg_cost = (
-                        (before * old_avg_cost) + (quantity * unit_cost)
-                    ) / (before + quantity)
-                cursor.execute(
-                    "UPDATE products SET current_stock=%s, purchase_price=%s, "
-                    "updated_at=NOW() WHERE id=%s AND business_id=%s",
-                    (after, new_avg_cost, product_id, business_id),
-                )
+                    new_avg_cost, known = None, False
+                    note_suffix = (" The cost of the stock you already had is unknown, so the "
+                                   "product's cost is still unknown. Set its cost to fix this.")
+                if known:
+                    cursor.execute(
+                        "UPDATE products SET current_stock=%s, purchase_price=%s, cost_known=TRUE, "
+                        "updated_at=NOW() WHERE id=%s AND business_id=%s",
+                        (after, new_avg_cost, product_id, business_id),
+                    )
+                else:
+                    cursor.execute(
+                        "UPDATE products SET current_stock=%s, updated_at=NOW() "
+                        "WHERE id=%s AND business_id=%s",
+                        (after, product_id, business_id),
+                    )
             else:
                 cursor.execute(
                     "UPDATE products SET current_stock=%s, updated_at=NOW() "
@@ -291,12 +312,55 @@ def adjust_stock(product_id, business_id, owner_user_id, created_by_user_id,
                 (business_id, product_id, movement_type, signed_qty, before, after,
                  unit_cost, reason, created_by_user_id),
             )
-        return True, f"Stock updated: {before} \u2192 {after}" + (
-            f" (new average cost: \u20A6{new_avg_cost:,.2f}/unit)" if is_purchase else ""
-        )
+        msg = f"Stock updated: {before:g} \u2192 {after:g}"
+        if is_purchase and known:
+            msg += f" (new average cost: \u20A6{new_avg_cost:,.2f}/unit)"
+        return True, msg + note_suffix
     except StockError as e:
         return False, str(e)
     except NotOwner as e:
+        return False, str(e)
+    except Exception as e:
+        return False, str(e)
+
+
+def set_product_cost(product_id, business_id, owner_user_id, created_by_user_id, new_cost):
+    """Owner states the product's CURRENT cost per unit (including an explicit
+    0 = genuinely costs nothing). Changes the cost basis going FORWARD only:
+    sales already recorded keep the cost they were made with. Logged as a
+    zero-quantity 'cost_set' movement so there is an audit trail. This is the
+    only way, besides a delivery onto empty stock, to turn an unknown cost
+    into a known one — it is never filled in automatically."""
+    _require_business(business_id, owner_user_id)
+    try:
+        new_cost = costing.unit_cost(new_cost, "Cost")
+    except CostingError as e:
+        return False, str(e)
+    if new_cost < 0:
+        return False, "Cost cannot be negative."
+    try:
+        with get_db() as (conn, cursor):
+            cursor.execute(
+                "SELECT current_stock FROM products WHERE id=%s AND business_id=%s FOR UPDATE",
+                (product_id, business_id),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise StockError("Product not found.")
+            cursor.execute(
+                "UPDATE products SET purchase_price=%s, cost_known=TRUE, updated_at=NOW() "
+                "WHERE id=%s AND business_id=%s",
+                (new_cost, product_id, business_id),
+            )
+            cursor.execute(
+                "INSERT INTO inventory_movements (business_id, product_id, movement_type, "
+                "quantity, quantity_before, quantity_after, unit_cost, note, created_by) "
+                "VALUES (%s, %s, 'cost_set', 0, %s, %s, %s, %s, %s)",
+                (business_id, product_id, row["current_stock"], row["current_stock"], new_cost,
+                 "Cost set by owner", created_by_user_id),
+            )
+        return True, f"Cost set to \u20A6{new_cost:,.2f} per unit. Past sales are not changed."
+    except StockError as e:
         return False, str(e)
     except Exception as e:
         return False, str(e)
@@ -377,7 +441,10 @@ def get_inventory_summary(business_id, owner_user_id):
             "  COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date < CURRENT_DATE) AS expired, "
             "  COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date >= CURRENT_DATE "
             "    AND expiry_date <= CURRENT_DATE + make_interval(days => %s)) AS expiring_soon, "
-            "  COALESCE(SUM(current_stock * purchase_price), 0) AS inventory_value "
+            "  COALESCE(SUM(current_stock * purchase_price) FILTER (WHERE "
+            "    cost_known IS TRUE OR (cost_known IS NULL AND purchase_price > 0)), 0) AS inventory_value, "
+            "  COUNT(*) FILTER (WHERE current_stock > 0 AND NOT "
+            "    (cost_known IS TRUE OR (cost_known IS NULL AND purchase_price > 0))) AS unknown_cost_products "
             "FROM products WHERE business_id=%s AND is_active=1",
             (LOW_STOCK_DAYS_SOON, business_id),
         )
