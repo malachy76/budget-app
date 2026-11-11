@@ -32,6 +32,8 @@ from decimal import Decimal, InvalidOperation
 from db import get_db
 from business import get_business
 from contacts import normalize_phone
+import costing
+from costing import CostingError, snapshot_cost, known_cost_sql
 from sales import get_or_create_customer
 
 ROUTES = ["Oral", "Injection", "Topical", "Other / Not specified"]
@@ -309,7 +311,10 @@ def record_dispensing(treatment_item_id, business_id, owner_user_id,
         return None, TREATMENT_OFF_MSG
 
     try:
-        quantity = _to_decimal(quantity, "Quantity")
+        try:
+            quantity = costing.quantity(quantity, "Quantity")    # max 3 decimals, never rounded
+        except CostingError as e:
+            return None, str(e)
         if quantity <= 0:
             return None, "Quantity must be greater than zero."
 
@@ -328,7 +333,7 @@ def record_dispensing(treatment_item_id, business_id, owner_user_id,
             # and sales.py — so a sale and a dispensing happening at the
             # same moment can't both read the same stale stock.
             cursor.execute(
-                "SELECT id, name, unit, current_stock, selling_price, purchase_price "
+                "SELECT id, name, unit, current_stock, selling_price, purchase_price, cost_known "
                 "FROM products WHERE id=%s AND business_id=%s FOR UPDATE",
                 (item["product_id"], business_id),
             )
@@ -350,7 +355,9 @@ def record_dispensing(treatment_item_id, business_id, owner_user_id,
             # change to the product's price/cost must never rewrite what
             # this dispensing was actually billed or cost at the time.
             unit_price = product["selling_price"]
-            unit_cost = product["purchase_price"]
+            # Phase 5B-2: only a KNOWN cost is locked on; an unknown cost is
+            # stored as NULL (never a silent 0) and the reports flag it.
+            unit_cost = snapshot_cost(product)
 
             cursor.execute(
                 "UPDATE products SET current_stock=%s, updated_at=NOW() "
@@ -367,8 +374,9 @@ def record_dispensing(treatment_item_id, business_id, owner_user_id,
             )
             cursor.execute(
                 "INSERT INTO treatment_dispensing (treatment_item_id, business_id, "
-                "quantity, unit_price, unit_cost, created_by) VALUES (%s, %s, %s, %s, %s, %s)",
-                (treatment_item_id, business_id, quantity, unit_price, unit_cost, created_by_user_id),
+                "quantity, unit_price, unit_cost, cost_known, created_by) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (treatment_item_id, business_id, quantity, unit_price, unit_cost,
+                 unit_cost is not None, created_by_user_id),
             )
             cursor.execute(
                 "UPDATE treatment_items SET quantity_dispensed = quantity_dispensed + %s "
@@ -378,7 +386,7 @@ def record_dispensing(treatment_item_id, business_id, owner_user_id,
 
         return True, (
             f"Dispensed {quantity:g} {product['unit']} of '{product['name']}' "
-            f"\u2014 \u20A6{(quantity * unit_price):,.2f} added to the treatment bill."
+            f"\u2014 \u20A6{(quantity * unit_price).quantize(Decimal('0.01')):,.2f} added to the treatment bill."
         )
     except TreatmentError as e:
         return None, str(e)
@@ -408,10 +416,13 @@ def get_treatment_billing(treatment_id, business_id, owner_user_id):
     with get_db() as (conn, cursor):
         cursor.execute(
             "SELECT t.service_charge, t.amount_paid, "
-            "  COALESCE(SUM(d.quantity * d.unit_price) FILTER (WHERE d.unit_price IS NOT NULL), 0) "
+            "  COALESCE(SUM(ROUND(d.quantity * d.unit_price, 2)) FILTER (WHERE d.unit_price IS NOT NULL), 0) "
             "    AS dispensed_charges, "
-            "  COALESCE(SUM(d.quantity * d.unit_cost) FILTER (WHERE d.unit_cost IS NOT NULL), 0) "
+            f"  COALESCE(SUM(d.quantity * d.unit_cost) FILTER (WHERE d.unit_price IS NOT NULL AND {known_cost_sql('d')}), 0) "
             "    AS cogs, "
+            f"  COALESCE(SUM(ROUND(d.quantity * d.unit_price, 2)) FILTER (WHERE d.unit_price IS NOT NULL AND {known_cost_sql('d')}), 0) "
+            "    AS known_cost_charges, "
+            f"  COUNT(d.id) FILTER (WHERE d.unit_price IS NOT NULL AND NOT {known_cost_sql('d')}) AS lines_missing_cost, "
             "  COUNT(d.id) FILTER (WHERE d.unit_price IS NULL) AS lines_missing_price "
             "FROM treatments t "
             "LEFT JOIN treatment_items ti ON ti.treatment_id = t.id "
@@ -446,7 +457,10 @@ def get_treatment_billing(treatment_id, business_id, owner_user_id):
         else:
             payment_status = "unpaid"
 
-        gross_profit = row["dispensed_charges"] - row["cogs"]
+        # Phase 5B-2: profit only from medicine lines whose cost is KNOWN.
+        # Charges for unknown-cost lines are excluded (never costed at 0),
+        # and `incomplete` says so.
+        gross_profit = row["known_cost_charges"] - row["cogs"]
         return {
             "total_bill": total_bill,
             "service_charge": row["service_charge"],
@@ -458,7 +472,8 @@ def get_treatment_billing(treatment_id, business_id, owner_user_id):
             "cogs": row["cogs"],
             "gross_profit": gross_profit,
             "lines_missing_price": row["lines_missing_price"],
-            "incomplete": row["lines_missing_price"] > 0,
+            "lines_missing_cost": row["lines_missing_cost"],
+            "incomplete": row["lines_missing_price"] > 0 or row["lines_missing_cost"] > 0,
         }
 
 
@@ -490,7 +505,7 @@ def record_treatment_payment(treatment_id, business_id, owner_user_id,
             # never call get_treatment_billing() here, since that opens
             # its own separate connection and wouldn't see this lock.
             cursor.execute(
-                "SELECT COALESCE(SUM(d.quantity * d.unit_price) "
+                "SELECT COALESCE(SUM(ROUND(d.quantity * d.unit_price, 2)) "
                 "  FILTER (WHERE d.unit_price IS NOT NULL), 0) AS dispensed_charges "
                 "FROM treatment_items ti "
                 "LEFT JOIN treatment_dispensing d ON d.treatment_item_id = ti.id "
@@ -555,7 +570,7 @@ def get_today_treatment_summary(business_id, owner_user_id):
             "SELECT "
             "  COALESCE((SELECT SUM(service_charge) FROM treatments "
             "    WHERE business_id=%s AND created_at::date = CURRENT_DATE), 0) AS service_charges_today, "
-            "  COALESCE((SELECT SUM(d.quantity * d.unit_price) "
+            "  COALESCE((SELECT SUM(ROUND(d.quantity * d.unit_price, 2)) "
             "    FROM treatment_dispensing d "
             "    WHERE d.business_id=%s AND d.dispensed_at::date = CURRENT_DATE "
             "    AND d.unit_price IS NOT NULL), 0) AS dispensed_charges_today, "
