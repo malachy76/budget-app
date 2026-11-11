@@ -116,10 +116,23 @@ def render_business_daily_report(user_id):
     )
     if r["profit_incomplete"]:
         st.warning(
-            f"\u26A0\uFE0F {_n(r['revenue_with_unknown_cost'])} of the money collected comes from items "
-            f"with no recorded cost (sold before cost tracking). It is counted as revenue but left "
-            f"out of gross profit, so profit is incomplete."
+            f"\u26A0\uFE0F Profit is incomplete. {_n(r['revenue_with_unknown_cost'])} of the money "
+            f"collected is for items whose purchase cost isn't known. It is counted as revenue but "
+            f"left out of gross profit (it is never treated as a cost of \u20A60)."
         )
+    if r["unknown_cost_items"]:
+        st.caption(
+            f"Items with no recorded cost \u2014 {r['unknown_cost_sales']} sale(s)"
+            + (f", {r['unknown_cost_treatments']} treatment(s)" if r["unknown_cost_treatments"] else "")
+            + ". Set each product's cost in Products / Inventory so future sales are costed:"
+        )
+        for it in r["unknown_cost_items"][:10]:
+            st.caption(
+                f"\u2022 {it['product']} ({it['source'].lower()}): {it['lines']} line(s), "
+                f"quantity {it['quantity']:g}, worth {_n(it['value'])}"
+            )
+        if len(r["unknown_cost_items"]) > 10:
+            st.caption(f"\u2026and {len(r['unknown_cost_items']) - 10} more product(s).")
     st.divider()
 
     # ── 4. Customer debts outstanding ──
