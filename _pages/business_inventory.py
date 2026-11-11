@@ -6,8 +6,9 @@ import streamlit as st
 from datetime import date
 
 from styles import render_page_header
+from costing import snapshot_cost
 from inventory import (
-    create_product, get_products, get_product, adjust_stock, delete_product,
+    create_product, get_products, get_product, adjust_stock, delete_product, set_product_cost,
     get_movement_history, get_inventory_summary, stock_status, expiry_status,
     UNITS, ADD_REASONS, REMOVE_REASONS,
 )
@@ -46,6 +47,12 @@ def render_business_inventory(user_id):
     c3.metric("Low Stock", summary["low_stock"])
     c4.metric("Out of Stock", summary["out_of_stock"])
     st.caption(f"Estimated inventory cost: \u20A6{summary['inventory_value']:,.2f}")
+    if summary["unknown_cost_products"]:
+        st.warning(
+            f"\u26A0\uFE0F {summary['unknown_cost_products']} product(s) in stock have no cost set. "
+            f"They are left out of the inventory cost above, and profit on their sales will show as "
+            f"incomplete. Open the product and use 'Set Cost'."
+        )
     st.divider()
 
     # ── Detail view (adjust stock / history / delete) takes over the page ─────
@@ -98,8 +105,11 @@ def render_business_inventory(user_id):
         st.markdown("##### Pricing")
         col_c, col_d = st.columns(2)
         with col_c:
-            st.markdown("**Purchase Price** \u00b7 required")
-            st.caption("How much you paid for one unit of this product.")
+            st.markdown("**Purchase Price**")
+            st.caption(
+                "How much you paid for one unit. Leave blank if you don't know it yet "
+                "(profit on this product will show as incomplete). Enter 0 only if it genuinely costs you nothing."
+            )
             purchase_price = st.number_input(
                 "Purchase Price", label_visibility="collapsed",
                 min_value=0.0, value=None, step=0.01, format="%.2f",
@@ -178,8 +188,8 @@ def render_business_inventory(user_id):
             # already treats this as acceptable).
             if not name or not name.strip():
                 st.error("Product name is required.")
-            elif purchase_price is None or selling_price is None:
-                st.error("Please enter both Purchase Price and Selling Price.")
+            elif selling_price is None:
+                st.error("Please enter the Selling Price.")
             else:
                 product_id, msg = create_product(
                     business_id, user_id, user_id, name, category, sku, unit,
@@ -222,7 +232,10 @@ def render_business_inventory(user_id):
             m1, m2 = st.columns(2)
             with m1:
                 st.markdown(f"Stock: **{p['current_stock']:g} {p['unit']}**")
-                st.markdown(f"Purchase: **\u20A6{p['purchase_price']:,.2f}**")
+                if snapshot_cost(p) is not None:
+                    st.markdown(f"Cost: **\u20A6{p['purchase_price']:,.2f}**")
+                else:
+                    st.markdown(":orange[Cost: **not set** \u26A0\uFE0F]")
                 st.markdown(f"Selling: **\u20A6{p['selling_price']:,.2f}**")
             with m2:
                 if status == "IN_STOCK":
@@ -269,7 +282,12 @@ def _render_product_detail(product_id, business_id, user_id):
     st.caption(product["category"] or "No category")
     st.markdown(f"Current stock: **{product['current_stock']:g} {product['unit']}**")
 
-    t1, t2, t3 = st.tabs(["Adjust Stock", "History", "Delete Product"])
+    if snapshot_cost(product) is not None:
+        st.markdown(f"Cost per unit (average): **\u20A6{product['purchase_price']:,.2f}**")
+    else:
+        st.markdown(":orange[Cost per unit: **not set** \u2014 profit on this product's sales will show as incomplete.]")
+
+    t1, t2, t3, t4 = st.tabs(["Adjust Stock", "History", "Delete Product", "Set Cost"])
 
     with t1:
         direction = st.radio("Action", ["Add stock", "Remove stock"], key="adj_direction", horizontal=True)
@@ -291,8 +309,8 @@ def _render_product_detail(product_id, business_id, user_id):
             )
 
         if st.button("Confirm Adjustment", key="adj_confirm_btn", type="primary"):
-            if is_purchase and not unit_cost:
-                st.error("Enter the unit cost for this delivery.")
+            if is_purchase and unit_cost is None:
+                st.error("Enter the unit cost for this delivery (enter 0 if it was free).")
             else:
                 ok, msg = adjust_stock(
                     product_id, business_id, user_id, user_id,
@@ -350,3 +368,25 @@ def _render_product_detail(product_id, business_id, user_id):
                 st.rerun()
             else:
                 st.error(msg)
+
+    with t4:
+        st.caption(
+            "Tell Budget Right what one unit of this product costs you now. This is used for FUTURE sales "
+            "only \u2014 sales already recorded keep the cost they were made with. Enter 0 only if it "
+            "genuinely costs you nothing."
+        )
+        new_cost = st.number_input(
+            "Cost per unit (\u20A6)", min_value=0.0, value=None, step=0.01, format="%.2f",
+            placeholder="e.g. 500", key="set_cost_value",
+        )
+        if st.button("Save cost", key="set_cost_btn", type="primary"):
+            if new_cost is None:
+                st.error("Enter the cost per unit.")
+            else:
+                ok, msg = set_product_cost(product_id, business_id, user_id, user_id, new_cost)
+                if ok:
+                    st.session_state.pop("set_cost_value", None)
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
