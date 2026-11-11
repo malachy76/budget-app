@@ -103,7 +103,11 @@ def render_business_home(user_id):
                     e1, e2 = st.columns(2)
                     e1.metric("Expiring Soon", summary["expiring_soon"])
                     e2.metric("Expired", summary["expired"])
-                st.caption(f"Estimated inventory value: \u20A6{summary['inventory_value']:,.2f}")
+                st.caption(
+                    f"Estimated inventory value: \u20A6{summary['inventory_value']:,.2f}"
+                    + (f" (excludes {summary['unknown_cost_products']} product(s) with no cost set)"
+                       if summary["unknown_cost_products"] else "")
+                )
             except Exception:
                 # Non-fatal here — if inventory tables aren't ready yet,
                 # the business profile itself still renders fine; the
