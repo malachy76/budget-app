@@ -23,6 +23,8 @@ from decimal import Decimal, InvalidOperation
 from db import get_db
 from business import get_business
 from contacts import normalize_phone, PHONE_REQUIRED_MSG
+import costing
+from costing import CostingError, snapshot_cost, known_cost_sql
 
 PAYMENT_METHODS = ["Cash", "Bank Transfer", "POS", "Other"]
 
@@ -156,7 +158,10 @@ def create_sale(business_id, owner_user_id, created_by_user_id, items,
 
     clean_items = []
     for it in items:
-        qty = _to_decimal(it["quantity"], "Quantity")
+        try:
+            qty = costing.quantity(it["quantity"], "Quantity")   # max 3 decimals, never silently rounded
+        except CostingError as e:
+            return None, str(e)
         if qty <= 0:
             return None, "Each item's quantity must be greater than zero."
         clean_items.append({"product_id": it["product_id"], "quantity": qty})
@@ -171,7 +176,7 @@ def create_sale(business_id, owner_user_id, created_by_user_id, items,
                 # as inventory.adjust_stock() — so two concurrent sales
                 # can't both read the same stale stock and oversell.
                 cursor.execute(
-                    "SELECT id, name, unit, selling_price, current_stock, purchase_price "
+                    "SELECT id, name, unit, selling_price, current_stock, purchase_price, cost_known "
                     "FROM products WHERE id=%s AND business_id=%s FOR UPDATE",
                     (it["product_id"], business_id),
                 )
@@ -190,7 +195,11 @@ def create_sale(business_id, owner_user_id, created_by_user_id, items,
                 # weighted-average cost — see inventory.adjust_stock())
                 # is locked onto this line permanently. A later price or
                 # cost change must never rewrite this sale's profit.
-                unit_cost = product["purchase_price"]
+                # Phase 5B-2: the cost is locked on ONLY if it is KNOWN. An
+                # unknown cost is stored as NULL (never as a silent 0) and
+                # reports exclude it from profit with a warning. A genuine
+                # zero-cost product has cost_known=TRUE and keeps its 0.
+                unit_cost = snapshot_cost(product)
                 line_total = (unit_price * it["quantity"]).quantize(Decimal("0.01"))
                 total_amount += line_total
                 line_rows.append((product, it["quantity"], unit_price, unit_cost, line_total))
@@ -245,10 +254,10 @@ def create_sale(business_id, owner_user_id, created_by_user_id, items,
             for product, qty, unit_price, unit_cost, line_total in line_rows:
                 cursor.execute(
                     "INSERT INTO sale_items (sale_id, business_id, product_id, "
-                    "product_name, quantity, unit_price, unit_cost, line_total) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    "product_name, quantity, unit_price, unit_cost, cost_known, line_total) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (sale_id, business_id, product["id"], product["name"],
-                     qty, unit_price, unit_cost, line_total),
+                     qty, unit_price, unit_cost, unit_cost is not None, line_total),
                 )
 
                 before = product["current_stock"]
@@ -303,11 +312,11 @@ def get_stock_sales_profit_summary(business_id, owner_user_id, start_date, end_d
             "SELECT "
             "  COUNT(DISTINCT s.id) AS sales_count, "
             "  COALESCE(SUM(si.line_total), 0) AS net_revenue, "
-            "  COALESCE(SUM(si.line_total) FILTER (WHERE si.unit_cost IS NOT NULL), 0) "
+            f"  COALESCE(SUM(si.line_total) FILTER (WHERE {known_cost_sql('si')}), 0) "
             "    AS revenue_with_known_cost, "
-            "  COALESCE(SUM(si.quantity * si.unit_cost) FILTER (WHERE si.unit_cost IS NOT NULL), 0) "
+            f"  COALESCE(SUM(si.quantity * si.unit_cost) FILTER (WHERE {known_cost_sql('si')}), 0) "
             "    AS cogs, "
-            "  COUNT(*) FILTER (WHERE si.unit_cost IS NULL) AS lines_missing_cost "
+            f"  COUNT(*) FILTER (WHERE NOT {known_cost_sql('si')}) AS lines_missing_cost "
             "FROM sales s "
             "JOIN sale_items si ON si.sale_id = s.id "
             "WHERE s.business_id=%s AND s.created_at::date BETWEEN %s AND %s",
