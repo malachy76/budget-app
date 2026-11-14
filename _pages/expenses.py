@@ -57,16 +57,7 @@ def render_expenses(user_id, pages):
 
     if not banks:
         # Empty state — no banks
-        st.markdown("""
-        <div style="background:#f4f7f6;border-radius:12px;padding:28px 24px;text-align:center;margin:16px 0;">
-          <div style="font-size:2.5rem;">&#x1F3E6;</div>
-          <div style="font-size:1.1rem;font-weight:700;color:#1a2e3b;margin:8px 0 4px;">No bank account yet</div>
-          <div style="color:#6b7f8e;font-size:0.93rem;">
-            You need to add a bank account before you can log expenses.<br>
-            Head over to the <strong>Banks</strong> page to get started.
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(""" <div style="background:#f4f7f6;border-radius:12px;padding:28px 24px;text-align:center;margin:16px 0;"> <div style="font-size:2.5rem;">&#x1F3E6;</div> <div style="font-size:1.1rem;font-weight:700;color:#1a2e3b;margin:8px 0 4px;">No bank account yet</div> <div style="color:#6b7f8e;font-size:0.93rem;"> You need to add a bank account before you can log expenses.<br> Head over to the <strong>Banks</strong> page to get started. </div> </div> """, unsafe_allow_html=True)
         if st.button("Go to Banks page", key="goto_banks_from_exp"):
             st.session_state.nav_radio = 3  # Banks index
             st.rerun()
@@ -75,15 +66,7 @@ def render_expenses(user_id, pages):
     bank_map = {f"{b['bank_name']} (****{b['account_number']}) - ₦{b['balance']:,}": b["id"] for b in banks}
 
     # ── QUICK ADD BUTTONS ──────────────────────────────────────────────────
-    st.markdown("""
-    <style>
-    .qa-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
-    .qa-label {
-        font-size: 0.82rem; font-weight: 700; color: #1a2e3b;
-        text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+    st.markdown(""" <style> .qa-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; } .qa-label { font-size: 0.82rem; font-weight: 700; color: #1a2e3b; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; } </style> """, unsafe_allow_html=True)
 
     st.subheader("Quick Add Expense")
     st.caption("Tap a category to pre-fill the form below — just enter the amount and submit.")
@@ -170,8 +153,11 @@ def render_expenses(user_id, pages):
         if expense_name and expense_amount > 1:
             bank_id  = bank_map[selected_bank]
             category = selected_category if selected_category != "-- Type custom name --" else expense_name
-            ok, result = save_expense(user_id, bank_id, expense_name, int(expense_amount), category=category)
+            from ui_idempotency import get_key, clear_key
+            ok, result = save_expense(user_id, bank_id, expense_name, int(expense_amount), category=category,
+                                      idempotency_key=get_key("personal_expense"))
             if ok:
+                clear_key("personal_expense")
                 st.success(f"'{expense_name}' ({category}) — ₦{int(expense_amount):,} added.")
                 st.cache_data.clear()
                 st.session_state.quick_add_name = ""
@@ -184,12 +170,7 @@ def render_expenses(user_id, pages):
     st.divider()
     st.subheader("Expense Summary")
     with get_db() as (conn, cursor):
-        cursor.execute("""
-            SELECT e.id, e.created_at, e.name, e.category, e.amount,
-                   e.bank_id, b.bank_name, b.account_number, e.tx_id
-            FROM expenses e JOIN banks b ON e.bank_id = b.id
-            WHERE e.user_id=%s ORDER BY e.created_at DESC
-        """, (user_id,))
+        cursor.execute(""" SELECT e.id, e.created_at, e.name, e.category, e.amount, e.bank_id, b.bank_name, b.account_number, e.tx_id FROM expenses e JOIN banks b ON e.bank_id = b.id WHERE e.user_id=%s ORDER BY e.created_at DESC """, (user_id,))
         expenses_data = cursor.fetchall()
 
     if expenses_data:
@@ -213,18 +194,7 @@ def render_expenses(user_id, pages):
                 card_col, edit_col, del_col = st.columns([5, 0.5, 0.5])
                 cat_display = exp['category'] if exp.get('category') and exp['category'] != exp['name'] else ""
                 with card_col:
-                    st.markdown(f"""
-                    <div class="exp-card">
-                      <div class="exp-card-left">
-                        <div class="exp-card-name">{exp['name']}{f' <span style="background:#e8f5f0;color:#0e7c5b;border-radius:10px;padding:1px 8px;font-size:0.75rem;font-weight:600;margin-left:6px;">{cat_display}</span>' if cat_display else ''}</div>
-                        <div class="exp-card-bank">Bank: {exp['bank_name']} (****{exp['account_number']})</div>
-                        <div class="exp-card-date">Date: {exp['created_at']}</div>
-                      </div>
-                      <div class="exp-card-right">
-                        <div class="exp-card-amount">-₦{exp['amount']:,}</div>
-                      </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    st.markdown(f""" <div class="exp-card"> <div class="exp-card-left"> <div class="exp-card-name">{exp['name']}{f' <span style="background:#e8f5f0;color:#0e7c5b;border-radius:10px;padding:1px 8px;font-size:0.75rem;font-weight:600;margin-left:6px;">{cat_display}</span>' if cat_display else ''}</div> <div class="exp-card-bank">Bank: {exp['bank_name']} (****{exp['account_number']})</div> <div class="exp-card-date">Date: {exp['created_at']}</div> </div> <div class="exp-card-right"> <div class="exp-card-amount">-₦{exp['amount']:,}</div> </div> </div> """, unsafe_allow_html=True)
                 with edit_col:
                     if st.button("✏️", key=f"edit_exp_{exp['id']}", help="Edit expense"):
                         st.session_state.edit_exp_id = exp["id"]
