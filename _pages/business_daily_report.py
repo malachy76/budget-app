@@ -5,6 +5,7 @@ import streamlit as st
 
 from styles import render_page_header
 from daily_report import get_cash_basis_report, business_today
+from reconcile import reconcile_business
 
 _PERIODS = ["Today", "Yesterday", "This week", "This month", "Custom range"]
 _COLLECTION_LABELS = [
@@ -89,6 +90,12 @@ def render_business_daily_report(user_id):
     c = r["collections"]
     for key, label in _COLLECTION_LABELS:
         st.markdown(f"{label}: **{_n(c[key]['amount'])}**" + (f" ({c[key]['count']})" if c[key]["count"] else ""))
+    # Phase 5B-3: mistaken payments that were reversed show as a negative line
+    # (only when there is one), so the lines still add up to the total above.
+    for key, label in (("stock_reversal", "Stock sales \u2014 payments reversed (corrections)"),
+                       ("treatment_reversal", "Treatments \u2014 payments reversed (corrections)")):
+        if c[key]["count"]:
+            st.markdown(f":red[{label}: **{_n(c[key]['amount'])}** ({c[key]['count']})]")
     st.markdown(
         f":orange[Recovery of previously written-off debt: **{_n(c['recovery']['amount'])}**] "
         + (f"({c['recovery']['count']})" if c["recovery"]["count"] else "")
@@ -160,11 +167,11 @@ def render_business_daily_report(user_id):
 
     st.markdown("##### How the debt figure adds up")
     st.markdown(
-        f"Debt at start: **{_n(r['opening_debt'])}**  \n"
-        f"+ New sales and treatment charges: **{_n(r['new_charges'])}**  \n"
-        f"\u2212 Payments received: **{_n(r['payments_received'])}**  \n"
-        f"\u2212 Written off: **{_n(r['written_off'])}**  \n"
-        f"+ Write-offs reversed: **{_n(r['write_offs_reversed'])}**  \n"
+        f"Debt at start: **{_n(r['opening_debt'])}** \n"
+        f"+ New sales and treatment charges: **{_n(r['new_charges'])}** \n"
+        f"\u2212 Payments received: **{_n(r['payments_received'])}** \n"
+        f"\u2212 Written off: **{_n(r['written_off'])}** \n"
+        f"+ Write-offs reversed: **{_n(r['write_offs_reversed'])}** \n"
         f"= **{_n(r['expected_closing_debt'])}** (debt at end: **{_n(r['closing_debt'])}**)"
     )
     if r["reconciles"]:
@@ -187,3 +194,26 @@ def render_business_daily_report(user_id):
         "A write-off is not money received and is not part of revenue or gross profit. Money "
         "recovered later is not new sales revenue."
     )
+
+    st.divider()
+
+    # ── 6. Data integrity check (Phase 5B-3) — read-only ──
+    with st.expander("\U0001F50E Check my records for problems"):
+        st.caption(
+            "Compares your sales, payments, stock, debts and treatments against each other. "
+            "It only reads \u2014 it never changes anything."
+        )
+        if st.button("Run check", key="integrity_check_btn", use_container_width=True):
+            st.session_state["_integrity_result"] = reconcile_business(
+                st.session_state.get("active_business_id"), user_id)
+        res = st.session_state.get("_integrity_result")
+        if res:
+            if res["all_ok"]:
+                st.success("Everything agrees. No problems found.")
+            else:
+                st.warning(f"{len(res['failed'])} check(s) found something to look at.")
+            for c in res["checks"]:
+                st.markdown(("\u2705 " if c["ok"] else "\u26A0\uFE0F ") + f"**{c['title']}** \u2014 {c['detail']}")
+            with st.container(border=True):
+                for lim in res["limitations"]:
+                    st.caption("\u2022 " + lim)
