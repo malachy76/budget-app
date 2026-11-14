@@ -3,6 +3,7 @@
 # label/description redesign + delete/archive + past-expiry-date support +
 # explicit required-field validation (see inline comments below).
 import streamlit as st
+from ui_idempotency import get_key, clear_key
 from datetime import date
 
 from styles import render_page_header
@@ -287,6 +288,10 @@ def _render_product_detail(product_id, business_id, user_id):
     else:
         st.markdown(":orange[Cost per unit: **not set** \u2014 profit on this product's sales will show as incomplete.]")
 
+    _flash = st.session_state.pop("_inv_flash", None)
+    if _flash:
+        st.success(_flash)
+
     t1, t2, t3, t4 = st.tabs(["Adjust Stock", "History", "Delete Product", "Set Cost"])
 
     with t1:
@@ -316,10 +321,15 @@ def _render_product_detail(product_id, business_id, user_id):
                     product_id, business_id, user_id, user_id,
                     "add" if direction == "Add stock" else "remove",
                     qty, reason, unit_cost,
+                    idempotency_key=get_key(f"adjust_{product_id}"),
                 )
                 if ok:
-                    st.success(msg)
+                    # Phase 5B-3: fresh reference AND cleared quantity, so a second
+                    # tap can't silently apply the same adjustment again.
+                    clear_key(f"adjust_{product_id}")
+                    st.session_state["_inv_flash"] = msg
                     st.session_state.pop("adj_unit_cost", None)
+                    st.session_state.pop("adj_qty", None)
                     st.rerun()
                 else:
                     st.error(msg)
@@ -338,10 +348,10 @@ def _render_product_detail(product_id, business_id, user_id):
             with st.container(border=True):
                 st.markdown(
                     f"**{m['movement_type'].replace('_', ' ').title()}**"
-                    f"  \u2014  {m['created_at'].strftime('%d %b %Y %H:%M')}"
+                    f" \u2014 {m['created_at'].strftime('%d %b %Y %H:%M')}"
                 )
                 sign = "+" if m["quantity"] >= 0 else ""
-                st.caption(f"{sign}{m['quantity']:g}  ({m['quantity_before']:g} \u2192 {m['quantity_after']:g})")
+                st.caption(f"{sign}{m['quantity']:g} ({m['quantity_before']:g} \u2192 {m['quantity_after']:g})")
                 if m["note"]:
                     st.caption(f"Note: {m['note']}")
                 if m["recorded_by_username"]:
@@ -383,10 +393,12 @@ def _render_product_detail(product_id, business_id, user_id):
             if new_cost is None:
                 st.error("Enter the cost per unit.")
             else:
-                ok, msg = set_product_cost(product_id, business_id, user_id, user_id, new_cost)
+                ok, msg = set_product_cost(product_id, business_id, user_id, user_id, new_cost,
+                                           idempotency_key=get_key(f"setcost_{product_id}"))
                 if ok:
+                    clear_key(f"setcost_{product_id}")
                     st.session_state.pop("set_cost_value", None)
-                    st.success(msg)
+                    st.session_state["_inv_flash"] = msg
                     st.rerun()
                 else:
                     st.error(msg)
