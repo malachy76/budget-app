@@ -24,14 +24,14 @@ from db import get_db
 from business import get_business
 from contacts import normalize_phone, PHONE_REQUIRED_MSG
 import costing
+import integrity
 from costing import CostingError, snapshot_cost, known_cost_sql
 
 PAYMENT_METHODS = ["Cash", "Bank Transfer", "POS", "Other"]
 
 
 class SaleError(Exception):
-    """Raised for any validation failure inside the sale transaction, so
-    get_db() rolls back instead of committing partial work."""
+    """Raised for any validation failure inside the sale transaction, so get_db() rolls back instead of committing partial work."""
     pass
 
 
@@ -53,19 +53,15 @@ def _require_business(business_id, owner_user_id):
 # ── Products available to sell ──────────────────────────────────────────────
 
 def get_today_sales_summary(business_id, owner_user_id):
-    """Sales made today vs. payments actually received today — kept as two
-    separate numbers on purpose. A payment received today might be
-    against a sale made last week; a sale made today might still be
-    sitting as outstanding credit. Conflating the two would misrepresent
-    cash flow, which the project's own spec is explicit about avoiding."""
+    """Sales made today vs. payments actually received today — kept as two separate numbers on purpose. A payment received today might be against a sale made last week; a sale made today might still be sitting as outstanding credit. Conflating the two would misrepresent cash flow, which the project's own spec is explicit about avoiding."""
     _require_business(business_id, owner_user_id)
     with get_db() as (conn, cursor):
         cursor.execute(
             "SELECT "
-            "  COALESCE((SELECT SUM(total_amount) FROM sales "
-            "    WHERE business_id=%s AND created_at::date = CURRENT_DATE), 0) AS sales_today, "
-            "  COALESCE((SELECT SUM(amount) FROM payments "
-            "    WHERE business_id=%s AND created_at::date = CURRENT_DATE), 0) AS payments_today",
+            " COALESCE((SELECT SUM(total_amount) FROM sales "
+            " WHERE business_id=%s AND created_at::date = CURRENT_DATE), 0) AS sales_today, "
+            " COALESCE((SELECT SUM(amount) FROM payments "
+            " WHERE business_id=%s AND created_at::date = CURRENT_DATE), 0) AS payments_today",
             (business_id, business_id),
         )
         return cursor.fetchone()
@@ -84,22 +80,8 @@ def get_sale_products(business_id, owner_user_id):
 
 # ── Customers (minimal, for Phase 4B — full customer management is 4C) ──────
 
-def get_or_create_customer(business_id, owner_user_id, name, phone, require_phone=False):
-    """Exact-name match against existing customers for this business, to
-    avoid duplicate rows for a repeat customer typed the same way. Not
-    fuzzy matching — a proper customer picker is Phase 4C. Returns None
-    for a blank name (walk-in customer, not tracked).
-
-    Phase 5B-1 phone rules:
-      * require_phone=True (used whenever money will be owed): the customer
-        MUST end up with a valid phone number — either the one typed now, or
-        one already on file. Blank/whitespace/invalid -> SaleError, and no
-        customer row is created or changed.
-      * require_phone=False (ordinary cash sale): a phone is optional, but
-        if one is typed it must still be valid.
-      * A phone typed for an existing customer who has none on file is saved
-        onto that customer (previously it was silently dropped)."""
-    _require_business(business_id, owner_user_id)
+def _get_or_create_customer_tx(cursor, business_id, name, phone, require_phone=False):
+    """The get-or-create logic, on the CALLER's cursor so it can run inside another transaction (create_sale) and roll back with it. Phase 5B-3: a transaction-scoped advisory lock on (business, name) makes two simultaneous submissions for the same new customer queue up instead of both inserting — there is no UNIQUE(business_id, name) index (existing data may already hold same-name rows), so the lock is what keeps the 'one customer, one row' promise under concurrency."""
     name = (name or "").strip()
     if not name:
         return None
@@ -111,50 +93,62 @@ def get_or_create_customer(business_id, owner_user_id, name, phone, require_phon
         if err:
             raise SaleError(err)          # a typed number must always be sane
 
-    with get_db() as (conn, cursor):
-        cursor.execute(
-            "SELECT id, phone FROM customers WHERE business_id=%s AND name=%s",
-            (business_id, name),
-        )
-        existing = cursor.fetchone()
-        if existing:
-            on_file_ok = normalize_phone(existing["phone"])[0] is not None
-            if clean and not on_file_ok:
-                # Customer had no (valid) number: save the one just typed.
-                cursor.execute(
-                    "UPDATE customers SET phone=%s WHERE id=%s AND business_id=%s",
-                    (clean, existing["id"], business_id),
-                )
-            elif require_phone and not on_file_ok:
-                raise SaleError(PHONE_REQUIRED_MSG)
-            return existing["id"]
-        if require_phone and not clean:
+    integrity.lock_name(cursor, business_id, "customer", name)
+    cursor.execute(
+        "SELECT id, phone FROM customers WHERE business_id=%s AND name=%s ORDER BY id LIMIT 1",
+        (business_id, name),
+    )
+    existing = cursor.fetchone()
+    if existing:
+        on_file_ok = normalize_phone(existing["phone"])[0] is not None
+        if clean and not on_file_ok:
+            # Customer had no (valid) number: save the one just typed.
+            cursor.execute(
+                "UPDATE customers SET phone=%s WHERE id=%s AND business_id=%s",
+                (clean, existing["id"], business_id),
+            )
+        elif require_phone and not on_file_ok:
             raise SaleError(PHONE_REQUIRED_MSG)
-        cursor.execute(
-            "INSERT INTO customers (business_id, name, phone) "
-            "VALUES (%s, %s, %s) RETURNING id",
-            (business_id, name, clean),
-        )
-        return cursor.fetchone()["id"]
+        return existing["id"]
+    if require_phone and not clean:
+        raise SaleError(PHONE_REQUIRED_MSG)
+    cursor.execute(
+        "INSERT INTO customers (business_id, name, phone) "
+        "VALUES (%s, %s, %s) RETURNING id",
+        (business_id, name, clean),
+    )
+    return cursor.fetchone()["id"]
+
+
+def get_or_create_customer(business_id, owner_user_id, name, phone, require_phone=False):
+    """Exact-name match against existing customers for this business, to avoid duplicate rows for a repeat customer typed the same way. Not fuzzy matching — a proper customer picker is Phase 4C. Returns None for a blank name (walk-in customer, not tracked). Phase 5B-1 phone rules: * require_phone=True (used whenever money will be owed): the customer MUST end up with a valid phone number — either the one typed now, or one already on file. Blank/whitespace/invalid -> SaleError, and no customer row is created or changed. * require_phone=False (ordinary cash sale): a phone is optional, but if one is typed it must still be valid. * A phone typed for an existing customer who has none on file is saved onto that customer (previously it was silently dropped). Phase 5B-3: create_sale() can now do this inside the sale's own transaction (pass customer_name / customer_phone to it), so a sale that fails leaves no stray customer behind. This stand-alone form remains for treatments and older callers."""
+    _require_business(business_id, owner_user_id)
+    with get_db() as (conn, cursor):
+        return _get_or_create_customer_tx(cursor, business_id, name, phone, require_phone)
 
 
 # ── Sale creation ────────────────────────────────────────────────────────────
 
-def create_sale(business_id, owner_user_id, created_by_user_id, items,
-                 customer_id, amount_paid, payment_method):
-    """
-    items: list of {"product_id": int, "quantity": <number-like>}
-    Returns (sale_id, message). On failure, sale_id is None and message
-    explains why — nothing is written to the database in that case.
-    """
+def create_sale(business_id, owner_user_id, created_by_user_id, items, customer_id, amount_paid, payment_method, idempotency_key=None, customer_name=None, customer_phone=None):
+    """ items: list of {"product_id": int, "quantity": <number-like>} Returns (sale_id, message). On failure, sale_id is None and message explains why — nothing is written to the database in that case. Phase 5B-3 * idempotency_key: a per-form submission reference. The same key sent again (double-click, rerun, retry after a timeout) returns the ORIGINAL sale (sale_id of the first attempt, message saying it was already recorded) and writes nothing. Checked first, inside the transaction and under an advisory lock, so even two simultaneous submissions can't both succeed. * Same product on several cart lines is handled correctly: quantities are totalled per product BEFORE the stock check (previously each line was checked against the full stock on its own, so two lines could together oversell and leave a wrong stock figure), and the stock movement chain is computed line by line. * Product rows are locked in product-id order, so two carts that contain the same products in different orders can't deadlock. * customer_name / customer_phone (optional, used when customer_id is None): the customer is found or created INSIDE this transaction. * Money typed by a person must have at most 2 decimals (never rounded). """
     _require_business(business_id, owner_user_id)
+
+    try:
+        key = integrity.clean_key(idempotency_key)
+    except ValueError as e:
+        return None, str(e)
 
     if not items:
         return None, "Add at least one product to the sale."
 
-    amount_paid = _to_decimal(amount_paid, "Amount paid")
+    try:
+        amount_paid = costing.money_amount(amount_paid, "Amount paid")
+    except CostingError as e:
+        return None, str(e)
     if amount_paid < 0:
         return None, "Amount paid cannot be negative."
+    if amount_paid > 0 and payment_method not in PAYMENT_METHODS:
+        return None, "Please choose a valid payment method."
 
     clean_items = []
     for it in items:
@@ -168,27 +162,64 @@ def create_sale(business_id, owner_user_id, created_by_user_id, items,
 
     try:
         with get_db() as (conn, cursor):
-            total_amount = Decimal("0")
-            line_rows = []  # (product_row, qty, unit_price, line_total)
-
-            for it in clean_items:
-                # Lock the row for this whole transaction — same technique
-                # as inventory.adjust_stock() — so two concurrent sales
-                # can't both read the same stale stock and oversell.
+            # 0. Replay check FIRST — before any validation that depends on
+            # current stock/balances, which a successful first attempt has
+            # already changed.
+            if key is not None:
+                integrity.lock_key(cursor, business_id, "sale", key)
                 cursor.execute(
-                    "SELECT id, name, unit, selling_price, current_stock, purchase_price, cost_known "
+                    "SELECT id FROM sales WHERE business_id=%s AND idempotency_key=%s",
+                    (business_id, key),
+                )
+                prior = cursor.fetchone()
+                if prior:
+                    # A reference may only replay the SAME sale. If it is being
+                    # reused for different goods, refuse loudly rather than
+                    # silently dropping the new sale.
+                    cursor.execute(
+                        "SELECT product_id, SUM(quantity) AS qty FROM sale_items "
+                        "WHERE sale_id=%s AND business_id=%s GROUP BY product_id",
+                        (prior["id"], business_id),
+                    )
+                    prior_items = {r["product_id"]: r["qty"] for r in cursor.fetchall()}
+                    req_items = {}
+                    for it in clean_items:
+                        req_items[it["product_id"]] = req_items.get(it["product_id"], Decimal("0")) + it["quantity"]
+                    if prior_items != req_items:
+                        raise SaleError(
+                            "This submission reference was already used for a different sale. "
+                            "Please start the sale again.")
+                    return prior["id"], f"Sale #{prior['id']} was {integrity.REPLAY_NOTE}."
+
+            # 1. Total the quantity per product, then lock every product row
+            # in a fixed (id) order for this whole transaction.
+            needed = {}
+            for it in clean_items:
+                needed[it["product_id"]] = needed.get(it["product_id"], Decimal("0")) + it["quantity"]
+
+            products = {}
+            for pid in sorted(needed):
+                cursor.execute(
+                    "SELECT id, name, unit, selling_price, current_stock, purchase_price, cost_known, is_active "
                     "FROM products WHERE id=%s AND business_id=%s FOR UPDATE",
-                    (it["product_id"], business_id),
+                    (pid, business_id),
                 )
                 product = cursor.fetchone()
                 if product is None:
                     raise SaleError("One of the selected products was not found.")
-                if it["quantity"] > product["current_stock"]:
+                if product["is_active"] == 0:
+                    raise SaleError(f"'{product['name']}' is no longer available for sale.")
+                if needed[pid] > product["current_stock"]:
                     raise SaleError(
                         f"Not enough stock for '{product['name']}' — "
                         f"only {product['current_stock']:g} {product['unit']} available."
                     )
+                products[pid] = product
 
+            total_amount = Decimal("0")
+            line_rows = []  # (product_row, qty, unit_price, unit_cost, line_total)
+            for it in clean_items:
+                product = products[it["product_id"]]
                 unit_price = product["selling_price"]
                 # Historical cost snapshot — Phase 5A-1. Whatever
                 # products.purchase_price is RIGHT NOW (the running
@@ -209,10 +240,14 @@ def create_sale(business_id, owner_user_id, created_by_user_id, items,
 
             # Phase 5B-1: customer checks, enforced here in the backend (not
             # just in the form) inside the same transaction as the sale.
-            #  * Any customer_id must belong to THIS business.
-            #  * Anything that leaves money owing (credit or part-payment)
-            #    needs a named customer WITH a valid phone number. A fully
-            #    paid walk-in cash sale needs neither.
+            # * Any customer_id must belong to THIS business.
+            # * Anything that leaves money owing (credit or part-payment)
+            # needs a named customer WITH a valid phone number. A fully
+            # paid walk-in cash sale needs neither.
+            will_owe = amount_paid < total_amount
+            if customer_id is None and (customer_name or "").strip():
+                customer_id = _get_or_create_customer_tx(
+                    cursor, business_id, customer_name, customer_phone, require_phone=will_owe)
             customer_row = None
             if customer_id is not None:
                 cursor.execute(
@@ -222,7 +257,7 @@ def create_sale(business_id, owner_user_id, created_by_user_id, items,
                 customer_row = cursor.fetchone()
                 if customer_row is None:
                     raise SaleError("The selected customer was not found in this business.")
-            if amount_paid < total_amount:
+            if will_owe:
                 if customer_row is None:
                     raise SaleError(
                         "A credit sale needs a customer. Enter the customer's name and phone number."
@@ -244,13 +279,14 @@ def create_sale(business_id, owner_user_id, created_by_user_id, items,
             # already passed validation above — no early exits past here.
             cursor.execute(
                 "INSERT INTO sales (business_id, customer_id, total_amount, "
-                "amount_paid, payment_status, payment_method, created_by) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                "amount_paid, payment_status, payment_method, created_by, idempotency_key) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                 (business_id, customer_id, total_amount, amount_paid,
-                 payment_status, payment_method, created_by_user_id),
+                 payment_status, payment_method, created_by_user_id, key),
             )
             sale_id = cursor.fetchone()["id"]
 
+            running = {pid: p["current_stock"] for pid, p in products.items()}
             for product, qty, unit_price, unit_cost, line_total in line_rows:
                 cursor.execute(
                     "INSERT INTO sale_items (sale_id, business_id, product_id, "
@@ -260,8 +296,9 @@ def create_sale(business_id, owner_user_id, created_by_user_id, items,
                      qty, unit_price, unit_cost, unit_cost is not None, line_total),
                 )
 
-                before = product["current_stock"]
+                before = running[product["id"]]
                 after = before - qty
+                running[product["id"]] = after
                 cursor.execute(
                     "UPDATE products SET current_stock=%s, updated_at=NOW() "
                     "WHERE id=%s AND business_id=%s",
@@ -284,39 +321,28 @@ def create_sale(business_id, owner_user_id, created_by_user_id, items,
                      payment_method, "Initial payment at sale", created_by_user_id),
                 )
 
-        return sale_id, "Sale recorded"
+        return sale_id, f"Sale recorded (Sale #{sale_id})"
     except SaleError as e:
         return None, str(e)
     except Exception as e:
-        return None, str(e)
+        return None, integrity.friendly_db_error(e)
 
 
 # ── Stock-sale profit reporting (Phase 5A-1) ────────────────────────────────
 
 def get_stock_sales_profit_summary(business_id, owner_user_id, start_date, end_date):
-    """
-    Net revenue, COGS, and gross profit for completed stock sales whose
-    sale.created_at falls within [start_date, end_date] (inclusive,
-    business-local dates). Scoped at the sale_items line level, not the
-    sales-row level, since COGS is a per-line figure (unit_cost × qty).
-
-    Lines with unit_cost IS NULL are sale_items written before the
-    Phase 5A-1 migration — they're excluded from the COGS sum (never
-    treated as zero cost, which would overstate profit) and counted
-    separately so the caller can show an honest "incomplete" caveat
-    instead of a falsely precise number.
-    """
+    """ Net revenue, COGS, and gross profit for completed stock sales whose sale.created_at falls within [start_date, end_date] (inclusive, business-local dates). Scoped at the sale_items line level, not the sales-row level, since COGS is a per-line figure (unit_cost × qty). Lines with unit_cost IS NULL are sale_items written before the Phase 5A-1 migration — they're excluded from the COGS sum (never treated as zero cost, which would overstate profit) and counted separately so the caller can show an honest "incomplete" caveat instead of a falsely precise number. """
     _require_business(business_id, owner_user_id)
     with get_db() as (conn, cursor):
         cursor.execute(
             "SELECT "
-            "  COUNT(DISTINCT s.id) AS sales_count, "
-            "  COALESCE(SUM(si.line_total), 0) AS net_revenue, "
-            f"  COALESCE(SUM(si.line_total) FILTER (WHERE {known_cost_sql('si')}), 0) "
-            "    AS revenue_with_known_cost, "
-            f"  COALESCE(SUM(si.quantity * si.unit_cost) FILTER (WHERE {known_cost_sql('si')}), 0) "
-            "    AS cogs, "
-            f"  COUNT(*) FILTER (WHERE NOT {known_cost_sql('si')}) AS lines_missing_cost "
+            " COUNT(DISTINCT s.id) AS sales_count, "
+            " COALESCE(SUM(si.line_total), 0) AS net_revenue, "
+            f" COALESCE(SUM(si.line_total) FILTER (WHERE {known_cost_sql('si')}), 0) "
+            " AS revenue_with_known_cost, "
+            f" COALESCE(SUM(si.quantity * si.unit_cost) FILTER (WHERE {known_cost_sql('si')}), 0) "
+            " AS cogs, "
+            f" COUNT(*) FILTER (WHERE NOT {known_cost_sql('si')}) AS lines_missing_cost "
             "FROM sales s "
             "JOIN sale_items si ON si.sale_id = s.id "
             "WHERE s.business_id=%s AND s.created_at::date BETWEEN %s AND %s",
