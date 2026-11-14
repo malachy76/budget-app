@@ -9,23 +9,30 @@ from db import get_db
 
 # ── Expense saving ───────────────────────────────────────────────────────────
 
-def save_expense(user_id, bank_id, name, amount, category=None):
-    """
-    Inserts an expense + debit transaction, debits bank balance.
-    Checks overdraft: if the bank would go negative and user has not enabled
-    overdraft, raises ValueError so callers can show a clear error.
-    Returns (True, tx_id) on success, (False, reason_str) on failure.
-    """
+def save_expense(user_id, bank_id, name, amount, category=None, idempotency_key=None):
+    """ Inserts an expense + debit transaction, debits bank balance. Checks overdraft: if the bank would go negative and user has not enabled overdraft, raises ValueError so callers can show a clear error. Returns (True, tx_id) on success, (False, reason_str) on failure. Phase 5B-3 (Personal Mode, backwards compatible): * The bank row is locked (FOR UPDATE) while the overdraft check and the balance update happen, so two simultaneous expenses can't both pass the check against the same stale balance. * idempotency_key (optional): the same reference sent again returns (True, <original tx_id>) and records nothing more. """
     today = datetime.now().date()
     amt   = int(amount)
     cat   = category or name
     try:
         with get_db() as (conn, cursor):
             # Check overdraft permission
-            cursor.execute("SELECT balance FROM banks WHERE id=%s AND user_id=%s", (bank_id, user_id))
+            cursor.execute("SELECT balance FROM banks WHERE id=%s AND user_id=%s FOR UPDATE", (bank_id, user_id))
             bank_row = cursor.fetchone()
             if not bank_row:
                 return False, "Bank account not found."
+            key = (idempotency_key or "").strip() or None
+            if key is not None:
+                cursor.execute(
+                    "SELECT id, amount FROM transactions WHERE bank_id=%s AND idempotency_key=%s",
+                    (bank_id, key),
+                )
+                prior = cursor.fetchone()
+                if prior:
+                    if prior["amount"] != amt:
+                        return False, ("This submission reference was already used for a different "
+                                       "expense. Please try again.")
+                    return True, prior["id"]
             if bank_row["balance"] - amt < 0:
                 # Check if user has overdraft enabled
                 cursor.execute("SELECT allow_overdraft FROM users WHERE id=%s", (user_id,))
@@ -38,9 +45,9 @@ def save_expense(user_id, bank_id, name, amount, category=None):
                         f"Enable overdraft in Settings if you want to allow this."
                     )
             cursor.execute(
-                "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
-                "VALUES (%s, 'debit', %s, %s, %s) RETURNING id",
-                (bank_id, amt, f"Expense: {name}", today)
+                "INSERT INTO transactions (bank_id, type, amount, description, created_at, idempotency_key) "
+                "VALUES (%s, 'debit', %s, %s, %s, %s) RETURNING id",
+                (bank_id, amt, f"Expense: {name}", today, key)
             )
             tx_id = cursor.fetchone()["id"]
             cursor.execute(
@@ -52,6 +59,41 @@ def save_expense(user_id, bank_id, name, amount, category=None):
                 "UPDATE banks SET balance = balance - %s WHERE id=%s",
                 (amt, bank_id)
             )
+        return True, tx_id
+    except Exception as e:
+        return False, str(e)
+
+
+def save_income(user_id, bank_id, source, amount, when=None, idempotency_key=None):
+    """Personal Mode income: credit transaction + bank balance in ONE locked transaction (Phase 5B-3 — previously done inline on the Income page). The bank must belong to user_id. idempotency_key (optional) makes a repeated submission return the original transaction instead of crediting the bank twice. Returns (True, tx_id) or (False, reason)."""
+    amt = int(amount)
+    if amt <= 0:
+        return False, "Amount must be greater than zero."
+    when = when or datetime.now().date()
+    key = (idempotency_key or "").strip() or None
+    try:
+        with get_db() as (conn, cursor):
+            cursor.execute("SELECT id FROM banks WHERE id=%s AND user_id=%s FOR UPDATE", (bank_id, user_id))
+            if not cursor.fetchone():
+                return False, "Bank account not found."
+            if key is not None:
+                cursor.execute(
+                    "SELECT id, amount FROM transactions WHERE bank_id=%s AND idempotency_key=%s",
+                    (bank_id, key),
+                )
+                prior = cursor.fetchone()
+                if prior:
+                    if prior["amount"] != amt:
+                        return False, ("This submission reference was already used for a different "
+                                       "income entry. Please try again.")
+                    return True, prior["id"]
+            cursor.execute(
+                "INSERT INTO transactions (bank_id, type, amount, description, created_at, idempotency_key) "
+                "VALUES (%s, 'credit', %s, %s, %s, %s) RETURNING id",
+                (bank_id, amt, f"Income: {source}", when, key),
+            )
+            tx_id = cursor.fetchone()["id"]
+            cursor.execute("UPDATE banks SET balance = balance + %s WHERE id=%s", (amt, bank_id))
         return True, tx_id
     except Exception as e:
         return False, str(e)
@@ -128,14 +170,7 @@ def apply_expense_filters(expenses_data):
 
 def render_filter_bar_income(banks):
     """Render the search + filter + sort controls for Income History."""
-    st.markdown("""
-    <style>
-    .filter-bar-title {
-        font-size: 0.8rem; font-weight: 700; color: #1a3c5e;
-        text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+    st.markdown(""" <style> .filter-bar-title { font-size: 0.8rem; font-weight: 700; color: #1a3c5e; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; } </style> """, unsafe_allow_html=True)
     st.markdown('<div class="filter-bar-title">&#x1F50D; Search &amp; Filter</div>', unsafe_allow_html=True)
     s_col, sort_col = st.columns([3, 1])
     with s_col:
@@ -284,11 +319,7 @@ BUDGET_CATEGORIES = [
 
 
 def get_category_budgets(user_id):
-    """
-    Load all category budgets for user and compute how much has been
-    spent in each category this month.
-    Cached for 60 seconds — re-fetches after any expense is added.
-    """
+    """ Load all category budgets for user and compute how much has been spent in each category this month. Cached for 60 seconds — re-fetches after any expense is added. """
     return _get_category_budgets_cached(user_id, datetime.now().date().isoformat())
 
 
@@ -309,13 +340,7 @@ def _get_category_budgets_cached(user_id, _date_key):
         if not budgets:
             return []
 
-        cursor.execute("""
-            SELECT COALESCE(e.category, e.name) AS cat, SUM(e.amount) AS total
-            FROM expenses e
-            JOIN banks b ON e.bank_id = b.id
-            WHERE b.user_id = %s AND e.created_at >= %s
-            GROUP BY cat
-        """, (user_id, month_start))
+        cursor.execute(""" SELECT COALESCE(e.category, e.name) AS cat, SUM(e.amount) AS total FROM expenses e JOIN banks b ON e.bank_id = b.id WHERE b.user_id = %s AND e.created_at >= %s GROUP BY cat """, (user_id, month_start))
         spent_map = {r["cat"]: int(r["total"]) for r in cursor.fetchall()}
 
     result = []
@@ -335,10 +360,7 @@ def _get_category_budgets_cached(user_id, _date_key):
 
 
 def compute_daily_safe_to_spend(user_id, spending_limit):
-    """
-    Daily safe-to-spend = (monthly_limit - spent_so_far) / days_remaining_in_month.
-    Returns None if no monthly limit is set.
-    """
+    """ Daily safe-to-spend = (monthly_limit - spent_so_far) / days_remaining_in_month. Returns None if no monthly limit is set. """
     if not spending_limit:
         return None
     return _compute_daily_cached(user_id, spending_limit, datetime.now().date().isoformat())
@@ -353,11 +375,7 @@ def _compute_daily_cached(user_id, spending_limit, _date_key):
     days_remaining = days_in_month - today.day + 1
 
     with get_db() as (conn, cursor):
-        cursor.execute("""
-            SELECT COALESCE(SUM(t.amount), 0) AS n FROM transactions t
-            JOIN banks b ON t.bank_id = b.id
-            WHERE b.user_id = %s AND t.type = 'debit' AND t.created_at >= %s
-        """, (user_id, month_start))
+        cursor.execute(""" SELECT COALESCE(SUM(t.amount), 0) AS n FROM transactions t JOIN banks b ON t.bank_id = b.id WHERE b.user_id = %s AND t.type = 'debit' AND t.created_at >= %s """, (user_id, month_start))
         spent = int(cursor.fetchone()["n"] or 0)
 
     budget_remaining = spending_limit - spent
@@ -380,10 +398,4 @@ def upsert_category_budget(user_id, category, monthly_limit):
                 (user_id, category)
             )
         else:
-            cursor.execute("""
-                INSERT INTO category_budgets (user_id, category, monthly_limit)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (user_id, category)
-                DO UPDATE SET monthly_limit = EXCLUDED.monthly_limit
-            """, (user_id, category, monthly_limit))
-
+            cursor.execute(""" INSERT INTO category_budgets (user_id, category, monthly_limit) VALUES (%s, %s, %s) ON CONFLICT (user_id, category) DO UPDATE SET monthly_limit = EXCLUDED.monthly_limit """, (user_id, category, monthly_limit))
