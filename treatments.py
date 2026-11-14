@@ -33,8 +33,9 @@ from db import get_db
 from business import get_business
 from contacts import normalize_phone
 import costing
+import integrity
 from costing import CostingError, snapshot_cost, known_cost_sql
-from sales import get_or_create_customer
+from sales import get_or_create_customer, _get_or_create_customer_tx, PAYMENT_METHODS
 
 ROUTES = ["Oral", "Injection", "Topical", "Other / Not specified"]
 STATUSES = ["planned", "in_progress", "completed", "cancelled"]
@@ -80,23 +81,15 @@ def _require_business(business_id, owner_user_id):
 
 # ── Create ───────────────────────────────────────────────────────────────────
 
-def create_treatment(business_id, owner_user_id, created_by_user_id,
-                      patient_identifier, patient_phone, diagnosis,
-                      start_date, duration_days, notes, items, service_charge=0):
-    """
-    patient_phone and diagnosis are both optional — this records what a
-    qualified person already determined (a condition name, a phone
-    number for contact), never something the app infers or suggests.
-    service_charge is a flat fee (e.g. a consultation charge), separate
-    from whatever medicines end up dispensed — see get_treatment_billing().
-    items: list of dicts with keys product_id, quantity_per_administration,
-    administrations_per_day (optional), duration_days (optional),
-    route (optional), notes (optional).
-    Writes treatments + treatment_items only — no inventory effect.
-    """
+def create_treatment(business_id, owner_user_id, created_by_user_id, patient_identifier, patient_phone, diagnosis, start_date, duration_days, notes, items, service_charge=0, idempotency_key=None):
+    """ patient_phone and diagnosis are both optional — this records what a qualified person already determined (a condition name, a phone number for contact), never something the app infers or suggests. service_charge is a flat fee (e.g. a consultation charge), separate from whatever medicines end up dispensed — see get_treatment_billing(). items: list of dicts with keys product_id, quantity_per_administration, administrations_per_day (optional), duration_days (optional), route (optional), notes (optional). Writes treatments + treatment_items only — no inventory effect. Phase 5B-3: idempotency_key makes a double-submit return the ORIGINAL treatment instead of creating a second one (which would bill the service charge twice), and the patient's customer record is found/created INSIDE the same transaction so a failed creation leaves nothing behind. """
     biz = _require_business(business_id, owner_user_id)
     if not biz["treatment_management_enabled"]:
         return None, TREATMENT_OFF_MSG
+    try:
+        key = integrity.clean_key(idempotency_key)
+    except ValueError as e:
+        return None, str(e)
 
     patient_identifier = (patient_identifier or "").strip()
     if not patient_identifier:
@@ -113,7 +106,8 @@ def create_treatment(business_id, owner_user_id, created_by_user_id,
         return None, "Add at least one product to the treatment."
 
     try:
-        service_charge_dec = _to_decimal(service_charge, "Service charge") if service_charge else Decimal("0")
+        service_charge_dec = (costing.money_amount(service_charge, "Service charge")
+                              if service_charge else Decimal("0"))
         if service_charge_dec < 0:
             return None, "Service charge cannot be negative."
 
@@ -140,21 +134,36 @@ def create_treatment(business_id, owner_user_id, created_by_user_id,
             })
 
         # Link to the SAME customers table stock sales use, via the
-        # existing name-based dedup in get_or_create_customer() — so a
+        # existing name-based dedup (sales._get_or_create_customer_tx) — so a
         # patient who also has a stock-sale debt is the one customer
-        # record, not two. Called BEFORE opening the treatment's own
-        # transaction below: calling it from inside would open a second
-        # database connection mid-transaction, the same nested-connection
-        # bug already fixed once in record_treatment_payment().
+        # record, not two. Phase 5B-3: this now runs INSIDE the treatment's
+        # own transaction (same cursor), so if the treatment fails nothing —
+        # not even the customer row — is left behind.
         # Limitation: matching is exact-name, scoped to this business —
         # if two different anonymous patients are both given the same
         # generic identifier (e.g. both called "Patient 001"), they will
         # be merged into one customer record. Distinct identifiers avoid
         # this; there's no other way to tell two "Patient 001"s apart.
-        customer_id = get_or_create_customer(business_id, owner_user_id, patient_identifier,
-                                             patient_phone, require_phone=True)
-
         with get_db() as (conn, cursor):
+            if key is not None:
+                integrity.lock_key(cursor, business_id, "treatment", key)
+                cursor.execute(
+                    "SELECT id, patient_identifier, service_charge FROM treatments "
+                    "WHERE business_id=%s AND idempotency_key=%s",
+                    (business_id, key),
+                )
+                prior = cursor.fetchone()
+                if prior:
+                    if (prior["patient_identifier"] != patient_identifier
+                            or prior["service_charge"] != service_charge_dec):
+                        raise TreatmentError(
+                            "This submission reference was already used for a different treatment. "
+                            "Please start again.")
+                    return prior["id"], f"Treatment #{prior['id']} was {integrity.REPLAY_NOTE}."
+
+            customer_id = _get_or_create_customer_tx(
+                cursor, business_id, patient_identifier, patient_phone, require_phone=True)
+
             # Confirm every referenced product genuinely belongs to this
             # business before writing anything — a product_id from the
             # dropdown should always be real, but this is the hard
@@ -170,11 +179,11 @@ def create_treatment(business_id, owner_user_id, created_by_user_id,
             cursor.execute(
                 "INSERT INTO treatments (business_id, patient_identifier, patient_phone, "
                 "diagnosis, start_date, duration_days, status, notes, service_charge, "
-                "customer_id, created_by) "
-                "VALUES (%s, %s, %s, %s, %s, %s, 'planned', %s, %s, %s, %s) RETURNING id",
+                "customer_id, created_by, idempotency_key) "
+                "VALUES (%s, %s, %s, %s, %s, %s, 'planned', %s, %s, %s, %s, %s) RETURNING id",
                 (business_id, patient_identifier, (patient_phone or "").strip() or None,
                  (diagnosis or "").strip() or None, start_date, duration_days or None,
-                 notes or None, service_charge_dec, customer_id, created_by_user_id),
+                 notes or None, service_charge_dec, customer_id, created_by_user_id, key),
             )
             treatment_id = cursor.fetchone()["id"]
 
@@ -189,20 +198,17 @@ def create_treatment(business_id, owner_user_id, created_by_user_id,
                      it["duration_days"], it["route"], it["planned_quantity"], it["notes"]),
                 )
 
-        return treatment_id, "Treatment plan created"
+        return treatment_id, f"Treatment plan created (Treatment #{treatment_id})"
     except TreatmentError as e:
         return None, str(e)
     except Exception as e:
-        return None, str(e)
+        return None, integrity.friendly_db_error(e)
 
 
 # ── Reads ────────────────────────────────────────────────────────────────────
 
 def get_treatments(business_id, owner_user_id, status_filter=None):
-    """Includes drug_names — a single comma-joined summary of every
-    product used in each treatment, computed in one aggregate query
-    rather than one extra query per treatment row (which would otherwise
-    be an N+1 query pattern on this list page)."""
+    """Includes drug_names — a single comma-joined summary of every product used in each treatment, computed in one aggregate query rather than one extra query per treatment row (which would otherwise be an N+1 query pattern on this list page)."""
     _require_business(business_id, owner_user_id)
     with get_db() as (conn, cursor):
         base = (
@@ -268,11 +274,11 @@ def get_treatment_dashboard_summary(business_id, owner_user_id):
     with get_db() as (conn, cursor):
         cursor.execute(
             "SELECT "
-            "  COUNT(*) AS total_treatments, "
-            "  COUNT(*) FILTER (WHERE status='in_progress') AS in_progress, "
-            "  COUNT(*) FILTER (WHERE status='completed') AS completed, "
-            "  COUNT(*) FILTER (WHERE status='planned' AND start_date > %s) AS scheduled, "
-            "  COUNT(*) FILTER (WHERE status='cancelled') AS cancelled "
+            " COUNT(*) AS total_treatments, "
+            " COUNT(*) FILTER (WHERE status='in_progress') AS in_progress, "
+            " COUNT(*) FILTER (WHERE status='completed') AS completed, "
+            " COUNT(*) FILTER (WHERE status='planned' AND start_date > %s) AS scheduled, "
+            " COUNT(*) FILTER (WHERE status='cancelled') AS cancelled "
             "FROM treatments WHERE business_id=%s",
             (today, business_id),
         )
@@ -304,13 +310,14 @@ def update_treatment_status(treatment_id, business_id, owner_user_id, new_status
 
 # ── Dispensing (the only treatment event that touches inventory) ────────────
 
-def record_dispensing(treatment_item_id, business_id, owner_user_id,
-                       created_by_user_id, quantity, note):
+def record_dispensing(treatment_item_id, business_id, owner_user_id, created_by_user_id, quantity, note, idempotency_key=None):
+    """Phase 5B-3: idempotency_key — the same submission reference sent again returns (True, "...already recorded...") and dispenses nothing more, so a double-click / rerun / timeout-retry can't take stock out twice or bill the patient twice."""
     biz = _require_business(business_id, owner_user_id)
     if not biz["treatment_management_enabled"]:
         return None, TREATMENT_OFF_MSG
 
     try:
+        key = integrity.clean_key(idempotency_key)
         try:
             quantity = costing.quantity(quantity, "Quantity")    # max 3 decimals, never rounded
         except CostingError as e:
@@ -319,6 +326,20 @@ def record_dispensing(treatment_item_id, business_id, owner_user_id,
             return None, "Quantity must be greater than zero."
 
         with get_db() as (conn, cursor):
+            if key is not None:
+                integrity.lock_key(cursor, business_id, "dispense", key)
+                cursor.execute(
+                    "SELECT id, treatment_item_id, quantity FROM treatment_dispensing "
+                    "WHERE business_id=%s AND idempotency_key=%s", (business_id, key))
+                prior = cursor.fetchone()
+                if prior:
+                    if prior["treatment_item_id"] != treatment_item_id or prior["quantity"] != quantity:
+                        raise TreatmentError(
+                            "This submission reference was already used for a different dispensing. "
+                            "Please reopen the form and try again.")
+                    return True, (f"This dispensing (ref #{prior['id']}) was "
+                                  f"{integrity.REPLAY_NOTE}.")
+
             cursor.execute(
                 "SELECT ti.id, ti.product_id, ti.quantity_dispensed "
                 "FROM treatment_items ti "
@@ -374,10 +395,12 @@ def record_dispensing(treatment_item_id, business_id, owner_user_id,
             )
             cursor.execute(
                 "INSERT INTO treatment_dispensing (treatment_item_id, business_id, "
-                "quantity, unit_price, unit_cost, cost_known, created_by) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                "quantity, unit_price, unit_cost, cost_known, created_by, idempotency_key) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                 (treatment_item_id, business_id, quantity, unit_price, unit_cost,
-                 unit_cost is not None, created_by_user_id),
+                 unit_cost is not None, created_by_user_id, key),
             )
+            disp_id = cursor.fetchone()["id"]
             cursor.execute(
                 "UPDATE treatment_items SET quantity_dispensed = quantity_dispensed + %s "
                 "WHERE id=%s AND business_id=%s",
@@ -386,12 +409,13 @@ def record_dispensing(treatment_item_id, business_id, owner_user_id,
 
         return True, (
             f"Dispensed {quantity:g} {product['unit']} of '{product['name']}' "
-            f"\u2014 \u20A6{(quantity * unit_price).quantize(Decimal('0.01')):,.2f} added to the treatment bill."
+            f"\u2014 \u20A6{(quantity * unit_price).quantize(Decimal('0.01')):,.2f} added to the treatment bill "
+            f"(ref #{disp_id})."
         )
     except TreatmentError as e:
         return None, str(e)
     except Exception as e:
-        return None, str(e)
+        return None, integrity.friendly_db_error(e)
 
 
 # ── Treatment billing (Phase 5A-2) ──────────────────────────────────────────
@@ -407,23 +431,19 @@ def record_dispensing(treatment_item_id, business_id, owner_user_id,
 # been retroactively altered by a later price change.
 
 def get_treatment_billing(treatment_id, business_id, owner_user_id):
-    """Returns total_bill, amount_paid, outstanding, payment_status, and
-    (where every dispensing line has a known cost) cogs/gross_profit.
-    Lines dispensed before the 5A-2 migration have NULL unit_price/
-    unit_cost — excluded from the bill and cost sums, counted separately
-    as `lines_missing_price`, never treated as free or zero-cost."""
+    """Returns total_bill, amount_paid, outstanding, payment_status, and (where every dispensing line has a known cost) cogs/gross_profit. Lines dispensed before the 5A-2 migration have NULL unit_price/ unit_cost — excluded from the bill and cost sums, counted separately as `lines_missing_price`, never treated as free or zero-cost."""
     _require_business(business_id, owner_user_id)
     with get_db() as (conn, cursor):
         cursor.execute(
             "SELECT t.service_charge, t.amount_paid, "
-            "  COALESCE(SUM(ROUND(d.quantity * d.unit_price, 2)) FILTER (WHERE d.unit_price IS NOT NULL), 0) "
-            "    AS dispensed_charges, "
-            f"  COALESCE(SUM(d.quantity * d.unit_cost) FILTER (WHERE d.unit_price IS NOT NULL AND {known_cost_sql('d')}), 0) "
-            "    AS cogs, "
-            f"  COALESCE(SUM(ROUND(d.quantity * d.unit_price, 2)) FILTER (WHERE d.unit_price IS NOT NULL AND {known_cost_sql('d')}), 0) "
-            "    AS known_cost_charges, "
-            f"  COUNT(d.id) FILTER (WHERE d.unit_price IS NOT NULL AND NOT {known_cost_sql('d')}) AS lines_missing_cost, "
-            "  COUNT(d.id) FILTER (WHERE d.unit_price IS NULL) AS lines_missing_price "
+            " COALESCE(SUM(ROUND(d.quantity * d.unit_price, 2)) FILTER (WHERE d.unit_price IS NOT NULL), 0) "
+            " AS dispensed_charges, "
+            f" COALESCE(SUM(d.quantity * d.unit_cost) FILTER (WHERE d.unit_price IS NOT NULL AND {known_cost_sql('d')}), 0) "
+            " AS cogs, "
+            f" COALESCE(SUM(ROUND(d.quantity * d.unit_price, 2)) FILTER (WHERE d.unit_price IS NOT NULL AND {known_cost_sql('d')}), 0) "
+            " AS known_cost_charges, "
+            f" COUNT(d.id) FILTER (WHERE d.unit_price IS NOT NULL AND NOT {known_cost_sql('d')}) AS lines_missing_cost, "
+            " COUNT(d.id) FILTER (WHERE d.unit_price IS NULL) AS lines_missing_price "
             "FROM treatments t "
             "LEFT JOIN treatment_items ti ON ti.treatment_id = t.id "
             "LEFT JOIN treatment_dispensing d ON d.treatment_item_id = ti.id "
@@ -477,21 +497,42 @@ def get_treatment_billing(treatment_id, business_id, owner_user_id):
         }
 
 
-def record_treatment_payment(treatment_id, business_id, owner_user_id,
-                              created_by_user_id, amount, payment_method, note):
+def record_treatment_payment(treatment_id, business_id, owner_user_id, created_by_user_id, amount, payment_method, note, idempotency_key=None):
+    """Phase 5B-3: idempotency_key (same reference again => original result, nothing new written); amount must have at most 2 decimals; the payment method must be a known one. Everything else is the 5A behaviour."""
     _require_business(business_id, owner_user_id)
 
     try:
-        amount = _to_decimal(amount, "Payment amount")
+        key = integrity.clean_key(idempotency_key)
+        try:
+            amount = costing.money_amount(amount, "Payment amount")
+        except CostingError as e:
+            raise TreatmentError(str(e))
         if amount <= 0:
             return None, "Payment amount must be greater than zero."
+        if payment_method not in PAYMENT_METHODS:
+            return None, "Please choose a valid payment method."
 
         with get_db() as (conn, cursor):
+            if key is not None:
+                integrity.lock_key(cursor, business_id, "treatment_payment", key)
+                cursor.execute(
+                    "SELECT id, treatment_id, amount FROM treatment_payments "
+                    "WHERE business_id=%s AND idempotency_key=%s", (business_id, key))
+                prior = cursor.fetchone()
+                if prior:
+                    if prior["treatment_id"] != treatment_id or prior["amount"] != amount:
+                        raise TreatmentError(
+                            "This submission reference was already used for a different payment. "
+                            "Please reopen the form and try again.")
+                    return True, (f"Payment of \u20A6{amount:,.2f} (ref #{prior['id']}) was "
+                                  f"{integrity.REPLAY_NOTE}.")
+
             # Lock the treatment row for this whole transaction so two
             # near-simultaneous payments can't both read the same stale
             # outstanding balance. (Does not lock treatment_dispensing —
             # a dispensing happening at the exact same instant as a
-            # payment is a rare edge case not guarded against here.)
+            # payment can only RAISE the bill, so checking against the
+            # slightly older, lower bill is the safe direction.)
             cursor.execute(
                 "SELECT service_charge, amount_paid FROM treatments "
                 "WHERE id=%s AND business_id=%s FOR UPDATE",
@@ -506,7 +547,7 @@ def record_treatment_payment(treatment_id, business_id, owner_user_id,
             # its own separate connection and wouldn't see this lock.
             cursor.execute(
                 "SELECT COALESCE(SUM(ROUND(d.quantity * d.unit_price, 2)) "
-                "  FILTER (WHERE d.unit_price IS NOT NULL), 0) AS dispensed_charges "
+                " FILTER (WHERE d.unit_price IS NOT NULL), 0) AS dispensed_charges "
                 "FROM treatment_items ti "
                 "LEFT JOIN treatment_dispensing d ON d.treatment_item_id = ti.id "
                 "WHERE ti.treatment_id=%s AND ti.business_id=%s",
@@ -540,42 +581,137 @@ def record_treatment_payment(treatment_id, business_id, owner_user_id,
 
             cursor.execute(
                 "INSERT INTO treatment_payments (treatment_id, business_id, amount, "
-                "payment_method, note, created_by) VALUES (%s, %s, %s, %s, %s, %s)",
+                "payment_method, note, created_by, idempotency_key) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
                 (treatment_id, business_id, amount, payment_method, note or None,
-                 created_by_user_id),
+                 created_by_user_id, key),
             )
+            pay_id = cursor.fetchone()["id"]
             cursor.execute(
                 "UPDATE treatments SET amount_paid = amount_paid + %s "
                 "WHERE id=%s AND business_id=%s",
                 (amount, treatment_id, business_id),
             )
 
-        return True, f"Payment of \u20A6{amount:,.2f} recorded."
+        return True, f"Payment of \u20A6{amount:,.2f} recorded (ref #{pay_id})."
     except TreatmentError as e:
         return None, str(e)
     except Exception as e:
+        return None, integrity.friendly_db_error(e)
+
+
+def reverse_treatment_payment(payment_id, business_id, owner_user_id, created_by_user_id, reason, idempotency_key=None):
+    """Correct a treatment payment recorded by mistake. Same model as customers.reverse_payment: a NEW negative compensating row linked to the original (UNIQUE — reversible once), treatments.amount_paid reduced in the same locked transaction, original row kept forever. Not blocked by the Treatment Management switch (like payments), so a debt can always be corrected. If undoing it leaves money owing, the patient's customer record must have a valid phone number."""
+    _require_business(business_id, owner_user_id)
+    try:
+        key = integrity.clean_key(idempotency_key)
+        reason = (reason or "").strip()
+        if not reason:
+            raise TreatmentError("Please give a reason for reversing this payment.")
+
+        with get_db() as (conn, cursor):
+            if key is not None:
+                integrity.lock_key(cursor, business_id, "treatment_payment", key)
+                cursor.execute(
+                    "SELECT id, reverses_payment_id FROM treatment_payments "
+                    "WHERE business_id=%s AND idempotency_key=%s", (business_id, key))
+                prior = cursor.fetchone()
+                if prior:
+                    if prior["reverses_payment_id"] != payment_id:
+                        raise TreatmentError(
+                            "This submission reference was already used for a different action. "
+                            "Please reopen the form and try again.")
+                    return True, f"This payment reversal was {integrity.REPLAY_NOTE}."
+
+            cursor.execute(
+                "SELECT id, treatment_id, amount, payment_method, reverses_payment_id "
+                "FROM treatment_payments WHERE id=%s AND business_id=%s",
+                (payment_id, business_id),
+            )
+            pay = cursor.fetchone()
+            if pay is None:
+                raise TreatmentError("Payment not found.")
+            if pay["reverses_payment_id"] is not None or pay["amount"] <= 0:
+                raise TreatmentError("A reversal cannot itself be reversed. Record a new payment instead.")
+
+            cursor.execute(
+                "SELECT id, customer_id, service_charge, amount_paid FROM treatments "
+                "WHERE id=%s AND business_id=%s FOR UPDATE",
+                (pay["treatment_id"], business_id),
+            )
+            tr = cursor.fetchone()
+            if tr is None:
+                raise TreatmentError("Treatment not found.")
+
+            cursor.execute("SELECT 1 FROM treatment_payments WHERE reverses_payment_id=%s", (payment_id,))
+            if cursor.fetchone():
+                raise TreatmentError("This payment has already been reversed.")
+
+            new_paid = tr["amount_paid"] - pay["amount"]
+            if new_paid < 0:
+                raise TreatmentError("This payment can't be reversed: it is larger than the amount recorded as paid.")
+
+            cursor.execute(
+                "SELECT COALESCE(SUM(ROUND(d.quantity * d.unit_price, 2)) "
+                " FILTER (WHERE d.unit_price IS NOT NULL), 0) AS dispensed_charges "
+                "FROM treatment_items ti LEFT JOIN treatment_dispensing d ON d.treatment_item_id = ti.id "
+                "WHERE ti.treatment_id=%s AND ti.business_id=%s",
+                (pay["treatment_id"], business_id),
+            )
+            total_bill = tr["service_charge"] + cursor.fetchone()["dispensed_charges"]
+            cursor.execute(
+                "SELECT COALESCE(SUM(w.amount), 0) AS wo FROM debt_write_offs w "
+                "WHERE w.business_id=%s AND w.treatment_id=%s AND NOT EXISTS "
+                "(SELECT 1 FROM debt_write_off_reversals r WHERE r.write_off_id = w.id)",
+                (business_id, pay["treatment_id"]),
+            )
+            owed_after = total_bill - new_paid - cursor.fetchone()["wo"]
+            if owed_after > 0:
+                if tr["customer_id"] is None:
+                    raise TreatmentError(
+                        "This payment can't be reversed: it would leave money owing with no customer record.")
+                cursor.execute("SELECT phone FROM customers WHERE id=%s AND business_id=%s",
+                               (tr["customer_id"], business_id))
+                cust = cursor.fetchone()
+                if cust is None or normalize_phone(cust["phone"])[0] is None:
+                    raise TreatmentError(
+                        "This payment can't be reversed until the patient has a valid phone number, "
+                        "because reversing it leaves money owing.")
+
+            cursor.execute(
+                "INSERT INTO treatment_payments (treatment_id, business_id, amount, payment_method, "
+                "note, created_by, idempotency_key, reverses_payment_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                (pay["treatment_id"], business_id, -pay["amount"], pay["payment_method"],
+                 f"Reversal of payment #{payment_id}: {reason}", created_by_user_id, key, payment_id),
+            )
+            rev_id = cursor.fetchone()["id"]
+            cursor.execute(
+                "UPDATE treatments SET amount_paid = %s WHERE id=%s AND business_id=%s",
+                (new_paid, pay["treatment_id"], business_id),
+            )
+        return True, (f"Payment #{payment_id} of \u20A6{pay['amount']:,.2f} reversed "
+                      f"(reversal ref #{rev_id}). The amount is owed again.")
+    except TreatmentError as e:
         return None, str(e)
+    except Exception as e:
+        return None, integrity.friendly_db_error(e)
 
 
 def get_today_treatment_summary(business_id, owner_user_id):
-    """Treatment-side revenue and collections for today, using the same
-    transaction-dated convention as sales.get_today_sales_summary():
-    revenue is dated by when it was actually earned (dispensing date for
-    medicine charges, creation date for the flat service charge),
-    collections are dated by when the payment was actually received —
-    these can be two different dates for the same treatment."""
+    """Treatment-side revenue and collections for today, using the same transaction-dated convention as sales.get_today_sales_summary(): revenue is dated by when it was actually earned (dispensing date for medicine charges, creation date for the flat service charge), collections are dated by when the payment was actually received — these can be two different dates for the same treatment."""
     _require_business(business_id, owner_user_id)
     with get_db() as (conn, cursor):
         cursor.execute(
             "SELECT "
-            "  COALESCE((SELECT SUM(service_charge) FROM treatments "
-            "    WHERE business_id=%s AND created_at::date = CURRENT_DATE), 0) AS service_charges_today, "
-            "  COALESCE((SELECT SUM(ROUND(d.quantity * d.unit_price, 2)) "
-            "    FROM treatment_dispensing d "
-            "    WHERE d.business_id=%s AND d.dispensed_at::date = CURRENT_DATE "
-            "    AND d.unit_price IS NOT NULL), 0) AS dispensed_charges_today, "
-            "  COALESCE((SELECT SUM(amount) FROM treatment_payments "
-            "    WHERE business_id=%s AND created_at::date = CURRENT_DATE), 0) AS payments_today",
+            " COALESCE((SELECT SUM(service_charge) FROM treatments "
+            " WHERE business_id=%s AND created_at::date = CURRENT_DATE), 0) AS service_charges_today, "
+            " COALESCE((SELECT SUM(ROUND(d.quantity * d.unit_price, 2)) "
+            " FROM treatment_dispensing d "
+            " WHERE d.business_id=%s AND d.dispensed_at::date = CURRENT_DATE "
+            " AND d.unit_price IS NOT NULL), 0) AS dispensed_charges_today, "
+            " COALESCE((SELECT SUM(amount) FROM treatment_payments "
+            " WHERE business_id=%s AND created_at::date = CURRENT_DATE), 0) AS payments_today",
             (business_id, business_id, business_id),
         )
         row = cursor.fetchone()
