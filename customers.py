@@ -23,6 +23,10 @@ from decimal import Decimal, InvalidOperation
 from db import get_db
 from business import get_business
 from contacts import normalize_phone
+import costing
+import integrity
+from costing import CostingError
+from sales import PAYMENT_METHODS
 # Phase 5A-4: collectible debt = total - paid - ACTIVE write-offs. The SQL
 # fragment lives in baddebt.py so every balance in the app uses the identical
 # definition of "active write-off" (not reversed).
@@ -61,18 +65,14 @@ def _require_business(business_id, owner_user_id):
 # totals, avoids that class of bug entirely.
 
 def _get_treatment_outstanding_by_customer(business_id, cursor):
-    """Returns {customer_id: {"outstanding": Decimal, "unpaid_count": int,
-    "last_at": datetime}} for every treatment with an outstanding balance,
-    for this business. A treatment's bill is computed the same way
-    treatments.get_treatment_billing() computes it — service_charge plus
-    every dispensing's own locked-in price — never a stored total."""
+    """Returns {customer_id: {"outstanding": Decimal, "unpaid_count": int, "last_at": datetime}} for every treatment with an outstanding balance, for this business. A treatment's bill is computed the same way treatments.get_treatment_billing() computes it — service_charge plus every dispensing's own locked-in price — never a stored total."""
     cursor.execute(
         "SELECT t.id, t.customer_id, t.created_at, t.amount_paid, "
-        "  t.service_charge + COALESCE(SUM(ROUND(d.quantity * d.unit_price, 2)) "
-        "    FILTER (WHERE d.unit_price IS NOT NULL), 0) AS total_bill, "
+        " t.service_charge + COALESCE(SUM(ROUND(d.quantity * d.unit_price, 2)) "
+        " FILTER (WHERE d.unit_price IS NOT NULL), 0) AS total_bill, "
         # Scalar subquery, NOT a join — a join would multiply the written-off
         # amount by the number of item/dispensing rows.
-        f"  {active_write_off_sql(SOURCE_TREATMENT, 't')} AS written_off "
+        f" {active_write_off_sql(SOURCE_TREATMENT, 't')} AS written_off "
         "FROM treatments t "
         "LEFT JOIN treatment_items ti ON ti.treatment_id = t.id "
         "LEFT JOIN treatment_dispensing d ON d.treatment_item_id = ti.id "
@@ -96,10 +96,7 @@ def _get_treatment_outstanding_by_customer(business_id, cursor):
 
 
 def get_customers_with_balance(business_id, owner_user_id):
-    """Every customer for this business, with stock-sale and treatment
-    outstanding balances shown separately AND combined, plus the most
-    recent activity date across both. Customers with zero debt are still
-    included (all zeros) so a fully-paid customer isn't hidden."""
+    """Every customer for this business, with stock-sale and treatment outstanding balances shown separately AND combined, plus the most recent activity date across both. Customers with zero debt are still included (all zeros) so a fully-paid customer isn't hidden."""
     _require_business(business_id, owner_user_id)
     with get_db() as (conn, cursor):
         cursor.execute(
@@ -114,12 +111,12 @@ def get_customers_with_balance(business_id, owner_user_id):
         # by the derived balance, not by payment_status.
         cursor.execute(
             "SELECT customer_id, "
-            "  COALESCE(SUM(collectible) FILTER (WHERE collectible > 0), 0) AS outstanding, "
-            "  COUNT(*) FILTER (WHERE collectible > 0) AS unpaid_count, "
-            "  MAX(created_at) AS last_at "
+            " COALESCE(SUM(collectible) FILTER (WHERE collectible > 0), 0) AS outstanding, "
+            " COUNT(*) FILTER (WHERE collectible > 0) AS unpaid_count, "
+            " MAX(created_at) AS last_at "
             "FROM (SELECT s.customer_id, s.created_at, "
-            f"  s.total_amount - s.amount_paid - {active_write_off_sql(SOURCE_SALE, 's')} AS collectible "
-            "  FROM sales s WHERE s.business_id=%s) x GROUP BY customer_id",
+            f" s.total_amount - s.amount_paid - {active_write_off_sql(SOURCE_SALE, 's')} AS collectible "
+            " FROM sales s WHERE s.business_id=%s) x GROUP BY customer_id",
             (business_id,),
         )
         sale_by_customer = {r["customer_id"]: r for r in cursor.fetchall()}
@@ -153,10 +150,7 @@ def get_customers_with_balance(business_id, owner_user_id):
 
 
 def get_credit_summary(business_id, owner_user_id):
-    """Combined totals across both sources. Deliberately built by
-    aggregating get_customers_with_balance()'s own output rather than a
-    second, separate query — guarantees this summary can never disagree
-    with the per-customer breakdown shown right below it."""
+    """Combined totals across both sources. Deliberately built by aggregating get_customers_with_balance()'s own output rather than a second, separate query — guarantees this summary can never disagree with the per-customer breakdown shown right below it."""
     customers = get_customers_with_balance(business_id, owner_user_id)
     stock_sale_outstanding = sum((c["stock_sale_outstanding"] for c in customers), Decimal("0"))
     treatment_outstanding = sum((c["treatment_outstanding"] for c in customers), Decimal("0"))
@@ -183,14 +177,13 @@ def get_customer(customer_id, business_id, owner_user_id):
 
 
 def get_customer_sales(customer_id, business_id, owner_user_id):
-    """This customer's sales, newest first, each with its outstanding
-    balance computed from total_amount - amount_paid."""
+    """This customer's sales, newest first, each with its outstanding balance computed from total_amount - amount_paid."""
     _require_business(business_id, owner_user_id)
     with get_db() as (conn, cursor):
         cursor.execute(
             "SELECT s.*, "
-            f"  {active_write_off_sql(SOURCE_SALE, 's')} AS written_off, "
-            f"  (s.total_amount - s.amount_paid - {active_write_off_sql(SOURCE_SALE, 's')}) AS outstanding "
+            f" {active_write_off_sql(SOURCE_SALE, 's')} AS written_off, "
+            f" (s.total_amount - s.amount_paid - {active_write_off_sql(SOURCE_SALE, 's')}) AS outstanding "
             "FROM sales s WHERE s.customer_id=%s AND s.business_id=%s "
             "ORDER BY s.created_at DESC",
             (customer_id, business_id),
@@ -199,16 +192,14 @@ def get_customer_sales(customer_id, business_id, owner_user_id):
 
 
 def get_customer_treatments(customer_id, business_id, owner_user_id):
-    """This customer's treatments, newest first, each with its computed
-    total_bill and outstanding balance — same computation as
-    treatments.get_treatment_billing(), just for a whole list at once."""
+    """This customer's treatments, newest first, each with its computed total_bill and outstanding balance — same computation as treatments.get_treatment_billing(), just for a whole list at once."""
     _require_business(business_id, owner_user_id)
     with get_db() as (conn, cursor):
         cursor.execute(
             "SELECT t.*, "
-            "  t.service_charge + COALESCE(SUM(ROUND(d.quantity * d.unit_price, 2)) "
-            "    FILTER (WHERE d.unit_price IS NOT NULL), 0) AS total_bill, "
-            f"  {active_write_off_sql(SOURCE_TREATMENT, 't')} AS written_off "
+            " t.service_charge + COALESCE(SUM(ROUND(d.quantity * d.unit_price, 2)) "
+            " FILTER (WHERE d.unit_price IS NOT NULL), 0) AS total_bill, "
+            f" {active_write_off_sql(SOURCE_TREATMENT, 't')} AS written_off "
             "FROM treatments t "
             "LEFT JOIN treatment_items ti ON ti.treatment_id = t.id "
             "LEFT JOIN treatment_dispensing d ON d.treatment_item_id = ti.id "
@@ -251,21 +242,38 @@ def get_sale_payments(sale_id, business_id, owner_user_id):
 
 # ── Recording a payment ──────────────────────────────────────────────────────
 
-def record_payment(sale_id, business_id, owner_user_id, created_by_user_id,
-                    amount, payment_method, note):
-    """Records a part- or full payment against an existing sale. Never
-    touches sales.total_amount or any previous payment row — only adds a
-    new payment row and increases sales.amount_paid by the same amount,
-    inside one locked transaction so two near-simultaneous payments can't
-    both read the same stale outstanding balance."""
+def record_payment(sale_id, business_id, owner_user_id, created_by_user_id, amount, payment_method, note, idempotency_key=None):
+    """Records a part- or full payment against an existing sale. Never touches sales.total_amount or any previous payment row — only adds a new payment row and increases sales.amount_paid by the same amount, inside one locked transaction so two near-simultaneous payments can't both read the same stale outstanding balance. Phase 5B-3 * idempotency_key: the same submission reference sent again returns (True, "...already recorded...") and writes nothing. Checked first, so a retry after a successful-but-unconfirmed attempt reports success rather than "already fully paid". * Amount must have at most 2 decimals (never silently rounded) so the payment row and sales.amount_paid can never drift apart. * The payment method must be one of sales.PAYMENT_METHODS."""
     _require_business(business_id, owner_user_id)
 
     try:
-        amount = _to_decimal(amount, "Payment amount")
+        key = integrity.clean_key(idempotency_key)
+        try:
+            amount = costing.money_amount(amount, "Payment amount")
+        except CostingError as e:
+            raise CreditError(str(e))
         if amount <= 0:
             return None, "Payment amount must be greater than zero."
+        if payment_method not in PAYMENT_METHODS:
+            return None, "Please choose a valid payment method."
 
         with get_db() as (conn, cursor):
+            if key is not None:
+                integrity.lock_key(cursor, business_id, "payment", key)
+                cursor.execute(
+                    "SELECT id, sale_id, amount FROM payments "
+                    "WHERE business_id=%s AND idempotency_key=%s",
+                    (business_id, key),
+                )
+                prior = cursor.fetchone()
+                if prior:
+                    if prior["sale_id"] != sale_id or prior["amount"] != amount:
+                        raise CreditError(
+                            "This submission reference was already used for a different payment. "
+                            "Please reopen the form and try again.")
+                    return True, (f"Payment of \u20A6{amount:,.2f} (ref #{prior['id']}) was "
+                                  f"{integrity.REPLAY_NOTE}.")
+
             cursor.execute(
                 "SELECT id, customer_id, total_amount, amount_paid, payment_status "
                 "FROM sales WHERE id=%s AND business_id=%s FOR UPDATE",
@@ -306,28 +314,123 @@ def record_payment(sale_id, business_id, owner_user_id, created_by_user_id,
             # was validation.
             cursor.execute(
                 "INSERT INTO payments (business_id, sale_id, customer_id, amount, "
-                "payment_method, note, created_by) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                "payment_method, note, created_by, idempotency_key) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                 (business_id, sale_id, sale["customer_id"], amount,
-                 payment_method, note or None, created_by_user_id),
+                 payment_method, note or None, created_by_user_id, key),
             )
+            pay_id = cursor.fetchone()["id"]
             cursor.execute(
                 "UPDATE sales SET amount_paid=%s, payment_status=%s "
                 "WHERE id=%s AND business_id=%s",
                 (new_amount_paid, new_status, sale_id, business_id),
             )
 
-        return True, f"Payment of \u20A6{amount:,.2f} recorded."
+        return True, f"Payment of \u20A6{amount:,.2f} recorded (ref #{pay_id})."
     except CreditError as e:
         return None, str(e)
     except Exception as e:
+        return None, integrity.friendly_db_error(e)
+
+
+def reverse_payment(payment_id, business_id, owner_user_id, created_by_user_id, reason, idempotency_key=None):
+    """Correct a payment recorded by mistake (wrong amount, wrong sale, ...). NOTHING is edited or deleted: a NEW compensating payment row with the NEGATIVE amount is added, pointing at the payment it reverses (payments.reverses_payment_id, UNIQUE — a payment can be reversed once), and sales.amount_paid goes down by the same amount inside the same locked transaction. The original row stays forever, so the history reads 'payment +X' then 'reversal -X', each with who and when. Reports net the two correctly on the day the reversal was made. Rules: the reason is mandatory; only an original (positive) payment can be reversed; if undoing it leaves money owing, the customer must exist and have a valid phone number (the same rule as a credit sale)."""
+    _require_business(business_id, owner_user_id)
+    try:
+        key = integrity.clean_key(idempotency_key)
+        reason = (reason or "").strip()
+        if not reason:
+            raise CreditError("Please give a reason for reversing this payment.")
+
+        with get_db() as (conn, cursor):
+            if key is not None:
+                integrity.lock_key(cursor, business_id, "payment", key)
+                cursor.execute(
+                    "SELECT id, reverses_payment_id FROM payments "
+                    "WHERE business_id=%s AND idempotency_key=%s", (business_id, key))
+                prior = cursor.fetchone()
+                if prior:
+                    if prior["reverses_payment_id"] != payment_id:
+                        raise CreditError(
+                            "This submission reference was already used for a different action. "
+                            "Please reopen the form and try again.")
+                    return True, f"This payment reversal was {integrity.REPLAY_NOTE}."
+
+            cursor.execute(
+                "SELECT id, sale_id, customer_id, amount, payment_method, reverses_payment_id "
+                "FROM payments WHERE id=%s AND business_id=%s",
+                (payment_id, business_id),
+            )
+            pay = cursor.fetchone()
+            if pay is None:
+                raise CreditError("Payment not found.")
+            if pay["reverses_payment_id"] is not None or pay["amount"] <= 0:
+                raise CreditError("A reversal cannot itself be reversed. Record a new payment instead.")
+
+            # Lock the parent sale — the same lock record_payment takes — so a
+            # reversal and a payment on the same sale can't interleave.
+            cursor.execute(
+                "SELECT id, customer_id, total_amount, amount_paid FROM sales "
+                "WHERE id=%s AND business_id=%s FOR UPDATE",
+                (pay["sale_id"], business_id),
+            )
+            sale = cursor.fetchone()
+            if sale is None:
+                raise CreditError("Sale not found.")
+
+            cursor.execute("SELECT 1 FROM payments WHERE reverses_payment_id=%s", (payment_id,))
+            if cursor.fetchone():
+                raise CreditError("This payment has already been reversed.")
+
+            new_paid = sale["amount_paid"] - pay["amount"]
+            if new_paid < 0:
+                raise CreditError("This payment can't be reversed: it is larger than the amount recorded as paid.")
+            cursor.execute(
+                "SELECT COALESCE(SUM(w.amount), 0) AS wo FROM debt_write_offs w "
+                "WHERE w.business_id=%s AND w.sale_id=%s AND NOT EXISTS "
+                "(SELECT 1 FROM debt_write_off_reversals r WHERE r.write_off_id = w.id)",
+                (business_id, pay["sale_id"]),
+            )
+            written_off = cursor.fetchone()["wo"]
+            owed_after = sale["total_amount"] - new_paid - written_off
+            if owed_after > 0:
+                if sale["customer_id"] is None:
+                    raise CreditError(
+                        "This payment can't be reversed: it would leave money owing on a sale "
+                        "with no customer. Money owed always needs a customer with a phone number.")
+                cursor.execute("SELECT phone FROM customers WHERE id=%s AND business_id=%s",
+                               (sale["customer_id"], business_id))
+                cust = cursor.fetchone()
+                if cust is None or normalize_phone(cust["phone"])[0] is None:
+                    raise CreditError(
+                        "This payment can't be reversed until the customer has a valid phone number, "
+                        "because reversing it leaves money owing.")
+
+            new_status = ("paid" if new_paid >= sale["total_amount"]
+                          else "partial" if new_paid > 0 else "unpaid")
+            cursor.execute(
+                "INSERT INTO payments (business_id, sale_id, customer_id, amount, payment_method, "
+                "note, created_by, idempotency_key, reverses_payment_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                (business_id, pay["sale_id"], pay["customer_id"], -pay["amount"],
+                 pay["payment_method"], f"Reversal of payment #{payment_id}: {reason}",
+                 created_by_user_id, key, payment_id),
+            )
+            rev_id = cursor.fetchone()["id"]
+            cursor.execute(
+                "UPDATE sales SET amount_paid=%s, payment_status=%s WHERE id=%s AND business_id=%s",
+                (new_paid, new_status, pay["sale_id"], business_id),
+            )
+        return True, (f"Payment #{payment_id} of \u20A6{pay['amount']:,.2f} reversed "
+                      f"(reversal ref #{rev_id}). The amount is owed again.")
+    except CreditError as e:
         return None, str(e)
+    except Exception as e:
+        return None, integrity.friendly_db_error(e)
 
 
 def update_customer_phone(customer_id, business_id, owner_user_id, phone):
-    """Add or correct an existing customer's phone number (Phase 5B-1).
-    Blank / whitespace-only / invalid numbers are rejected and nothing is
-    changed. Scoped to the business AND its verified owner. Returns
-    (True, message) or (None, error)."""
+    """Add or correct an existing customer's phone number (Phase 5B-1). Blank / whitespace-only / invalid numbers are rejected and nothing is changed. Scoped to the business AND its verified owner. Returns (True, message) or (None, error)."""
     try:
         _require_business(business_id, owner_user_id)
         clean, err = normalize_phone(phone)
