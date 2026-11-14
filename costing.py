@@ -1,24 +1,24 @@
 # costing.py — one place for the product-costing precision policy (Phase 5B-2)
 #
 # PRECISION POLICY (used by inventory, sales, treatments and reports)
-#   * Money that people see and pay (prices, line totals, payments, report
-#     totals) is rounded to 2 decimals (kobo) — ONLY at the final stage.
-#   * UNIT COSTS are kept to 6 decimals (NUMERIC(18,6)) so a weighted average
-#     such as 120.588235... is not rounded to 120.59 before being multiplied
-#     by a quantity. Line COGS = quantity x unit_cost is NOT rounded per line;
-#     totals are summed at full precision and rounded once at the end.
-#   * QUANTITIES are kept to 3 decimals (NUMERIC(12,3)). A quantity with more
-#     decimals is REJECTED rather than silently rounded, so the stock the
-#     database stores always equals the quantity used in the cost maths.
-#   * No float anywhere: Decimal only.
+# * Money that people see and pay (prices, line totals, payments, report
+# totals) is rounded to 2 decimals (kobo) — ONLY at the final stage.
+# * UNIT COSTS are kept to 6 decimals (NUMERIC(18,6)) so a weighted average
+# such as 120.588235... is not rounded to 120.59 before being multiplied
+# by a quantity. Line COGS = quantity x unit_cost is NOT rounded per line;
+# totals are summed at full precision and rounded once at the end.
+# * QUANTITIES are kept to 3 decimals (NUMERIC(12,3)). A quantity with more
+# decimals is REJECTED rather than silently rounded, so the stock the
+# database stores always equals the quantity used in the cost maths.
+# * No float anywhere: Decimal only.
 #
 # KNOWN vs UNKNOWN COST
-#   * A cost of NULL is unknown. A cost of 0 is a real cost ONLY when the
-#     record says so explicitly (cost_known = TRUE). Records written before
-#     this phase have cost_known = NULL ("legacy"): a legacy positive cost is
-#     trusted (the owner entered it), but a legacy cost of exactly 0 is treated
-#     as UNVERIFIED, because the old system could not tell "free" from "never
-#     entered". Nothing historical is rewritten to make this so.
+# * A cost of NULL is unknown. A cost of 0 is a real cost ONLY when the
+# record says so explicitly (cost_known = TRUE). Records written before
+# this phase have cost_known = NULL ("legacy"): a legacy positive cost is
+# trusted (the owner entered it), but a legacy cost of exactly 0 is treated
+# as UNVERIFIED, because the old system could not tell "free" from "never
+# entered". Nothing historical is rewritten to make this so.
 
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
@@ -63,16 +63,16 @@ def money(value):
     return Decimal(value).quantize(MONEY_SCALE, rounding=ROUND_HALF_UP)
 
 
+def money_amount(value, field_name="Amount"):
+    """Parse an amount of money that a person TYPED (a payment, an amount paid on a sale). Phase 5B-3: more than 2 decimal places is REJECTED, never silently rounded — the database column holds kobo, and a payment row that differed from the running total by a rounded fraction of a kobo would make the ledger and the balance drift apart over time."""
+    d = to_decimal(value, field_name)
+    if d != d.quantize(MONEY_SCALE):
+        raise CostingError(f"{field_name} can have at most 2 decimal places.")
+    return d.quantize(MONEY_SCALE)
+
+
 def weighted_average(stock_before, avg_cost, qty_added, new_unit_cost):
-    """Perpetual weighted-average cost after a GENUINE purchase.
-
-        (stock_before x avg_cost + qty_added x new_unit_cost)
-        / (stock_before + qty_added)
-
-    Uses the real quantities and costs (never a simple average of two prices).
-    If there was no stock to weight against (zero or negative), the new
-    cost simply becomes the average. qty_added must be > 0 so the divisor is
-    never zero. Returns the cost at 6-decimal precision."""
+    """Perpetual weighted-average cost after a GENUINE purchase. (stock_before x avg_cost + qty_added x new_unit_cost) / (stock_before + qty_added) Uses the real quantities and costs (never a simple average of two prices). If there was no stock to weight against (zero or negative), the new cost simply becomes the average. qty_added must be > 0 so the divisor is never zero. Returns the cost at 6-decimal precision."""
     if qty_added <= 0:
         raise CostingError("Quantity added must be greater than zero.")
     if stock_before <= 0:
@@ -94,9 +94,7 @@ def unknown_cost_sql(alias):
 
 
 def snapshot_cost(product_row):
-    """The unit cost to lock onto a sale / dispensing line right now:
-    the product's current cost basis if it is KNOWN, otherwise None
-    (unknown) — never a silent 0."""
+    """The unit cost to lock onto a sale / dispensing line right now: the product's current cost basis if it is KNOWN, otherwise None (unknown) — never a silent 0."""
     if product_row.get("cost_known") is True:
         return product_row["purchase_price"]
     if product_row.get("cost_known") is None and (product_row.get("purchase_price") or _ZERO) > 0:
