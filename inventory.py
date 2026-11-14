@@ -18,6 +18,7 @@ from decimal import Decimal, InvalidOperation
 from db import get_db
 from business import get_business
 import costing
+import integrity
 from costing import CostingError, snapshot_cost
 
 UNITS = [
@@ -66,10 +67,7 @@ class NotOwner(Exception):
 
 
 class StockError(Exception):
-    """Raised for validation failures inside adjust_stock()'s transaction,
-    so db.get_db() rolls back instead of committing partial work — same
-    discipline as sales.SaleError / customers.CreditError /
-    treatments.TreatmentError."""
+    """Raised for validation failures inside adjust_stock()'s transaction, so db.get_db() rolls back instead of committing partial work — same discipline as sales.SaleError / customers.CreditError / treatments.TreatmentError."""
     pass
 
 
@@ -90,16 +88,8 @@ def _to_decimal(value, field_name):
 
 # ── Products ─────────────────────────────────────────────────────────────────
 
-def create_product(business_id, owner_user_id, created_by_user_id, name, category, sku,
-                    unit, purchase_price, selling_price, opening_stock,
-                    low_stock_threshold, expiry_date):
-    """purchase_price semantics (Phase 5B-2):
-      * a number (including an explicit 0)  -> the cost is KNOWN. 0 means the
-        owner states the product genuinely costs nothing.
-      * None / blank                         -> the cost is UNKNOWN. Sales of
-        it will be recorded with an unknown cost and excluded from gross
-        profit (with a warning) until the owner sets a cost.
-    Unit costs are stored to 6 decimals; quantities must have <= 3 decimals."""
+def create_product(business_id, owner_user_id, created_by_user_id, name, category, sku, unit, purchase_price, selling_price, opening_stock, low_stock_threshold, expiry_date):
+    """purchase_price semantics (Phase 5B-2): * a number (including an explicit 0) -> the cost is KNOWN. 0 means the owner states the product genuinely costs nothing. * None / blank -> the cost is UNKNOWN. Sales of it will be recorded with an unknown cost and excluded from gross profit (with a warning) until the owner sets a cost. Unit costs are stored to 6 decimals; quantities must have <= 3 decimals."""
     _require_business(business_id, owner_user_id)
 
     name = (name or "").strip()
@@ -206,27 +196,13 @@ def expiry_status(product):
 
 # ── Stock adjustments ────────────────────────────────────────────────────────
 
-def adjust_stock(product_id, business_id, owner_user_id, created_by_user_id,
-                  direction, quantity, reason, unit_cost=None):
-    """direction: 'add' or 'remove'. reason must be a key from ADD_REASONS /
-    REMOVE_REASONS matching the direction.
-
-    WEIGHTED-AVERAGE COSTING (Phase 5B-2) applies ONLY to the one reason that
-    is a genuine stock receipt: 'New delivery / Purchase'
-    (movement_type='purchase'). unit_cost is required for it (0 is allowed =
-    a free delivery) and products.purchase_price — the running average cost
-    per unit — becomes
-        (stock_before x avg_cost + qty x unit_cost) / (stock_before + qty)
-    at 6-decimal precision (costing.weighted_average). Special cases:
-      * no stock on hand       -> the new cost simply becomes the cost.
-      * stock on hand has an UNKNOWN cost -> the average cannot be known, so
-        the product's cost STAYS unknown (the delivery's own cost is still
-        recorded on the movement). The owner can fix it with set_product_cost
-        or it resolves itself once the old stock is gone. Never guessed as 0.
-    Sales, debt payments, corrections, damaged/expired/lost stock never touch
-    the cost: they carry no purchase information.
-    """
+def adjust_stock(product_id, business_id, owner_user_id, created_by_user_id, direction, quantity, reason, unit_cost=None, idempotency_key=None):
+    """direction: 'add' or 'remove'. reason must be a key from ADD_REASONS / REMOVE_REASONS matching the direction. WEIGHTED-AVERAGE COSTING (Phase 5B-2) applies ONLY to the one reason that is a genuine stock receipt: 'New delivery / Purchase' (movement_type='purchase'). unit_cost is required for it (0 is allowed = a free delivery) and products.purchase_price — the running average cost per unit — becomes (stock_before x avg_cost + qty x unit_cost) / (stock_before + qty) at 6-decimal precision (costing.weighted_average). Special cases: * no stock on hand -> the new cost simply becomes the cost. * stock on hand has an UNKNOWN cost -> the average cannot be known, so the product's cost STAYS unknown (the delivery's own cost is still recorded on the movement). The owner can fix it with set_product_cost or it resolves itself once the old stock is gone. Never guessed as 0. Sales, debt payments, corrections, damaged/expired/lost stock never touch the cost: they carry no purchase information. Phase 5B-3: idempotency_key — the same submission reference sent again returns (True, "...already recorded...") and changes nothing, so a double-click / rerun / timeout-retry can't add (or remove) the same delivery twice or average its cost in twice. Every adjustment already records its reason (movement note) and who made it. """
     _require_business(business_id, owner_user_id)
+    try:
+        key = integrity.clean_key(idempotency_key)
+    except ValueError as e:
+        return False, str(e)
 
     if direction not in ("add", "remove"):
         return False, "Invalid direction."
@@ -258,6 +234,19 @@ def adjust_stock(product_id, business_id, owner_user_id, created_by_user_id,
     note_suffix = ""
     try:
         with get_db() as (conn, cursor):
+            if key is not None:
+                integrity.lock_key(cursor, business_id, "stock", key)
+                cursor.execute(
+                    "SELECT id, product_id, quantity FROM inventory_movements "
+                    "WHERE business_id=%s AND idempotency_key=%s", (business_id, key))
+                prior = cursor.fetchone()
+                if prior:
+                    if prior["product_id"] != product_id or prior["quantity"] != signed_qty:
+                        raise StockError(
+                            "This submission reference was already used for a different stock change. "
+                            "Please reopen the form and try again.")
+                    return True, f"This stock change (ref #{prior['id']}) was {integrity.REPLAY_NOTE}."
+
             # Lock the row for the duration of this transaction so two
             # concurrent adjustments can't both read the same stale
             # current_stock and overwrite each other.
@@ -308,11 +297,13 @@ def adjust_stock(product_id, business_id, owner_user_id, created_by_user_id,
             cursor.execute(
                 "INSERT INTO inventory_movements (business_id, product_id, "
                 "movement_type, quantity, quantity_before, quantity_after, "
-                "unit_cost, note, created_by) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "unit_cost, note, created_by, idempotency_key) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                 (business_id, product_id, movement_type, signed_qty, before, after,
-                 unit_cost, reason, created_by_user_id),
+                 unit_cost, reason, created_by_user_id, key),
             )
-        msg = f"Stock updated: {before:g} \u2192 {after:g}"
+            movement_id = cursor.fetchone()["id"]
+        msg = f"Stock updated: {before:g} \u2192 {after:g} (ref #{movement_id})"
         if is_purchase and known:
             msg += f" (new average cost: \u20A6{new_avg_cost:,.2f}/unit)"
         return True, msg + note_suffix
@@ -321,25 +312,28 @@ def adjust_stock(product_id, business_id, owner_user_id, created_by_user_id,
     except NotOwner as e:
         return False, str(e)
     except Exception as e:
-        return False, str(e)
+        return False, integrity.friendly_db_error(e)
 
 
-def set_product_cost(product_id, business_id, owner_user_id, created_by_user_id, new_cost):
-    """Owner states the product's CURRENT cost per unit (including an explicit
-    0 = genuinely costs nothing). Changes the cost basis going FORWARD only:
-    sales already recorded keep the cost they were made with. Logged as a
-    zero-quantity 'cost_set' movement so there is an audit trail. This is the
-    only way, besides a delivery onto empty stock, to turn an unknown cost
-    into a known one — it is never filled in automatically."""
+def set_product_cost(product_id, business_id, owner_user_id, created_by_user_id, new_cost, idempotency_key=None):
+    """Owner states the product's CURRENT cost per unit (including an explicit 0 = genuinely costs nothing). Changes the cost basis going FORWARD only: sales already recorded keep the cost they were made with. Logged as a zero-quantity 'cost_set' movement so there is an audit trail. This is the only way, besides a delivery onto empty stock, to turn an unknown cost into a known one — it is never filled in automatically."""
     _require_business(business_id, owner_user_id)
     try:
+        key = integrity.clean_key(idempotency_key)
         new_cost = costing.unit_cost(new_cost, "Cost")
-    except CostingError as e:
+    except (CostingError, ValueError) as e:
         return False, str(e)
     if new_cost < 0:
         return False, "Cost cannot be negative."
     try:
         with get_db() as (conn, cursor):
+            if key is not None:
+                integrity.lock_key(cursor, business_id, "stock", key)
+                cursor.execute(
+                    "SELECT id FROM inventory_movements WHERE business_id=%s AND idempotency_key=%s",
+                    (business_id, key))
+                if cursor.fetchone():
+                    return True, f"This cost change was {integrity.REPLAY_NOTE}."
             cursor.execute(
                 "SELECT current_stock FROM products WHERE id=%s AND business_id=%s FOR UPDATE",
                 (product_id, business_id),
@@ -354,16 +348,16 @@ def set_product_cost(product_id, business_id, owner_user_id, created_by_user_id,
             )
             cursor.execute(
                 "INSERT INTO inventory_movements (business_id, product_id, movement_type, "
-                "quantity, quantity_before, quantity_after, unit_cost, note, created_by) "
-                "VALUES (%s, %s, 'cost_set', 0, %s, %s, %s, %s, %s)",
+                "quantity, quantity_before, quantity_after, unit_cost, note, created_by, idempotency_key) "
+                "VALUES (%s, %s, 'cost_set', 0, %s, %s, %s, %s, %s, %s)",
                 (business_id, product_id, row["current_stock"], row["current_stock"], new_cost,
-                 "Cost set by owner", created_by_user_id),
+                 "Cost set by owner", created_by_user_id, key),
             )
         return True, f"Cost set to \u20A6{new_cost:,.2f} per unit. Past sales are not changed."
     except StockError as e:
         return False, str(e)
     except Exception as e:
-        return False, str(e)
+        return False, integrity.friendly_db_error(e)
 
 
 def get_movement_history(product_id, business_id, owner_user_id):
@@ -383,10 +377,7 @@ def get_movement_history(product_id, business_id, owner_user_id):
 # ── Delete ───────────────────────────────────────────────────────────────────
 
 def delete_product(product_id, business_id, owner_user_id):
-    """Permanently deletes a product that has no inventory history, or
-    archives (is_active=0) one that does, so accounting/stock history is
-    never silently lost. Returns (action, message) where action is
-    'deleted', 'archived', or None on failure."""
+    """Permanently deletes a product that has no inventory history, or archives (is_active=0) one that does, so accounting/stock history is never silently lost. Returns (action, message) where action is 'deleted', 'archived', or None on failure."""
     _require_business(business_id, owner_user_id)
     try:
         with get_db() as (conn, cursor):
@@ -398,10 +389,19 @@ def delete_product(product_id, business_id, owner_user_id):
             if product is None:
                 return None, "Product not found."
 
+            # Phase 5B-3: ANY record that refers to the product counts as
+            # history — stock movements, sale lines, or treatment lines.
+            # (Before, a product that only appeared in a planned treatment —
+            # no movement yet — went down the hard-delete path and failed on
+            # the database's foreign key with a raw error.) Such a product is
+            # archived instead, so no sale, treatment or stock record is ever
+            # lost or orphaned.
             cursor.execute(
-                "SELECT COUNT(*) AS cnt FROM inventory_movements "
-                "WHERE product_id=%s AND business_id=%s",
-                (product_id, business_id),
+                "SELECT "
+                " (SELECT COUNT(*) FROM inventory_movements WHERE product_id=%s AND business_id=%s) "
+                " + (SELECT COUNT(*) FROM sale_items WHERE product_id=%s AND business_id=%s) "
+                " + (SELECT COUNT(*) FROM treatment_items WHERE product_id=%s AND business_id=%s) AS cnt",
+                (product_id, business_id) * 3,
             )
             has_history = cursor.fetchone()["cnt"] > 0
 
@@ -434,17 +434,17 @@ def get_inventory_summary(business_id, owner_user_id):
     with get_db() as (conn, cursor):
         cursor.execute(
             "SELECT "
-            "  COUNT(*) AS total_products, "
-            "  COUNT(*) FILTER (WHERE current_stock <= 0) AS out_of_stock, "
-            "  COUNT(*) FILTER (WHERE current_stock > 0 AND current_stock <= low_stock_threshold) AS low_stock, "
-            "  COUNT(*) FILTER (WHERE current_stock > low_stock_threshold) AS in_stock, "
-            "  COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date < CURRENT_DATE) AS expired, "
-            "  COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date >= CURRENT_DATE "
-            "    AND expiry_date <= CURRENT_DATE + make_interval(days => %s)) AS expiring_soon, "
-            "  COALESCE(SUM(current_stock * purchase_price) FILTER (WHERE "
-            "    cost_known IS TRUE OR (cost_known IS NULL AND purchase_price > 0)), 0) AS inventory_value, "
-            "  COUNT(*) FILTER (WHERE current_stock > 0 AND NOT "
-            "    (cost_known IS TRUE OR (cost_known IS NULL AND purchase_price > 0))) AS unknown_cost_products "
+            " COUNT(*) AS total_products, "
+            " COUNT(*) FILTER (WHERE current_stock <= 0) AS out_of_stock, "
+            " COUNT(*) FILTER (WHERE current_stock > 0 AND current_stock <= low_stock_threshold) AS low_stock, "
+            " COUNT(*) FILTER (WHERE current_stock > low_stock_threshold) AS in_stock, "
+            " COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date < CURRENT_DATE) AS expired, "
+            " COUNT(*) FILTER (WHERE expiry_date IS NOT NULL AND expiry_date >= CURRENT_DATE "
+            " AND expiry_date <= CURRENT_DATE + make_interval(days => %s)) AS expiring_soon, "
+            " COALESCE(SUM(current_stock * purchase_price) FILTER (WHERE "
+            " cost_known IS TRUE OR (cost_known IS NULL AND purchase_price > 0)), 0) AS inventory_value, "
+            " COUNT(*) FILTER (WHERE current_stock > 0 AND NOT "
+            " (cost_known IS TRUE OR (cost_known IS NULL AND purchase_price > 0))) AS unknown_cost_products "
             "FROM products WHERE business_id=%s AND is_active=1",
             (LOW_STOCK_DAYS_SOON, business_id),
         )
