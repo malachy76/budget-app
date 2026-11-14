@@ -2,33 +2,33 @@
 #
 # ACCOUNTING MODEL (read this before changing anything here)
 #
-#   * The original sale / treatment bill is NEVER modified by a write-off or
-#     a recovery — not its total, not amount_paid, not payment_status, not
-#     its stock movements or COGS. Revenue and gross profit therefore stay
-#     exactly as they were.
-#   * Collectible debt for a transaction is DERIVED, never stored:
-#         collectible = total - amount_paid - SUM(active write-offs)
-#     "Active" means the write-off has no row in debt_write_off_reversals.
-#   * A write-off is NOT a payment: it never touches the payments tables.
-#   * A recovery is NOT a payment against collectible debt and NOT a sale:
-#     it only reduces the unrecovered written-off balance
-#         unrecovered = SUM(active write-offs) - SUM(recoveries)
-#     and never touches sales, treatments, payments or inventory.
-#   * One money event lands in exactly one bucket: an ordinary payment
-#     (customers.record_payment / treatments.record_treatment_payment) or a
-#     recovery (record_recovery below) — never both.
+# * The original sale / treatment bill is NEVER modified by a write-off or
+# a recovery — not its total, not amount_paid, not payment_status, not
+# its stock movements or COGS. Revenue and gross profit therefore stay
+# exactly as they were.
+# * Collectible debt for a transaction is DERIVED, never stored:
+# collectible = total - amount_paid - SUM(active write-offs)
+# "Active" means the write-off has no row in debt_write_off_reversals.
+# * A write-off is NOT a payment: it never touches the payments tables.
+# * A recovery is NOT a payment against collectible debt and NOT a sale:
+# it only reduces the unrecovered written-off balance
+# unrecovered = SUM(active write-offs) - SUM(recoveries)
+# and never touches sales, treatments, payments or inventory.
+# * One money event lands in exactly one bucket: an ordinary payment
+# (customers.record_payment / treatments.record_treatment_payment) or a
+# recovery (record_recovery below) — never both.
 #
 # SAME RULES as business.py/sales.py/customers.py:
-#   - every public function takes business_id AND the logged-in
-#     owner_user_id and re-verifies ownership via business.get_business();
-#   - db.get_db() commits on ANY normal exit (even a bare return), so every
-#     validation failure inside a transaction is RAISED (BadDebtError),
-#     never returned, guaranteeing rollback instead of a partial commit;
-#   - the parent sale/treatment row is locked (SELECT ... FOR UPDATE) for
-#     the whole transaction — the same lock the payment functions take — so
-#     a write-off, a recovery and an ordinary payment on the same
-#     transaction can never interleave and read stale balances.
-#   - Decimal / NUMERIC only. No floats for money.
+# - every public function takes business_id AND the logged-in
+# owner_user_id and re-verifies ownership via business.get_business();
+# - db.get_db() commits on ANY normal exit (even a bare return), so every
+# validation failure inside a transaction is RAISED (BadDebtError),
+# never returned, guaranteeing rollback instead of a partial commit;
+# - the parent sale/treatment row is locked (SELECT ... FOR UPDATE) for
+# the whole transaction — the same lock the payment functions take — so
+# a write-off, a recovery and an ordinary payment on the same
+# transaction can never interleave and read stale balances.
+# - Decimal / NUMERIC only. No floats for money.
 
 from datetime import timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -60,8 +60,7 @@ _ZERO = Decimal("0")
 
 
 class BadDebtError(Exception):
-    """Raised for any validation failure inside a write-off / recovery
-    transaction so get_db() rolls back instead of committing partial work."""
+    """Raised for any validation failure inside a write-off / recovery transaction so get_db() rolls back instead of committing partial work."""
     pass
 
 
@@ -101,9 +100,7 @@ def _fk_column(source_type):
 
 
 def _aware(dt):
-    """Older tables (payments, treatment_payments) use naive TIMESTAMP columns
-    that hold UTC (Supabase's server timezone); the 5A-4 tables use
-    TIMESTAMPTZ. Normalise so both can be sorted together."""
+    """Older tables (payments, treatment_payments) use naive TIMESTAMP columns that hold UTC (Supabase's server timezone); the 5A-4 tables use TIMESTAMPTZ. Normalise so both can be sorted together."""
     if dt is not None and dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
@@ -119,8 +116,7 @@ def _clean_key(idempotency_key):
 # ── SQL fragments (shared with customers.py so balances can never disagree) ─
 
 def active_write_off_sql(source_type, alias):
-    """Scalar subquery: SUM of this transaction's NON-reversed write-offs.
-    `alias` is the sales/treatments table alias in the enclosing query."""
+    """Scalar subquery: SUM of this transaction's NON-reversed write-offs. `alias` is the sales/treatments table alias in the enclosing query."""
     col = _fk_column(source_type)
     return (
         "COALESCE((SELECT SUM(w.amount) FROM debt_write_offs w "
@@ -151,23 +147,22 @@ def _treatment_total_sql(alias="t"):
 
 
 def _base_rows_sql(source_type):
-    """One row per transaction with every figure needed, as a derived table
-    taking ONE parameter: business_id."""
+    """One row per transaction with every figure needed, as a derived table taking ONE parameter: business_id."""
     if source_type == SOURCE_SALE:
         return (
             "SELECT 'sale' AS source_type, s.id AS tx_id, s.customer_id, "
-            "  ('Sale #' || s.id) AS label, s.created_at AS tx_created_at, "
-            "  s.total_amount AS total, s.amount_paid AS paid, "
-            f"  {active_write_off_sql(SOURCE_SALE, 's')} AS written_off, "
-            f"  {_recovered_sql(SOURCE_SALE, 's')} AS recovered "
+            " ('Sale #' || s.id) AS label, s.created_at AS tx_created_at, "
+            " s.total_amount AS total, s.amount_paid AS paid, "
+            f" {active_write_off_sql(SOURCE_SALE, 's')} AS written_off, "
+            f" {_recovered_sql(SOURCE_SALE, 's')} AS recovered "
             "FROM sales s WHERE s.business_id = %s"
         )
     return (
         "SELECT 'treatment' AS source_type, t.id AS tx_id, t.customer_id, "
-        "  ('Treatment: ' || t.patient_identifier) AS label, t.created_at AS tx_created_at, "
-        f"  {_treatment_total_sql('t')} AS total, t.amount_paid AS paid, "
-        f"  {active_write_off_sql(SOURCE_TREATMENT, 't')} AS written_off, "
-        f"  {_recovered_sql(SOURCE_TREATMENT, 't')} AS recovered "
+        " ('Treatment: ' || t.patient_identifier) AS label, t.created_at AS tx_created_at, "
+        f" {_treatment_total_sql('t')} AS total, t.amount_paid AS paid, "
+        f" {active_write_off_sql(SOURCE_TREATMENT, 't')} AS written_off, "
+        f" {_recovered_sql(SOURCE_TREATMENT, 't')} AS recovered "
         "FROM treatments t WHERE t.business_id = %s"
     )
 
@@ -183,9 +178,7 @@ def _all_rows_sql(source_type=None):
 # ── Locked / unlocked transaction snapshot ──────────────────────────────────
 
 def _snapshot(cursor, source_type, tx_id, business_id, lock=False):
-    """Current figures for one transaction, scoped to the business. With
-    lock=True the parent row is locked FOR UPDATE until the surrounding
-    transaction ends. Returns None if it doesn't exist in this business."""
+    """Current figures for one transaction, scoped to the business. With lock=True the parent row is locked FOR UPDATE until the surrounding transaction ends. Returns None if it doesn't exist in this business."""
     suffix = " FOR UPDATE" if lock else ""
     if source_type == SOURCE_SALE:
         cursor.execute(
@@ -210,7 +203,7 @@ def _snapshot(cursor, source_type, tx_id, business_id, lock=False):
             return None
         cursor.execute(
             "SELECT COALESCE(SUM(ROUND(d.quantity * d.unit_price, 2)) "
-            "  FILTER (WHERE d.unit_price IS NOT NULL), 0) AS dispensed "
+            " FILTER (WHERE d.unit_price IS NOT NULL), 0) AS dispensed "
             "FROM treatment_items ti "
             "LEFT JOIN treatment_dispensing d ON d.treatment_item_id = ti.id "
             "WHERE ti.treatment_id=%s AND ti.business_id=%s",
@@ -284,12 +277,8 @@ def _fail(e):
 
 # ── Write-off ───────────────────────────────────────────────────────────────
 
-def write_off_debt(source_type, transaction_id, business_id, owner_user_id,
-                    created_by_user_id, amount, reason_category, reason_note,
-                    idempotency_key):
-    """Writes off all or part of one transaction's collectible balance.
-    Returns (write_off_id, message) or (None, error_message); on failure
-    nothing is written."""
+def write_off_debt(source_type, transaction_id, business_id, owner_user_id, created_by_user_id, amount, reason_category, reason_note, idempotency_key):
+    """Writes off all or part of one transaction's collectible balance. Returns (write_off_id, message) or (None, error_message); on failure nothing is written."""
     try:
         _require_business(business_id, owner_user_id)
         _check_source(source_type)
@@ -338,11 +327,8 @@ def write_off_debt(source_type, transaction_id, business_id, owner_user_id,
         return _fail(e)
 
 
-def reverse_write_off(write_off_id, business_id, owner_user_id,
-                       created_by_user_id, reason):
-    """Auditable correction: records a reversal row (the write-off row stays
-    forever) so the amount becomes collectible again. Not allowed if that
-    would leave more recovered than written off on the transaction."""
+def reverse_write_off(write_off_id, business_id, owner_user_id, created_by_user_id, reason):
+    """Auditable correction: records a reversal row (the write-off row stays forever) so the amount becomes collectible again. Not allowed if that would leave more recovered than written off on the transaction."""
     try:
         _require_business(business_id, owner_user_id)
         reason = (reason or "").strip()
@@ -386,12 +372,8 @@ def reverse_write_off(write_off_id, business_id, owner_user_id,
 
 # ── Recovery ────────────────────────────────────────────────────────────────
 
-def record_recovery(source_type, transaction_id, business_id, owner_user_id,
-                     created_by_user_id, amount, payment_method, note,
-                     idempotency_key):
-    """Money received against a PREVIOUSLY WRITTEN-OFF amount. Reduces the
-    unrecovered written-off balance only. Creates no sale, touches no
-    inventory, never alters collectible debt or any payment row."""
+def record_recovery(source_type, transaction_id, business_id, owner_user_id, created_by_user_id, amount, payment_method, note, idempotency_key):
+    """Money received against a PREVIOUSLY WRITTEN-OFF amount. Reduces the unrecovered written-off balance only. Creates no sale, touches no inventory, never alters collectible debt or any payment row."""
     try:
         _require_business(business_id, owner_user_id)
         _check_source(source_type)
@@ -439,8 +421,7 @@ def record_recovery(source_type, transaction_id, business_id, owner_user_id,
 # ── Reads (all scoped to business_id AND verified owner) ────────────────────
 
 def get_transaction_snapshot(source_type, transaction_id, business_id, owner_user_id):
-    """Figures for the confirmation screen: customer, original total, paid,
-    previously written off, collectible, recovered. None if not found."""
+    """Figures for the confirmation screen: customer, original total, paid, previously written off, collectible, recovered. None if not found."""
     _require_business(business_id, owner_user_id)
     _check_source(source_type)
     with get_db() as (conn, cursor):
@@ -471,32 +452,29 @@ def _rows_with_customers(business_id, where_sql, source_type=None):
 
 
 def get_collectible_debts(business_id, owner_user_id, source_type=None):
-    """Transactions that still have a collectible balance (candidates for a
-    write-off). Only transactions linked to a customer are listed."""
+    """Transactions that still have a collectible balance (candidates for a write-off). Only transactions linked to a customer are listed."""
     _require_business(business_id, owner_user_id)
     return _rows_with_customers(
         business_id, "x.total - x.paid - x.written_off > 0", source_type)
 
 
 def get_unrecovered_write_offs(business_id, owner_user_id, source_type=None):
-    """Transactions with a written-off balance not yet recovered
-    (candidates for recording a recovery)."""
+    """Transactions with a written-off balance not yet recovered (candidates for recording a recovery)."""
     _require_business(business_id, owner_user_id)
     return _rows_with_customers(
         business_id, "x.written_off - x.recovered > 0", source_type)
 
 
 def get_bad_debt_summary(business_id, owner_user_id):
-    """Lifetime totals. 'Written off' counts ACTIVE (non-reversed)
-    write-offs only; reversed ones are shown separately."""
+    """Lifetime totals. 'Written off' counts ACTIVE (non-reversed) write-offs only; reversed ones are shown separately."""
     _require_business(business_id, owner_user_id)
     base, n = _all_rows_sql(None)
     with get_db() as (conn, cursor):
         cursor.execute(
             "SELECT COALESCE(SUM(written_off), 0) AS total_written_off, "
-            "  COALESCE(SUM(recovered), 0) AS total_recovered, "
-            "  COUNT(*) FILTER (WHERE written_off > 0) AS written_off_transactions, "
-            "  COUNT(*) FILTER (WHERE recovered > 0) AS transactions_with_recovery "
+            " COALESCE(SUM(recovered), 0) AS total_recovered, "
+            " COUNT(*) FILTER (WHERE written_off > 0) AS written_off_transactions, "
+            " COUNT(*) FILTER (WHERE recovered > 0) AS transactions_with_recovery "
             f"FROM ({base}) x",
             (business_id,) * n,
         )
@@ -537,20 +515,18 @@ def _paid_before(cursor, source_type, tx_id, business_id, at):
     return cursor.fetchone()["s"]
 
 
-def get_write_off_events(business_id, owner_user_id, start_date=None, end_date=None,
-                          source_type=None):
-    """Every write-off (including reversed ones, flagged) dated by the day it
-    was actually made — never by the original sale date. Newest first."""
+def get_write_off_events(business_id, owner_user_id, start_date=None, end_date=None, source_type=None):
+    """Every write-off (including reversed ones, flagged) dated by the day it was actually made — never by the original sale date. Newest first."""
     _require_business(business_id, owner_user_id)
     if source_type is not None:
         _check_source(source_type)
     fsql, fparams = _date_filter("w.created_at", start_date, end_date)
     sql = (
         "SELECT w.id, w.source_type, w.sale_id, w.treatment_id, w.customer_id, "
-        "  c.name AS customer_name, c.phone AS customer_phone, w.amount, "
-        "  w.reason_category, w.reason_note, w.created_at, u.username AS authorized_by, "
-        "  (r.id IS NOT NULL) AS reversed, r.created_at AS reversed_at, "
-        "  r.reason AS reversal_reason "
+        " c.name AS customer_name, c.phone AS customer_phone, w.amount, "
+        " w.reason_category, w.reason_note, w.created_at, u.username AS authorized_by, "
+        " (r.id IS NOT NULL) AS reversed, r.created_at AS reversed_at, "
+        " r.reason AS reversal_reason "
         "FROM debt_write_offs w "
         "JOIN customers c ON c.id = w.customer_id AND c.business_id = w.business_id "
         "LEFT JOIN users u ON u.id = w.created_by "
@@ -589,8 +565,7 @@ def get_write_off_events(business_id, owner_user_id, start_date=None, end_date=N
         return events
 
 
-def get_recovery_events(business_id, owner_user_id, start_date=None, end_date=None,
-                         source_type=None):
+def get_recovery_events(business_id, owner_user_id, start_date=None, end_date=None, source_type=None):
     """Every recovery, dated by the day the money was actually received."""
     _require_business(business_id, owner_user_id)
     if source_type is not None:
@@ -598,8 +573,8 @@ def get_recovery_events(business_id, owner_user_id, start_date=None, end_date=No
     fsql, fparams = _date_filter("rc.created_at", start_date, end_date)
     sql = (
         "SELECT rc.id, rc.source_type, rc.sale_id, rc.treatment_id, rc.customer_id, "
-        "  c.name AS customer_name, c.phone AS customer_phone, rc.amount, "
-        "  rc.payment_method, rc.note, rc.created_at, u.username AS authorized_by "
+        " c.name AS customer_name, c.phone AS customer_phone, rc.amount, "
+        " rc.payment_method, rc.note, rc.created_at, u.username AS authorized_by "
         "FROM debt_recoveries rc "
         "JOIN customers c ON c.id = rc.customer_id AND c.business_id = rc.business_id "
         "LEFT JOIN users u ON u.id = rc.created_by "
@@ -628,8 +603,7 @@ def get_recovery_events(business_id, owner_user_id, start_date=None, end_date=No
 
 
 def get_transaction_history(source_type, transaction_id, business_id, owner_user_id):
-    """Full chronological history of one transaction: ordinary payments,
-    write-offs, reversals and recoveries — each kept distinct."""
+    """Full chronological history of one transaction: ordinary payments, write-offs, reversals and recoveries — each kept distinct."""
     _require_business(business_id, owner_user_id)
     _check_source(source_type)
     col = _fk_column(source_type)
@@ -647,13 +621,14 @@ def get_transaction_history(source_type, transaction_id, business_id, owner_user
             (transaction_id, business_id),
         )
         for r in cursor.fetchall():
-            events.append({"kind": "Payment", "amount": r["amount"], "at": _aware(r["created_at"]),
+            events.append({"kind": "Payment reversed" if r["amount"] < 0 else "Payment",
+                           "amount": r["amount"], "at": _aware(r["created_at"]),
                            "detail": f"via {r['payment_method'] or 'unspecified'}"
                                      + (f" \u2014 {r['note']}" if r["note"] else ""),
                            "by": r["username"]})
         cursor.execute(
             f"SELECT w.id, w.amount, w.reason_category, w.reason_note, w.created_at, "
-            f"  u.username, r.created_at AS rev_at, r.reason AS rev_reason, ru.username AS rev_by "
+            f" u.username, r.created_at AS rev_at, r.reason AS rev_reason, ru.username AS rev_by "
             f"FROM debt_write_offs w LEFT JOIN users u ON u.id = w.created_by "
             f"LEFT JOIN debt_write_off_reversals r ON r.write_off_id = w.id "
             f"LEFT JOIN users ru ON ru.id = r.created_by "
