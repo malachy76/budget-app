@@ -12,6 +12,7 @@ from treatments import (
     ROUTES, STATUSES, STATUS_LABELS,
 )
 from sales import PAYMENT_METHODS
+from ui_idempotency import get_key, clear_key
 from business import is_treatment_management_enabled
 
 _BILLING_STATUS_LABELS = {"paid": "Paid", "partial": "Partially Paid", "unpaid": "Unpaid", "written_off": "Written Off"}
@@ -258,8 +259,10 @@ def _render_add_treatment_form(business_id, user_id):
                     tx_diagnosis, start_date,
                     int(tx_duration) if tx_duration else None, tx_notes, draft,
                     tx_service_charge or 0,
+                    idempotency_key=get_key("treatment_create"),
                 )
                 if treatment_id:
+                    clear_key("treatment_create")
                     st.success(msg)
                     st.session_state["_tx_items_draft"] = []
                     st.session_state["_show_add_treatment"] = False
@@ -285,6 +288,10 @@ def _render_treatment_detail(treatment_id, business_id, user_id):
         st.session_state["_treatment_detail_id"] = None
         st.rerun()
         return
+
+    _flash = st.session_state.pop("_tx_flash", None)
+    if _flash:
+        st.success(_flash)
 
     if st.button("\u2190 Back to Treatments", key="tx_back_btn"):
         st.session_state["_treatment_detail_id"] = None
@@ -375,9 +382,11 @@ def _render_treatment_detail(treatment_id, business_id, user_id):
                             ok, msg = record_treatment_payment(
                                 treatment_id, business_id, user_id, user_id,
                                 pay_amount, pay_method, pay_note,
+                                idempotency_key=get_key(f"tx_pay_{treatment_id}"),
                             )
                             if ok:
-                                st.success(msg)
+                                clear_key(f"tx_pay_{treatment_id}")
+                                st.session_state["_tx_flash"] = msg
                                 st.session_state.pop("tx_pay_amount", None)
                                 st.session_state.pop("tx_pay_note", None)
                             else:
@@ -458,9 +467,11 @@ def _render_treatment_detail(treatment_id, business_id, user_id):
                             ok, msg = record_dispensing(
                                 it["id"], business_id, user_id, user_id,
                                 dispense_qty, dispense_note,
+                                idempotency_key=get_key(f"dispense_{it['id']}"),
                             )
                             if ok:
-                                st.success(msg)
+                                clear_key(f"dispense_{it['id']}")
+                                st.session_state["_tx_flash"] = msg
                                 st.session_state.pop(f"dispense_qty_{it['id']}", None)
                                 st.session_state.pop(f"dispense_note_{it['id']}", None)
                             else:
