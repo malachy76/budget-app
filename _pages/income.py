@@ -20,16 +20,7 @@ def render_income(user_id):
         banks = cursor.fetchall()
 
     if not banks:
-        st.markdown("""
-        <div style="background:#f4f7f6;border-radius:12px;padding:24px;text-align:center;color:#6b7f8e;margin:12px 0;">
-          <div style="font-size:2rem;">&#x1F4B0;</div>
-          <div style="font-weight:700;margin:6px 0 4px;color:#1a2e3b;">Add a bank account first</div>
-          <div style="font-size:0.92rem;">
-            Before you can record income, Budget Right needs to know which account to credit.<br>
-            Go to <strong>Banks</strong> and add your first account — it only takes 30 seconds.
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(""" <div style="background:#f4f7f6;border-radius:12px;padding:24px;text-align:center;color:#6b7f8e;margin:12px 0;"> <div style="font-size:2rem;">&#x1F4B0;</div> <div style="font-weight:700;margin:6px 0 4px;color:#1a2e3b;">Add a bank account first</div> <div style="font-size:0.92rem;"> Before you can record income, Budget Right needs to know which account to credit.<br> Go to <strong>Banks</strong> and add your first account — it only takes 30 seconds. </div> </div> """, unsafe_allow_html=True)
         if st.button("Go to Banks page", key="income_goto_banks"):
             st.session_state.nav_radio = pages.index("Banks")
             st.rerun()
@@ -39,11 +30,7 @@ def render_income(user_id):
     if st.session_state.get("edit_income_id"):
         edit_id = st.session_state.edit_income_id
         with get_db() as (conn, cursor):
-            cursor.execute("""
-                SELECT t.id, t.description, t.amount, t.bank_id FROM transactions t
-                JOIN banks b ON t.bank_id = b.id
-                WHERE t.id=%s AND b.user_id=%s AND t.type='credit'
-            """, (edit_id, user_id))
+            cursor.execute(""" SELECT t.id, t.description, t.amount, t.bank_id FROM transactions t JOIN banks b ON t.bank_id = b.id WHERE t.id=%s AND b.user_id=%s AND t.type='credit' """, (edit_id, user_id))
             inc_row = cursor.fetchone()
         if inc_row:
             display_source = inc_row["description"].replace("Income: ", "", 1)
@@ -84,13 +71,17 @@ def render_income(user_id):
             if inc_submitted:
                 if income_source and income_amount > 0:
                     bank_id = bank_map_income[selected_bank_income]
-                    with get_db() as (conn, cursor):
-                        cursor.execute("UPDATE banks SET balance = balance + %s WHERE id=%s", (income_amount, bank_id))
-                        cursor.execute("INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'credit', %s, %s, %s)",
-                                       (bank_id, income_amount, f"Income: {income_source}", inc_date))
-                    st.success(f"₦{income_amount:,} income recorded!")
-                    st.cache_data.clear()
-                    st.rerun()
+                    from utils import save_income
+                    from ui_idempotency import get_key, clear_key
+                    ok_inc, res_inc = save_income(user_id, bank_id, income_source, income_amount, inc_date,
+                                                  idempotency_key=get_key("personal_income"))
+                    if ok_inc:
+                        clear_key("personal_income")
+                        st.success(f"₦{income_amount:,} income recorded!")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(res_inc)
                 else:
                     st.warning("Please enter a source and amount.")
         else:
@@ -99,12 +90,7 @@ def render_income(user_id):
     st.divider()
     st.subheader("Income History")
     with get_db() as (conn, cursor):
-        cursor.execute("""
-            SELECT t.id, t.created_at, t.description, t.amount, t.bank_id, b.bank_name, b.account_number
-            FROM transactions t JOIN banks b ON t.bank_id = b.id
-            WHERE b.user_id=%s AND t.type='credit' AND t.description LIKE 'Income:%%'
-            ORDER BY t.created_at DESC
-        """, (user_id,))
+        cursor.execute(""" SELECT t.id, t.created_at, t.description, t.amount, t.bank_id, b.bank_name, b.account_number FROM transactions t JOIN banks b ON t.bank_id = b.id WHERE b.user_id=%s AND t.type='credit' AND t.description LIKE 'Income:%%' ORDER BY t.created_at DESC """, (user_id,))
         income_data = cursor.fetchall()
 
     if income_data:
@@ -129,18 +115,7 @@ def render_income(user_id):
                 source = inc["description"].replace("Income: ", "", 1)
                 card_col, edit_col, del_col = st.columns([5, 0.5, 0.5])
                 with card_col:
-                    st.markdown(f"""
-                    <div class="exp-card" style="border-left-color:#0e7c5b;">
-                      <div class="exp-card-left">
-                        <div class="exp-card-name">{source}</div>
-                        <div class="exp-card-bank">Bank: {inc['bank_name']} (****{inc['account_number']})</div>
-                        <div class="exp-card-date">Date: {inc['created_at']}</div>
-                      </div>
-                      <div class="exp-card-right">
-                        <div class="exp-card-amount" style="color:#0e7c5b;">+₦{inc['amount']:,}</div>
-                      </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    st.markdown(f""" <div class="exp-card" style="border-left-color:#0e7c5b;"> <div class="exp-card-left"> <div class="exp-card-name">{source}</div> <div class="exp-card-bank">Bank: {inc['bank_name']} (****{inc['account_number']})</div> <div class="exp-card-date">Date: {inc['created_at']}</div> </div> <div class="exp-card-right"> <div class="exp-card-amount" style="color:#0e7c5b;">+₦{inc['amount']:,}</div> </div> </div> """, unsafe_allow_html=True)
                 with edit_col:
                     if st.button("✏️", key=f"edit_inc_{inc['id']}", help="Edit income"):
                         st.session_state.edit_income_id = inc["id"]
