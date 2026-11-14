@@ -5,18 +5,57 @@ from styles import render_page_header
 from customers import (
     get_customers_with_balance, get_credit_summary, get_customer,
     get_customer_sales, get_sale_items, get_sale_payments, record_payment,
-    get_customer_treatments, update_customer_phone,
+    get_customer_treatments, update_customer_phone, reverse_payment,
 )
 from business import is_treatment_management_enabled
-from treatments import get_treatment_payments, record_treatment_payment, STATUS_LABELS as TX_STATUS_LABELS
+from treatments import (get_treatment_payments, record_treatment_payment, reverse_treatment_payment,
+                        STATUS_LABELS as TX_STATUS_LABELS)
 from sales import PAYMENT_METHODS
+from ui_idempotency import get_key, clear_key
 
 _STATUS_LABEL = {"paid": "Paid", "partial": "Partially Paid", "unpaid": "Unpaid / Credit"}
 
 
+
+def _render_payment_rows(payments, kind, business_id, user_id):
+    """Payment history lines. A mistaken payment is CORRECTED, never deleted: 'Reverse' adds a negative correction line and the original stays visible."""
+    reversed_ids = {p["reverses_payment_id"] for p in payments if p.get("reverses_payment_id")}
+    for p in payments:
+        is_reversal = p["amount"] < 0
+        tag = " \u21A9\uFE0F reversal" if is_reversal else (" (reversed)" if p["id"] in reversed_ids else "")
+        st.caption(
+            f"\u20A6{p['amount']:,.2f} via {p['payment_method'] or 'unspecified'} "
+            f"\u2014 {p['created_at'].strftime('%d %b %Y %H:%M')} \u2014 ref #{p['id']}{tag}"
+            + (f" \u2014 {p['note']}" if p["note"] else "")
+            + (f" (by {p['recorded_by_username']})" if p.get("recorded_by_username") else "")
+        )
+        if is_reversal or p["id"] in reversed_ids:
+            continue
+        open_key = f"_rev_open_{kind}_{p['id']}"
+        if st.button("Reverse this payment\u2026", key=f"rev_btn_{kind}_{p['id']}"):
+            st.session_state[open_key] = not st.session_state.get(open_key, False)
+        if st.session_state.get(open_key, False):
+            with st.container(border=True):
+                st.caption(
+                    "Use this only for a payment recorded by mistake. The original line stays in the "
+                    "history and a correction line is added; the amount becomes owed again."
+                )
+                reason = st.text_input("Reason (required)", key=f"rev_reason_{kind}_{p['id']}",
+                                       placeholder="e.g. Entered on the wrong customer")
+                if st.button("Confirm reversal", key=f"rev_confirm_{kind}_{p['id']}", type="primary"):
+                    fn = reverse_payment if kind == "sale" else reverse_treatment_payment
+                    ok, msg = fn(p["id"], business_id, user_id, user_id, reason,
+                                 idempotency_key=get_key(f"rev_{kind}_{p['id']}"))
+                    if ok:
+                        clear_key(f"rev_{kind}_{p['id']}")
+                        st.session_state.pop(open_key, None)
+                        st.session_state["_cust_flash"] = msg
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
 def _render_phone_editor(customer_id, business_id, user_id, key_prefix):
-    """Phase 5B-1: add or correct a customer's phone number. Blank and
-    whitespace-only values are rejected by the backend."""
+    """Phase 5B-1: add or correct a customer's phone number. Blank and whitespace-only values are rejected by the backend."""
     new_phone = st.text_input(
         "Phone number", placeholder="e.g. 08012345678", key=f"{key_prefix}_phone_{customer_id}",
     )
@@ -32,6 +71,9 @@ def _render_phone_editor(customer_id, business_id, user_id, key_prefix):
 
 def render_business_customers(user_id):
     render_page_header()
+    _flash = st.session_state.pop("_cust_flash", None)
+    if _flash:
+        st.success(_flash)
     st.markdown("### \U0001F465 Customers / Credit")
 
     business_id = st.session_state.get("active_business_id")
@@ -68,7 +110,7 @@ def render_business_customers(user_id):
     st.caption(
         f"Stock-sale debt: \u20A6{summary['stock_sale_outstanding']:,.2f} "
         f"({summary['open_sales_count']} sale(s))"
-        + (f"  \u00b7  Treatment debt: \u20A6{summary['treatment_outstanding']:,.2f} "
+        + (f" \u00b7 Treatment debt: \u20A6{summary['treatment_outstanding']:,.2f} "
            f"({summary['open_treatments_count']} bill(s))" if _show_tx else "")
     )
     st.caption("This is money owed to you — not profit, and not yet collected.")
@@ -209,12 +251,7 @@ def _render_customer_detail(customer_id, business_id, user_id):
                         payments = []
                     if not payments:
                         st.caption("No payments recorded yet.")
-                    for p in payments:
-                        st.caption(
-                            f"\u20A6{p['amount']:,.2f} via {p['payment_method'] or 'unspecified'} "
-                            f"\u2014 {p['created_at'].strftime('%d %b %Y %H:%M')}"
-                            + (f" \u2014 {p['note']}" if p["note"] else "")
-                        )
+                    _render_payment_rows(payments, "sale", business_id, user_id)
 
             if sale["outstanding"] > 0:
                 if st.button("Record a payment", key=f"toggle_pay_{sale['id']}", use_container_width=True):
@@ -251,9 +288,11 @@ def _render_customer_detail(customer_id, business_id, user_id):
                                 ok, msg = record_payment(
                                     sale["id"], business_id, user_id, user_id,
                                     pay_amount, pay_method, pay_note,
+                                    idempotency_key=get_key(f"pay_sale_{sale['id']}"),
                                 )
                                 if ok:
-                                    st.success(msg)
+                                    clear_key(f"pay_sale_{sale['id']}")
+                                    st.session_state["_cust_flash"] = msg
                                     st.session_state.pop(pay_key, None)
                                     st.session_state.pop(f"pay_note_{sale['id']}", None)
                                 else:
@@ -282,7 +321,7 @@ def _render_customer_detail(customer_id, business_id, user_id):
             else:
                 status = "paid" if tx["outstanding"] <= 0 and tx["total_bill"] > 0 else ("partial" if tx["amount_paid"] > 0 else "unpaid")
                 pay_status_label = _STATUS_LABEL.get(status, status)
-            st.caption(f"Payment status: {pay_status_label}  \u00b7  "
+            st.caption(f"Payment status: {pay_status_label} \u00b7 "
                        f"Treatment status: {TX_STATUS_LABELS.get(tx['status'], tx['status'])}")
             if tx["written_off"] > 0:
                 st.caption(f"Written off as bad debt: \u20A6{tx['written_off']:,.2f}")
@@ -298,12 +337,7 @@ def _render_customer_detail(customer_id, business_id, user_id):
                         tx_payments = []
                     if not tx_payments:
                         st.caption("No payments recorded yet.")
-                    for p in tx_payments:
-                        st.caption(
-                            f"\u20A6{p['amount']:,.2f} via {p['payment_method'] or 'unspecified'} "
-                            f"\u2014 {p['created_at'].strftime('%d %b %Y %H:%M')}"
-                            + (f" \u2014 {p['note']}" if p["note"] else "")
-                        )
+                    _render_payment_rows(tx_payments, "treatment", business_id, user_id)
 
             if tx["outstanding"] > 0:
                 if st.button("Record a payment", key=f"toggle_tx_pay2_{tx['id']}", use_container_width=True):
@@ -340,9 +374,11 @@ def _render_customer_detail(customer_id, business_id, user_id):
                                 ok, msg = record_treatment_payment(
                                     tx["id"], business_id, user_id, user_id,
                                     pay_amount, pay_method, pay_note,
+                                    idempotency_key=get_key(f"pay_tx_{tx['id']}"),
                                 )
                                 if ok:
-                                    st.success(msg)
+                                    clear_key(f"pay_tx_{tx['id']}")
+                                    st.session_state["_cust_flash"] = msg
                                     st.session_state.pop(pay_key, None)
                                     st.session_state.pop(f"tx_pay2_note_{tx['id']}", None)
                                 else:
