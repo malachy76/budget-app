@@ -6,309 +6,75 @@
 
 import streamlit as st
 from db import get_db
+import schema_5b3
 
 
 def _col_type(cursor, table, column):
     """Return current data_type of a column, '' if not found."""
-    cursor.execute("""
-        SELECT data_type FROM information_schema.columns
-        WHERE table_name = %s AND column_name = %s LIMIT 1
-    """, (table, column))
+    cursor.execute(""" SELECT data_type FROM information_schema.columns WHERE table_name = %s AND column_name = %s LIMIT 1 """, (table, column))
     row = cursor.fetchone()
     return (row["data_type"] or "").lower() if row else ""
 
 
 @st.cache_resource(show_spinner=False)
 def create_tables():
-    """
-    Runs ONCE per server process. Uses a single connection for all DDL so
-    the pool (size 8) is never exhausted. Every subsequent call is a free
-    cache hit — zero DB work, zero latency.
-    """
+    """ Runs ONCE per server process. Uses a single connection for all DDL so the pool (size 8) is never exhausted. Every subsequent call is a free cache hit — zero DB work, zero latency. """
     with get_db() as (conn, cursor):
 
         # ── Core tables ───────────────────────────────────────────────────────
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            surname TEXT NOT NULL,
-            other_names TEXT NOT NULL,
-            email TEXT UNIQUE NOT NULL,
-            username TEXT UNIQUE NOT NULL,
-            password BYTEA NOT NULL,
-            email_verified INTEGER DEFAULT 0,
-            verification_code TEXT,
-            verification_code_expires_at TIMESTAMP,
-            role TEXT DEFAULT 'user',
-            monthly_spending_limit INTEGER DEFAULT 0,
-            onboarding_complete INTEGER DEFAULT 0,
-            allow_overdraft INTEGER DEFAULT 0,
-            created_at DATE,
-            last_login DATE
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS users ( id SERIAL PRIMARY KEY, surname TEXT NOT NULL, other_names TEXT NOT NULL, email TEXT UNIQUE NOT NULL, username TEXT UNIQUE NOT NULL, password BYTEA NOT NULL, email_verified INTEGER DEFAULT 0, verification_code TEXT, verification_code_expires_at TIMESTAMP, role TEXT DEFAULT 'user', monthly_spending_limit INTEGER DEFAULT 0, onboarding_complete INTEGER DEFAULT 0, allow_overdraft INTEGER DEFAULT 0, created_at DATE, last_login DATE )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS banks (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            bank_name TEXT NOT NULL,
-            account_name TEXT NOT NULL,
-            account_number TEXT NOT NULL,
-            balance INTEGER DEFAULT 0,
-            min_balance_alert INTEGER DEFAULT 0
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS banks ( id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, bank_name TEXT NOT NULL, account_name TEXT NOT NULL, account_number TEXT NOT NULL, balance INTEGER DEFAULT 0, min_balance_alert INTEGER DEFAULT 0 )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS transactions (
-            id SERIAL PRIMARY KEY,
-            bank_id INTEGER NOT NULL REFERENCES banks(id) ON DELETE CASCADE,
-            type TEXT CHECK(type IN ('credit','debit')),
-            amount INTEGER NOT NULL,
-            description TEXT,
-            created_at DATE DEFAULT CURRENT_DATE
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS transactions ( id SERIAL PRIMARY KEY, bank_id INTEGER NOT NULL REFERENCES banks(id) ON DELETE CASCADE, type TEXT CHECK(type IN ('credit','debit')), amount INTEGER NOT NULL, description TEXT, created_at DATE DEFAULT CURRENT_DATE )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS expenses (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            bank_id INTEGER REFERENCES banks(id) ON DELETE SET NULL,
-            name TEXT NOT NULL,
-            category TEXT,
-            amount INTEGER NOT NULL,
-            created_at DATE DEFAULT CURRENT_DATE,
-            tx_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS expenses ( id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, bank_id INTEGER REFERENCES banks(id) ON DELETE SET NULL, name TEXT NOT NULL, category TEXT, amount INTEGER NOT NULL, created_at DATE DEFAULT CURRENT_DATE, tx_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS goals (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            name TEXT NOT NULL,
-            target_amount INTEGER NOT NULL,
-            current_amount INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'active',
-            created_at DATE DEFAULT CURRENT_DATE
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS goals ( id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, target_amount INTEGER NOT NULL, current_amount INTEGER DEFAULT 0, status TEXT DEFAULT 'active', created_at DATE DEFAULT CURRENT_DATE )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS goal_contributions (
-            id SERIAL PRIMARY KEY,
-            goal_id INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            bank_id INTEGER NOT NULL REFERENCES banks(id) ON DELETE CASCADE,
-            amount INTEGER NOT NULL,
-            contributed_at DATE DEFAULT CURRENT_DATE
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS goal_contributions ( id SERIAL PRIMARY KEY, goal_id INTEGER NOT NULL REFERENCES goals(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, bank_id INTEGER NOT NULL REFERENCES banks(id) ON DELETE CASCADE, amount INTEGER NOT NULL, contributed_at DATE DEFAULT CURRENT_DATE )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS analytics_logins (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            login_date DATE NOT NULL DEFAULT CURRENT_DATE
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS analytics_logins ( id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, login_date DATE NOT NULL DEFAULT CURRENT_DATE )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS session_tokens (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            token TEXT UNIQUE NOT NULL,
-            created_at TIMESTAMP NOT NULL DEFAULT NOW()
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS session_tokens ( id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, token TEXT UNIQUE NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT NOW() )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS rate_limit_log (
-            id SERIAL PRIMARY KEY,
-            identifier TEXT NOT NULL,
-            action TEXT NOT NULL,
-            attempted_at TIMESTAMP NOT NULL DEFAULT NOW()
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS rate_limit_log ( id SERIAL PRIMARY KEY, identifier TEXT NOT NULL, action TEXT NOT NULL, attempted_at TIMESTAMP NOT NULL DEFAULT NOW() )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS category_budgets (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            category TEXT NOT NULL,
-            monthly_limit INTEGER NOT NULL DEFAULT 0,
-            UNIQUE(user_id, category)
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS category_budgets ( id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, category TEXT NOT NULL, monthly_limit INTEGER NOT NULL DEFAULT 0, UNIQUE(user_id, category) )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS recurring_items (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            type TEXT NOT NULL CHECK(type IN ('income','expense')),
-            name TEXT NOT NULL,
-            category TEXT,
-            amount INTEGER NOT NULL,
-            frequency TEXT NOT NULL DEFAULT 'monthly'
-                CHECK(frequency IN ('daily','weekly','monthly','yearly')),
-            next_due DATE,
-            bank_id INTEGER REFERENCES banks(id) ON DELETE SET NULL,
-            auto_post INTEGER DEFAULT 0,
-            allow_overdraft INTEGER DEFAULT 0,
-            last_posted_at DATE,
-            active INTEGER DEFAULT 1,
-            created_at DATE DEFAULT CURRENT_DATE
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS recurring_items ( id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, type TEXT NOT NULL CHECK(type IN ('income','expense')), name TEXT NOT NULL, category TEXT, amount INTEGER NOT NULL, frequency TEXT NOT NULL DEFAULT 'monthly' CHECK(frequency IN ('daily','weekly','monthly','yearly')), next_due DATE, bank_id INTEGER REFERENCES banks(id) ON DELETE SET NULL, auto_post INTEGER DEFAULT 0, allow_overdraft INTEGER DEFAULT 0, last_posted_at DATE, active INTEGER DEFAULT 1, created_at DATE DEFAULT CURRENT_DATE )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS debts (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            name TEXT NOT NULL,
-            type TEXT NOT NULL DEFAULT 'borrowed'
-                CHECK(type IN ('borrowed','lent')),
-            principal INTEGER NOT NULL,
-            balance_remaining INTEGER NOT NULL,
-            interest_rate NUMERIC(5,2) DEFAULT 0,
-            monthly_payment INTEGER DEFAULT 0,
-            due_date DATE,
-            counterparty TEXT,
-            notes TEXT,
-            status TEXT DEFAULT 'active' CHECK(status IN ('active','paid')),
-            created_at DATE DEFAULT CURRENT_DATE
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS debts ( id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, name TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'borrowed' CHECK(type IN ('borrowed','lent')), principal INTEGER NOT NULL, balance_remaining INTEGER NOT NULL, interest_rate NUMERIC(5,2) DEFAULT 0, monthly_payment INTEGER DEFAULT 0, due_date DATE, counterparty TEXT, notes TEXT, status TEXT DEFAULT 'active' CHECK(status IN ('active','paid')), created_at DATE DEFAULT CURRENT_DATE )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS emergency_fund_plan (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE UNIQUE,
-            target_months INTEGER NOT NULL DEFAULT 6,
-            monthly_expenses_estimate INTEGER DEFAULT 0,
-            current_saved INTEGER DEFAULT 0,
-            updated_at DATE,
-            goal_id INTEGER REFERENCES goals(id) ON DELETE SET NULL
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS emergency_fund_plan ( id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE UNIQUE, target_months INTEGER NOT NULL DEFAULT 6, monthly_expenses_estimate INTEGER DEFAULT 0, current_saved INTEGER DEFAULT 0, updated_at DATE, goal_id INTEGER REFERENCES goals(id) ON DELETE SET NULL )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS user_streaks (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE UNIQUE,
-            current_streak INTEGER NOT NULL DEFAULT 0,
-            longest_streak INTEGER NOT NULL DEFAULT 0,
-            last_active_date DATE,
-            streak_updated_at TIMESTAMP DEFAULT NOW()
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS user_streaks ( id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE UNIQUE, current_streak INTEGER NOT NULL DEFAULT 0, longest_streak INTEGER NOT NULL DEFAULT 0, last_active_date DATE, streak_updated_at TIMESTAMP DEFAULT NOW() )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS notifications (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            type TEXT NOT NULL DEFAULT 'tip'
-                CHECK(type IN ('reminder','tip','milestone','alert','nudge')),
-            title TEXT NOT NULL,
-            body TEXT NOT NULL,
-            icon TEXT DEFAULT '&#x1F514;',
-            read INTEGER NOT NULL DEFAULT 0,
-            created_at TIMESTAMP DEFAULT NOW()
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS notifications ( id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, type TEXT NOT NULL DEFAULT 'tip' CHECK(type IN ('reminder','tip','milestone','alert','nudge')), title TEXT NOT NULL, body TEXT NOT NULL, icon TEXT DEFAULT '&#x1F514;', read INTEGER NOT NULL DEFAULT 0, created_at TIMESTAMP DEFAULT NOW() )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS onboarding_tips (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE UNIQUE,
-            tips_sent INTEGER NOT NULL DEFAULT 0,
-            last_tip_at DATE
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS onboarding_tips ( id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE UNIQUE, tips_sent INTEGER NOT NULL DEFAULT 0, last_tip_at DATE )""")
 
         # ── Business Mode — Phase 1: business profile only ─────────────────────
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS businesses (
-            id SERIAL PRIMARY KEY,
-            owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            business_name TEXT NOT NULL,
-            business_type TEXT,
-            created_at DATE DEFAULT CURRENT_DATE
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS businesses ( id SERIAL PRIMARY KEY, owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, business_name TEXT NOT NULL, business_type TEXT, created_at DATE DEFAULT CURRENT_DATE )""")
 
         # ── Business Mode — Phase 2: products + inventory foundation ───────────
         # NUMERIC (not FLOAT) throughout: money needs exact decimal cents, and
         # quantities need exact fractional units (0.5 bottle, 1.5 litres, etc.)
         # without floating-point drift.
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS products (
-            id SERIAL PRIMARY KEY,
-            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
-            name TEXT NOT NULL,
-            category TEXT,
-            sku TEXT,
-            unit TEXT NOT NULL DEFAULT 'piece',
-            purchase_price NUMERIC(14,2) DEFAULT 0,
-            selling_price NUMERIC(14,2) DEFAULT 0,
-            current_stock NUMERIC(12,3) NOT NULL DEFAULT 0,
-            low_stock_threshold NUMERIC(12,3) DEFAULT 0,
-            expiry_date DATE,
-            is_active INTEGER DEFAULT 1,
-            created_at TIMESTAMP DEFAULT NOW(),
-            updated_at TIMESTAMP DEFAULT NOW()
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS products ( id SERIAL PRIMARY KEY, business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE, name TEXT NOT NULL, category TEXT, sku TEXT, unit TEXT NOT NULL DEFAULT 'piece', purchase_price NUMERIC(14,2) DEFAULT 0, selling_price NUMERIC(14,2) DEFAULT 0, current_stock NUMERIC(12,3) NOT NULL DEFAULT 0, low_stock_threshold NUMERIC(12,3) DEFAULT 0, expiry_date DATE, is_active INTEGER DEFAULT 1, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW() )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS inventory_movements (
-            id SERIAL PRIMARY KEY,
-            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
-            product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-            movement_type TEXT NOT NULL,
-            quantity NUMERIC(12,3) NOT NULL,
-            quantity_before NUMERIC(12,3) NOT NULL,
-            quantity_after NUMERIC(12,3) NOT NULL,
-            unit_cost NUMERIC(14,2),
-            note TEXT,
-            created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-            created_at TIMESTAMP DEFAULT NOW()
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS inventory_movements ( id SERIAL PRIMARY KEY, business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE, movement_type TEXT NOT NULL, quantity NUMERIC(12,3) NOT NULL, quantity_before NUMERIC(12,3) NOT NULL, quantity_after NUMERIC(12,3) NOT NULL, unit_cost NUMERIC(14,2), note TEXT, created_by INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at TIMESTAMP DEFAULT NOW() )""")
 
         # ── Business Mode — Phase 4A: foundation for Sales, Customers, Payments ──
         # No sales/credit UI yet — this just lays the tables down safely so
         # Phase 4B (the actual Sales page) has something solid to build on.
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS customers (
-            id SERIAL PRIMARY KEY,
-            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
-            name TEXT NOT NULL,
-            phone TEXT,
-            created_at TIMESTAMP DEFAULT NOW()
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS customers ( id SERIAL PRIMARY KEY, business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE, name TEXT NOT NULL, phone TEXT, created_at TIMESTAMP DEFAULT NOW() )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS sales (
-            id SERIAL PRIMARY KEY,
-            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
-            customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
-            total_amount NUMERIC(14,2) NOT NULL,
-            amount_paid NUMERIC(14,2) NOT NULL DEFAULT 0,
-            payment_status TEXT NOT NULL DEFAULT 'unpaid',
-            payment_method TEXT,
-            created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-            created_at TIMESTAMP DEFAULT NOW()
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS sales ( id SERIAL PRIMARY KEY, business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE, customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL, total_amount NUMERIC(14,2) NOT NULL, amount_paid NUMERIC(14,2) NOT NULL DEFAULT 0, payment_status TEXT NOT NULL DEFAULT 'unpaid', payment_method TEXT, created_by INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at TIMESTAMP DEFAULT NOW() )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS sale_items (
-            id SERIAL PRIMARY KEY,
-            sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
-            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
-            product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
-            product_name TEXT NOT NULL,
-            quantity NUMERIC(12,3) NOT NULL,
-            unit_price NUMERIC(14,2) NOT NULL,
-            line_total NUMERIC(14,2) NOT NULL,
-            created_at TIMESTAMP DEFAULT NOW()
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS sale_items ( id SERIAL PRIMARY KEY, sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE, business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT, product_name TEXT NOT NULL, quantity NUMERIC(12,3) NOT NULL, unit_price NUMERIC(14,2) NOT NULL, line_total NUMERIC(14,2) NOT NULL, created_at TIMESTAMP DEFAULT NOW() )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS payments (
-            id SERIAL PRIMARY KEY,
-            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
-            sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
-            customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
-            amount NUMERIC(14,2) NOT NULL,
-            payment_method TEXT,
-            note TEXT,
-            created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-            created_at TIMESTAMP DEFAULT NOW()
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS payments ( id SERIAL PRIMARY KEY, business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE, sale_id INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE, customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL, amount NUMERIC(14,2) NOT NULL, payment_method TEXT, note TEXT, created_by INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at TIMESTAMP DEFAULT NOW() )""")
 
         # ── Business Mode — Phase 4D: Treatment Management ──────────────────────
         # Deliberately 3 separate tables/events, not 1: creating a treatment
@@ -316,55 +82,13 @@ def create_tables():
         # all. Only treatment_dispensing rows — one per actual "Record
         # Dispensing" action — write to inventory_movements, the same
         # ledger sales and manual adjustments already use.
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS treatments (
-            id SERIAL PRIMARY KEY,
-            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
-            patient_identifier TEXT NOT NULL,
-            start_date DATE NOT NULL,
-            duration_days INTEGER,
-            status TEXT NOT NULL DEFAULT 'planned',
-            notes TEXT,
-            created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-            created_at TIMESTAMP DEFAULT NOW()
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS treatments ( id SERIAL PRIMARY KEY, business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE, patient_identifier TEXT NOT NULL, start_date DATE NOT NULL, duration_days INTEGER, status TEXT NOT NULL DEFAULT 'planned', notes TEXT, created_by INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at TIMESTAMP DEFAULT NOW() )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS treatment_items (
-            id SERIAL PRIMARY KEY,
-            treatment_id INTEGER NOT NULL REFERENCES treatments(id) ON DELETE CASCADE,
-            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
-            product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
-            quantity_per_administration NUMERIC(12,3) NOT NULL,
-            administrations_per_day NUMERIC(6,2),
-            duration_days INTEGER,
-            route TEXT,
-            planned_quantity NUMERIC(12,3),
-            quantity_dispensed NUMERIC(12,3) NOT NULL DEFAULT 0,
-            notes TEXT,
-            created_at TIMESTAMP DEFAULT NOW()
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS treatment_items ( id SERIAL PRIMARY KEY, treatment_id INTEGER NOT NULL REFERENCES treatments(id) ON DELETE CASCADE, business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT, quantity_per_administration NUMERIC(12,3) NOT NULL, administrations_per_day NUMERIC(6,2), duration_days INTEGER, route TEXT, planned_quantity NUMERIC(12,3), quantity_dispensed NUMERIC(12,3) NOT NULL DEFAULT 0, notes TEXT, created_at TIMESTAMP DEFAULT NOW() )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS treatment_dispensing (
-            id SERIAL PRIMARY KEY,
-            treatment_item_id INTEGER NOT NULL REFERENCES treatment_items(id) ON DELETE CASCADE,
-            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
-            quantity NUMERIC(12,3) NOT NULL,
-            dispensed_at TIMESTAMP DEFAULT NOW(),
-            created_by INTEGER REFERENCES users(id) ON DELETE SET NULL
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS treatment_dispensing ( id SERIAL PRIMARY KEY, treatment_item_id INTEGER NOT NULL REFERENCES treatment_items(id) ON DELETE CASCADE, business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE, quantity NUMERIC(12,3) NOT NULL, dispensed_at TIMESTAMP DEFAULT NOW(), created_by INTEGER REFERENCES users(id) ON DELETE SET NULL )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS debt_payments (
-            id           SERIAL PRIMARY KEY,
-            debt_id      INTEGER NOT NULL REFERENCES debts(id) ON DELETE CASCADE,
-            user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            amount       INTEGER NOT NULL,
-            payment_date DATE    NOT NULL DEFAULT CURRENT_DATE,
-            note         TEXT,
-            created_at   TIMESTAMP DEFAULT NOW()
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS debt_payments ( id SERIAL PRIMARY KEY, debt_id INTEGER NOT NULL REFERENCES debts(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, amount INTEGER NOT NULL, payment_date DATE NOT NULL DEFAULT CURRENT_DATE, note TEXT, created_at TIMESTAMP DEFAULT NOW() )""")
 
         # ── ADD COLUMN migrations (IF NOT EXISTS = instant no-ops) ────────────
         cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_complete INTEGER DEFAULT 0")
@@ -410,29 +134,19 @@ def create_tables():
         cursor.execute("ALTER TABLE treatment_dispensing ADD COLUMN IF NOT EXISTS unit_price NUMERIC(14,2)")
         cursor.execute("ALTER TABLE treatment_dispensing ADD COLUMN IF NOT EXISTS unit_cost NUMERIC(14,2)")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS treatment_payments (
-            id SERIAL PRIMARY KEY,
-            treatment_id INTEGER NOT NULL REFERENCES treatments(id) ON DELETE CASCADE,
-            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
-            amount NUMERIC(14,2) NOT NULL,
-            payment_method TEXT,
-            note TEXT,
-            created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-            created_at TIMESTAMP DEFAULT NOW()
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS treatment_payments ( id SERIAL PRIMARY KEY, treatment_id INTEGER NOT NULL REFERENCES treatments(id) ON DELETE CASCADE, business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE, amount NUMERIC(14,2) NOT NULL, payment_method TEXT, note TEXT, created_by INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at TIMESTAMP DEFAULT NOW() )""")
 
         # ── Phase 5B-2: product-costing precision + known/unknown cost ────────
         # Additive / non-destructive, safe to run any number of times.
-        #  1. cost_known flags (nullable BOOLEAN): NULL = a record written
-        #     before this phase ("legacy"). No backfill and no rewrite of any
-        #     historical value: reports treat a legacy cost of exactly 0 as
-        #     unverified and a legacy positive cost as trusted (see costing.py).
-        #  2. Widen the four unit-cost columns from NUMERIC(14,2) to
-        #     NUMERIC(18,6) so weighted-average costs are no longer rounded to
-        #     kobo before being multiplied by quantities. Widening keeps every
-        #     existing value exactly (120.59 stays 120.590000); the guard makes
-        #     the ALTER run only while a column still has scale < 6.
+        # 1. cost_known flags (nullable BOOLEAN): NULL = a record written
+        # before this phase ("legacy"). No backfill and no rewrite of any
+        # historical value: reports treat a legacy cost of exactly 0 as
+        # unverified and a legacy positive cost as trusted (see costing.py).
+        # 2. Widen the four unit-cost columns from NUMERIC(14,2) to
+        # NUMERIC(18,6) so weighted-average costs are no longer rounded to
+        # kobo before being multiplied by quantities. Widening keeps every
+        # existing value exactly (120.59 stays 120.590000); the guard makes
+        # the ALTER run only while a column still has scale < 6.
         cursor.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS cost_known BOOLEAN")
         cursor.execute("ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS cost_known BOOLEAN")
         cursor.execute("ALTER TABLE treatment_dispensing ADD COLUMN IF NOT EXISTS cost_known BOOLEAN")
@@ -449,97 +163,51 @@ def create_tables():
 
         # ── Phase 5B-1: Treatment Management is a per-business setting ────────
         # Additive and safe to run any number of times:
-        #  1. ADD COLUMN IF NOT EXISTS — nullable, no default, so existing
-        #     rows start as NULL ("not decided yet").
-        #  2. The backfill only touches rows that are still NULL, so it can
-        #     never re-enable a feature the owner later switched off, nor
-        #     overwrite any owner decision. Rule for existing businesses:
-        #     ON if it is a Pharmacy OR it already has treatment records
-        #     (nobody loses access to existing history); OFF otherwise.
-        #  Nothing is dropped or deleted.
+        # 1. ADD COLUMN IF NOT EXISTS — nullable, no default, so existing
+        # rows start as NULL ("not decided yet").
+        # 2. The backfill only touches rows that are still NULL, so it can
+        # never re-enable a feature the owner later switched off, nor
+        # overwrite any owner decision. Rule for existing businesses:
+        # ON if it is a Pharmacy OR it already has treatment records
+        # (nobody loses access to existing history); OFF otherwise.
+        # Nothing is dropped or deleted.
         cursor.execute(
             "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS treatment_management_enabled BOOLEAN"
         )
-        cursor.execute("""
-            UPDATE businesses b
-            SET treatment_management_enabled = (
-                b.business_type = 'Pharmacy'
-                OR EXISTS (SELECT 1 FROM treatments t WHERE t.business_id = b.id)
-            )
-            WHERE b.treatment_management_enabled IS NULL
-        """)
+        cursor.execute(""" UPDATE businesses b SET treatment_management_enabled = ( b.business_type = 'Pharmacy' OR EXISTS (SELECT 1 FROM treatments t WHERE t.business_id = b.id) ) WHERE b.treatment_management_enabled IS NULL """)
 
         # ── Phase 5A-4: bad-debt write-offs, reversals and recoveries ─────────
         # Three NEW tables; no existing table or column is altered. A
         # write-off is an accounting adjustment stored as its own row — the
         # original sale / treatment row (and its payments, COGS and stock
         # movements) is never touched. Collectible debt is derived as
-        #   total - amount_paid - SUM(active write-offs)
+        # total - amount_paid - SUM(active write-offs)
         # where "active" = not reversed. created_at is TIMESTAMPTZ so the
         # actual event moment is unambiguous for Africa/Lagos reporting
         # (Phase 5A-5). idempotency_key + UNIQUE(business_id, key) is the
         # database-level backstop against duplicate submissions.
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS debt_write_offs (
-            id SERIAL PRIMARY KEY,
-            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
-            customer_id INTEGER NOT NULL REFERENCES customers(id),
-            source_type TEXT NOT NULL CHECK (source_type IN ('sale', 'treatment')),
-            sale_id INTEGER REFERENCES sales(id),
-            treatment_id INTEGER REFERENCES treatments(id),
-            amount NUMERIC(14,2) NOT NULL CHECK (amount > 0),
-            reason_category TEXT NOT NULL,
-            reason_note TEXT,
-            idempotency_key TEXT NOT NULL,
-            created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            CONSTRAINT chk_write_off_source CHECK (
-                (source_type = 'sale' AND sale_id IS NOT NULL AND treatment_id IS NULL) OR
-                (source_type = 'treatment' AND treatment_id IS NOT NULL AND sale_id IS NULL)
-            ),
-            CONSTRAINT uq_write_off_idem UNIQUE (business_id, idempotency_key)
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS debt_write_offs ( id SERIAL PRIMARY KEY, business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE, customer_id INTEGER NOT NULL REFERENCES customers(id), source_type TEXT NOT NULL CHECK (source_type IN ('sale', 'treatment')), sale_id INTEGER REFERENCES sales(id), treatment_id INTEGER REFERENCES treatments(id), amount NUMERIC(14,2) NOT NULL CHECK (amount > 0), reason_category TEXT NOT NULL, reason_note TEXT, idempotency_key TEXT NOT NULL, created_by INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), CONSTRAINT chk_write_off_source CHECK ( (source_type = 'sale' AND sale_id IS NOT NULL AND treatment_id IS NULL) OR (source_type = 'treatment' AND treatment_id IS NOT NULL AND sale_id IS NULL) ), CONSTRAINT uq_write_off_idem UNIQUE (business_id, idempotency_key) )""")
 
         # Corrections are a separate, permanent row — the original
         # write-off row is never edited or deleted. UNIQUE(write_off_id)
         # means a write-off can only be reversed once.
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS debt_write_off_reversals (
-            id SERIAL PRIMARY KEY,
-            write_off_id INTEGER NOT NULL UNIQUE REFERENCES debt_write_offs(id),
-            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
-            reason TEXT NOT NULL,
-            created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS debt_write_off_reversals ( id SERIAL PRIMARY KEY, write_off_id INTEGER NOT NULL UNIQUE REFERENCES debt_write_offs(id), business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE, reason TEXT NOT NULL, created_by INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW() )""")
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS debt_recoveries (
-            id SERIAL PRIMARY KEY,
-            business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
-            customer_id INTEGER NOT NULL REFERENCES customers(id),
-            source_type TEXT NOT NULL CHECK (source_type IN ('sale', 'treatment')),
-            sale_id INTEGER REFERENCES sales(id),
-            treatment_id INTEGER REFERENCES treatments(id),
-            amount NUMERIC(14,2) NOT NULL CHECK (amount > 0),
-            payment_method TEXT NOT NULL,
-            note TEXT,
-            idempotency_key TEXT NOT NULL,
-            created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            CONSTRAINT chk_recovery_source CHECK (
-                (source_type = 'sale' AND sale_id IS NOT NULL AND treatment_id IS NULL) OR
-                (source_type = 'treatment' AND treatment_id IS NOT NULL AND sale_id IS NULL)
-            ),
-            CONSTRAINT uq_recovery_idem UNIQUE (business_id, idempotency_key)
-        )""")
+        cursor.execute(""" CREATE TABLE IF NOT EXISTS debt_recoveries ( id SERIAL PRIMARY KEY, business_id INTEGER NOT NULL REFERENCES businesses(id) ON DELETE CASCADE, customer_id INTEGER NOT NULL REFERENCES customers(id), source_type TEXT NOT NULL CHECK (source_type IN ('sale', 'treatment')), sale_id INTEGER REFERENCES sales(id), treatment_id INTEGER REFERENCES treatments(id), amount NUMERIC(14,2) NOT NULL CHECK (amount > 0), payment_method TEXT NOT NULL, note TEXT, idempotency_key TEXT NOT NULL, created_by INTEGER REFERENCES users(id) ON DELETE SET NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), CONSTRAINT chk_recovery_source CHECK ( (source_type = 'sale' AND sale_id IS NOT NULL AND treatment_id IS NULL) OR (source_type = 'treatment' AND treatment_id IS NOT NULL AND sale_id IS NULL) ), CONSTRAINT uq_recovery_idem UNIQUE (business_id, idempotency_key) )""")
+
+        # ── Phase 5B-3: financial integrity & duplicate protection ────────────
+        # Additive and repeatable (see schema_5b3.py and
+        # migrations/phase_5b3_financial_integrity.sql): nullable submission-
+        # reference columns + partial unique indexes (database-level duplicate
+        # backstop), payment-reversal links, and NOT VALID CHECK constraints
+        # (enforced for new writes only — no existing row is scanned, changed
+        # or rejected). Nothing is dropped, deleted, reset or rewritten.
+        for _stmt in schema_5b3.statements():
+            cursor.execute(_stmt)
 
         # Partial unique index: allows many NULLs (existing users without a
         # phone on file) while still preventing two accounts sharing a phone.
-        cursor.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_number
-            ON users(phone_number) WHERE phone_number IS NOT NULL
-        """)
+        cursor.execute(""" CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_number ON users(phone_number) WHERE phone_number IS NOT NULL """)
 
         # ── ALTER COLUMN TYPE — only if column is still TEXT ─────────────────
         # Each check is a tiny information_schema read; if already DATE it skips.
@@ -556,11 +224,7 @@ def create_tables():
             try:
                 current = _col_type(cursor, table, col)
                 if current and current != target_type.lower():
-                    cursor.execute("""
-                        DO $$ BEGIN
-                            ALTER TABLE {t} ALTER COLUMN {c} TYPE {ty} USING {u};
-                        EXCEPTION WHEN others THEN NULL; END $$;
-                    """.format(t=table, c=col, ty=target_type, u=using))
+                    cursor.execute(""" DO $$ BEGIN ALTER TABLE {t} ALTER COLUMN {c} TYPE {ty} USING {u}; EXCEPTION WHEN others THEN NULL; END $$; """.format(t=table, c=col, ty=target_type, u=using))
             except Exception:
                 pass
 
