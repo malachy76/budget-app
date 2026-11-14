@@ -3,12 +3,16 @@ import streamlit as st
 from decimal import Decimal
 
 from styles import render_page_header
-from sales import get_sale_products, get_or_create_customer, create_sale, PAYMENT_METHODS
+from sales import get_sale_products, create_sale, PAYMENT_METHODS
+from ui_idempotency import get_key, clear_key
 
 
 def render_business_sales(user_id):
     render_page_header()
     st.markdown("### \U0001F6D2 Sales / Point of Sale")
+    _flash = st.session_state.pop("_sale_flash", None)
+    if _flash:
+        st.success(_flash)
 
     business_id = st.session_state.get("active_business_id")
     if not business_id:
@@ -133,38 +137,33 @@ def render_business_sales(user_id):
     ):
         st.session_state["_sale_processing"] = True
         try:
-            customer_id = None
             is_credit = outstanding > 0
             if is_credit and not (customer_name or "").strip():
                 st.error("Enter the customer's name and phone number \u2014 they are required when money is owed.")
                 st.session_state["_sale_processing"] = False
                 return
-            try:
-                # require_phone=True when money will be owed: validated BEFORE
-                # anything is saved, so a rejected credit sale leaves no
-                # half-created customer behind.
-                customer_id = get_or_create_customer(
-                    business_id, user_id, customer_name, customer_phone,
-                    require_phone=is_credit,
-                )
-            except Exception as _e:
-                st.error(str(_e))
-                st.session_state["_sale_processing"] = False
-                return
-
+            # Phase 5B-3: ONE submission reference for this sale. Clicking twice,
+            # a rerun, or retrying after a timeout sends the same reference and
+            # the database returns the original sale instead of a second one.
+            # The customer is found/created inside the sale's own transaction,
+            # so a rejected sale leaves nothing behind.
             sale_id, msg = create_sale(
                 business_id, user_id, user_id,
                 [{"product_id": it["product_id"], "quantity": it["quantity"]} for it in cart],
-                customer_id, amount_paid, payment_method,
+                None, amount_paid, payment_method,
+                idempotency_key=get_key("sale"),
+                customer_name=customer_name, customer_phone=customer_phone,
             )
             if sale_id:
-                st.success(f"Sale recorded \u2014 Total: \u20A6{total:,.2f}")
+                st.session_state["_sale_flash"] = f"{msg} \u2014 Total: \u20A6{total:,.2f}"
+                clear_key("sale")
                 st.session_state["_sale_cart"] = []
                 st.session_state.pop("sale_customer_name", None)
                 st.session_state.pop("sale_customer_phone", None)
                 st.session_state.pop("sale_amount_paid", None)
             else:
                 st.error(msg)
+                return
         finally:
             st.session_state["_sale_processing"] = False
         st.rerun()
