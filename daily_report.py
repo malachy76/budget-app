@@ -2,48 +2,48 @@
 #
 # ACCOUNTING RULES (cash basis — these override any accrual-style figure)
 # ──────────────────────────────────────────────────────────────────────
-#  * "Realised revenue" is money ACTUALLY RECEIVED, dated by the day it was
-#    received (Africa/Lagos). An unpaid invoice is never realised revenue.
-#  * A later repayment of an old debt becomes realised revenue on the day it
-#    is received. It never creates a sale and the original invoice is never
-#    counted again (invoice value is reported ONLY as "activity").
-#  * STOCK SALES — realised gross profit for a payment is
-#        payment x (1 - COGS / invoice total)
-#    i.e. each payment is treated as paying for the sale proportionally
-#    (the app does not record which items a payment covers). COGS comes from
-#    the cost snapshotted on each sale item (Phase 5A-1), never from the
-#    current product price. Once a sale is fully paid its whole COGS has been
-#    recognised exactly once.
-#  * TREATMENTS — a bill only ever contains the service charge plus medicines
-#    ALREADY dispensed, so a payment can never "pay for" medicine not yet
-#    dispensed. Cost is recognised proportionally with a CUMULATIVE method:
-#        cumulative cost after payment k =
-#            (total paid so far) x (cost of medicines dispensed up to the
-#                                   moment of payment k / bill up to then)
-#        cost recognised by payment k = that minus the same figure after
-#                                       payment k-1
-#    It only uses information known at the time of each payment (so a past
-#    day's report never changes), and once the bill is fully paid exactly the
-#    true total cost has been recognised.
-#  * Unknown costs are NEVER treated as zero. A cost is unknown when it is
-#    NULL, or a legacy 0 that was never confirmed (costing.known_cost_sql).
-#    Within a sale (or a treatment bill) only the part of the money that
-#    belongs to unknown-cost lines is set aside as "revenue with unknown
-#    cost" and excluded from gross profit — the known-cost lines still earn
-#    profit — and the report is flagged incomplete and lists the products.
-#  * Bad-debt RECOVERIES, write-offs and write-off reversals are reported
-#    separately. They are never part of operating revenue or gross profit,
-#    and a write-off/reversal is never "money received".
-#  * Gross profit is NOT net profit: business operating expenses are not
-#    recorded in this app yet, so net profit is not calculated.
+# * "Realised revenue" is money ACTUALLY RECEIVED, dated by the day it was
+# received (Africa/Lagos). An unpaid invoice is never realised revenue.
+# * A later repayment of an old debt becomes realised revenue on the day it
+# is received. It never creates a sale and the original invoice is never
+# counted again (invoice value is reported ONLY as "activity").
+# * STOCK SALES — realised gross profit for a payment is
+# payment x (1 - COGS / invoice total)
+# i.e. each payment is treated as paying for the sale proportionally
+# (the app does not record which items a payment covers). COGS comes from
+# the cost snapshotted on each sale item (Phase 5A-1), never from the
+# current product price. Once a sale is fully paid its whole COGS has been
+# recognised exactly once.
+# * TREATMENTS — a bill only ever contains the service charge plus medicines
+# ALREADY dispensed, so a payment can never "pay for" medicine not yet
+# dispensed. Cost is recognised proportionally with a CUMULATIVE method:
+# cumulative cost after payment k =
+# (total paid so far) x (cost of medicines dispensed up to the
+# moment of payment k / bill up to then)
+# cost recognised by payment k = that minus the same figure after
+# payment k-1
+# It only uses information known at the time of each payment (so a past
+# day's report never changes), and once the bill is fully paid exactly the
+# true total cost has been recognised.
+# * Unknown costs are NEVER treated as zero. A cost is unknown when it is
+# NULL, or a legacy 0 that was never confirmed (costing.known_cost_sql).
+# Within a sale (or a treatment bill) only the part of the money that
+# belongs to unknown-cost lines is set aside as "revenue with unknown
+# cost" and excluded from gross profit — the known-cost lines still earn
+# profit — and the report is flagged incomplete and lists the products.
+# * Bad-debt RECOVERIES, write-offs and write-off reversals are reported
+# separately. They are never part of operating revenue or gross profit,
+# and a write-off/reversal is never "money received".
+# * Gross profit is NOT net profit: business operating expenses are not
+# recorded in this app yet, so net profit is not calculated.
 #
 # DEBT RECONCILIATION (as-of balances, never today's balance projected back)
-#     Opening debt + new charges billed - payments received
-#       - written off + write-offs reversed = Closing debt
-#   where "new charges billed" = invoices created in the period + treatment
-#   service charges created in the period + medicines dispensed (priced) in
-#   the period. The check is computed from raw records and reported honestly
-#   (reconciles: True/False) rather than forced to balance.
+# Opening debt + new charges billed - payments received
+# - written off + write-offs reversed = Closing debt
+# where "new charges billed" = invoices created in the period + treatment
+# service charges created in the period + medicines dispensed (priced) in
+# the period. The check is computed from raw records and reported honestly
+# (reconciles: True/False) rather than forced to balance.
 #
 # TIME: business days are Africa/Lagos. Older tables (sales, payments,
 # treatments, treatment_payments, treatment_dispensing) store naive
@@ -83,8 +83,7 @@ def _q(v):
 
 
 def day_bounds(start_date, end_date):
-    """[start, end) as (naive_utc_start, naive_utc_end, aware_start, aware_end)
-    for the Africa/Lagos business days start_date .. end_date inclusive."""
+    """[start, end) as (naive_utc_start, naive_utc_end, aware_start, aware_end) for the Africa/Lagos business days start_date .. end_date inclusive."""
     s = datetime.combine(start_date, time.min, tzinfo=BUSINESS_TZ).astimezone(_UTC)
     e = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=BUSINESS_TZ).astimezone(_UTC)
     return s.replace(tzinfo=None), e.replace(tzinfo=None), s, e
@@ -99,17 +98,7 @@ def _naive_utc(dt):
 # ── Pure allocation logic (unit-tested directly) ────────────────────────────
 
 def allocate_treatment_payments(service_charge, payments, dispensing):
-    """Cumulative proportional cost recognition for ONE treatment.
-
-    payments:  [{"id", "amount", "created_at"(naive UTC)}]  (any order)
-    dispensing:[{"at"(naive UTC), "qty", "price", "cost"(None = unknown)}]
-               only PRICED dispensings (the ones that are on the bill).
-    Returns a list (payment order) of dicts with: id, amount, initial (bool),
-    cogs (cost of the KNOWN-cost medicines the payment covers),
-    unknown_revenue (the part of the payment that belongs to unknown-cost
-    medicines — excluded from profit) and cost_known (= no unknown part).
-    Everything is computed cumulatively from information available at the
-    moment of each payment, so a past day's figures never change."""
+    """Cumulative proportional cost recognition for ONE treatment. payments: [{"id", "amount", "created_at"(naive UTC)}] (any order) dispensing:[{"at"(naive UTC), "qty", "price", "cost"(None = unknown)}] only PRICED dispensings (the ones that are on the bill). Returns a list (payment order) of dicts with: id, amount, initial (bool), cogs (cost of the KNOWN-cost medicines the payment covers), unknown_revenue (the part of the payment that belongs to unknown-cost medicines — excluded from profit) and cost_known (= no unknown part). Everything is computed cumulatively from information available at the moment of each payment, so a past day's figures never change."""
     service_charge = Decimal(service_charge)
     ordered = sorted(payments, key=lambda p: (p["created_at"], p["id"]))
     cum_paid = _ZERO
@@ -145,21 +134,20 @@ def allocate_treatment_payments(service_charge, payments, dispensing):
 # ── As-of debt (used for opening / closing balances) ────────────────────────
 
 def _debt_as_of(cursor, business_id, cutoff_naive, cutoff_aware):
-    """Collectible debt per customer using ONLY records that existed before
-    the cutoff instant. Returns {customer_id|None: {"stock": D, "treatment": D}}."""
+    """Collectible debt per customer using ONLY records that existed before the cutoff instant. Returns {customer_id|None: {"stock": D, "treatment": D}}."""
     result = {}
 
     cursor.execute(
         "SELECT s.customer_id, "
-        "  COALESCE(SUM(s.total_amount - COALESCE(p.paid, 0) - COALESCE(w.wo, 0)), 0) AS debt "
+        " COALESCE(SUM(s.total_amount - COALESCE(p.paid, 0) - COALESCE(w.wo, 0)), 0) AS debt "
         "FROM sales s "
         "LEFT JOIN (SELECT sale_id, SUM(amount) AS paid FROM payments "
-        "           WHERE business_id=%s AND created_at < %s GROUP BY sale_id) p ON p.sale_id = s.id "
+        " WHERE business_id=%s AND created_at < %s GROUP BY sale_id) p ON p.sale_id = s.id "
         "LEFT JOIN (SELECT w.sale_id, SUM(w.amount) AS wo FROM debt_write_offs w "
-        "           WHERE w.business_id=%s AND w.sale_id IS NOT NULL AND w.created_at < %s "
-        "           AND NOT EXISTS (SELECT 1 FROM debt_write_off_reversals r "
-        "                           WHERE r.write_off_id = w.id AND r.created_at < %s) "
-        "           GROUP BY w.sale_id) w ON w.sale_id = s.id "
+        " WHERE w.business_id=%s AND w.sale_id IS NOT NULL AND w.created_at < %s "
+        " AND NOT EXISTS (SELECT 1 FROM debt_write_off_reversals r "
+        " WHERE r.write_off_id = w.id AND r.created_at < %s) "
+        " GROUP BY w.sale_id) w ON w.sale_id = s.id "
         "WHERE s.business_id=%s AND s.created_at < %s "
         "GROUP BY s.customer_id",
         (business_id, cutoff_naive, business_id, cutoff_aware, cutoff_aware,
@@ -170,20 +158,20 @@ def _debt_as_of(cursor, business_id, cutoff_naive, cutoff_aware):
 
     cursor.execute(
         "SELECT t.customer_id, "
-        "  COALESCE(SUM(t.service_charge + COALESCE(d.billed, 0) - COALESCE(p.paid, 0) "
-        "               - COALESCE(w.wo, 0)), 0) AS debt "
+        " COALESCE(SUM(t.service_charge + COALESCE(d.billed, 0) - COALESCE(p.paid, 0) "
+        " - COALESCE(w.wo, 0)), 0) AS debt "
         "FROM treatments t "
         "LEFT JOIN (SELECT ti.treatment_id, SUM(ROUND(d.quantity * d.unit_price, 2)) AS billed "
-        "           FROM treatment_dispensing d JOIN treatment_items ti ON ti.id = d.treatment_item_id "
-        "           WHERE d.business_id=%s AND d.unit_price IS NOT NULL AND d.dispensed_at < %s "
-        "           GROUP BY ti.treatment_id) d ON d.treatment_id = t.id "
+        " FROM treatment_dispensing d JOIN treatment_items ti ON ti.id = d.treatment_item_id "
+        " WHERE d.business_id=%s AND d.unit_price IS NOT NULL AND d.dispensed_at < %s "
+        " GROUP BY ti.treatment_id) d ON d.treatment_id = t.id "
         "LEFT JOIN (SELECT treatment_id, SUM(amount) AS paid FROM treatment_payments "
-        "           WHERE business_id=%s AND created_at < %s GROUP BY treatment_id) p ON p.treatment_id = t.id "
+        " WHERE business_id=%s AND created_at < %s GROUP BY treatment_id) p ON p.treatment_id = t.id "
         "LEFT JOIN (SELECT w.treatment_id, SUM(w.amount) AS wo FROM debt_write_offs w "
-        "           WHERE w.business_id=%s AND w.treatment_id IS NOT NULL AND w.created_at < %s "
-        "           AND NOT EXISTS (SELECT 1 FROM debt_write_off_reversals r "
-        "                           WHERE r.write_off_id = w.id AND r.created_at < %s) "
-        "           GROUP BY w.treatment_id) w ON w.treatment_id = t.id "
+        " WHERE w.business_id=%s AND w.treatment_id IS NOT NULL AND w.created_at < %s "
+        " AND NOT EXISTS (SELECT 1 FROM debt_write_off_reversals r "
+        " WHERE r.write_off_id = w.id AND r.created_at < %s) "
+        " GROUP BY w.treatment_id) w ON w.treatment_id = t.id "
         "WHERE t.business_id=%s AND t.created_at < %s "
         "GROUP BY t.customer_id",
         (business_id, cutoff_naive, business_id, cutoff_naive,
@@ -203,8 +191,7 @@ def _sum_debt(by_customer):
 # ── The report ──────────────────────────────────────────────────────────────
 
 def get_cash_basis_report(business_id, owner_user_id, start_date, end_date):
-    """Everything for the End-of-Day / period summary, cash basis.
-    start_date/end_date are Africa/Lagos business dates, inclusive."""
+    """Everything for the End-of-Day / period summary, cash basis. start_date/end_date are Africa/Lagos business dates, inclusive."""
     _require_business(business_id, owner_user_id)
     if start_date > end_date:
         raise ReportError("The start date must not be after the end date.")
@@ -236,22 +223,22 @@ def get_cash_basis_report(business_id, owner_user_id, start_date, end_date):
         # 2. Stock-sale collections with cost info per sale
         cursor.execute(
             "SELECT p.id, p.sale_id, p.amount, p.payment_method, p.created_at, "
-            "  (p.created_at = s.created_at) AS is_initial, s.total_amount, "
-            "  COALESCE(c.known_cogs, 0) AS known_cogs, COALESCE(c.unknown_total, 0) AS unknown_total, "
-            "  COALESCE(c.lines, 0) AS lines "
+            " (p.created_at = s.created_at) AS is_initial, s.total_amount, "
+            " COALESCE(c.known_cogs, 0) AS known_cogs, COALESCE(c.unknown_total, 0) AS unknown_total, "
+            " COALESCE(c.lines, 0) AS lines "
             "FROM payments p "
             "JOIN sales s ON s.id = p.sale_id AND s.business_id = p.business_id "
             "LEFT JOIN (SELECT si.sale_id, COUNT(*) AS lines, "
-            f"    SUM(si.quantity * si.unit_cost) FILTER (WHERE {known_cost_sql('si')}) AS known_cogs, "
-            f"    SUM(si.line_total) FILTER (WHERE NOT {known_cost_sql('si')}) AS unknown_total "
-            "  FROM sale_items si WHERE si.business_id=%s GROUP BY si.sale_id) c ON c.sale_id = s.id "
+            f" SUM(si.quantity * si.unit_cost) FILTER (WHERE {known_cost_sql('si')}) AS known_cogs, "
+            f" SUM(si.line_total) FILTER (WHERE NOT {known_cost_sql('si')}) AS unknown_total "
+            " FROM sale_items si WHERE si.business_id=%s GROUP BY si.sale_id) c ON c.sale_id = s.id "
             "WHERE p.business_id=%s AND p.created_at >= %s AND p.created_at < %s "
             "ORDER BY p.created_at, p.id",
             (business_id, business_id, s_n, e_n))
         stock_pay_rows = cursor.fetchall()
 
         # 3. Treatment collections (cumulative cost allocation needs each
-        #    affected treatment's full payment + dispensing history)
+        # affected treatment's full payment + dispensing history)
         cursor.execute(
             "SELECT id, treatment_id, amount, payment_method, created_at FROM treatment_payments "
             "WHERE business_id=%s AND created_at >= %s AND created_at < %s "
@@ -273,8 +260,8 @@ def get_cash_basis_report(business_id, owner_user_id, start_date, end_date):
                     {"id": r["id"], "amount": r["amount"], "created_at": r["created_at"]})
             cursor.execute(
                 "SELECT ti.treatment_id, d.dispensed_at AS at, d.quantity AS qty, "
-                "  d.unit_price AS price, "
-                f"  CASE WHEN {known_cost_sql('d')} THEN d.unit_cost END AS cost "
+                " d.unit_price AS price, "
+                f" CASE WHEN {known_cost_sql('d')} THEN d.unit_cost END AS cost "
                 "FROM treatment_dispensing d JOIN treatment_items ti ON ti.id = d.treatment_item_id "
                 "WHERE d.business_id=%s AND ti.treatment_id = ANY(%s) AND d.unit_price IS NOT NULL",
                 (business_id, treat_ids))
@@ -326,17 +313,17 @@ def get_cash_basis_report(business_id, owner_user_id, start_date, end_date):
         mismatched += cursor.fetchone()["n"]
 
         # 7. Which products have no reliable cost, among the sales/treatments
-        #    that collected money in this period (these are what make profit
-        #    incomplete). Listed so the owner knows exactly what to fix.
+        # that collected money in this period (these are what make profit
+        # incomplete). Listed so the owner knows exactly what to fix.
         unknown_items = []
         unknown_sales = unknown_treatments = 0
         stock_ids = sorted({r["sale_id"] for r in stock_pay_rows})
         if stock_ids:
             cursor.execute(
                 "SELECT si.product_name AS product, COUNT(*) AS lines, SUM(si.quantity) AS qty, "
-                "  COALESCE(SUM(si.line_total), 0) AS value "
+                " COALESCE(SUM(si.line_total), 0) AS value "
                 "FROM sale_items si WHERE si.business_id=%s AND si.sale_id = ANY(%s) "
-                f"  AND NOT {known_cost_sql('si')} GROUP BY si.product_name ORDER BY value DESC, product",
+                f" AND NOT {known_cost_sql('si')} GROUP BY si.product_name ORDER BY value DESC, product",
                 (business_id, stock_ids))
             unknown_items += [{"source": "Stock sale", "product": r["product"], "lines": r["lines"],
                                "quantity": r["qty"], "value": r["value"]} for r in cursor.fetchall()]
@@ -348,12 +335,12 @@ def get_cash_basis_report(business_id, owner_user_id, start_date, end_date):
         if treat_ids:
             cursor.execute(
                 "SELECT pr.name AS product, COUNT(*) AS lines, SUM(d.quantity) AS qty, "
-                "  COALESCE(SUM(ROUND(d.quantity * d.unit_price, 2)), 0) AS value "
+                " COALESCE(SUM(ROUND(d.quantity * d.unit_price, 2)), 0) AS value "
                 "FROM treatment_dispensing d "
                 "JOIN treatment_items ti ON ti.id = d.treatment_item_id "
                 "JOIN products pr ON pr.id = ti.product_id "
                 "WHERE d.business_id=%s AND ti.treatment_id = ANY(%s) AND d.unit_price IS NOT NULL "
-                f"  AND NOT {known_cost_sql('d')} GROUP BY pr.name ORDER BY value DESC, product",
+                f" AND NOT {known_cost_sql('d')} GROUP BY pr.name ORDER BY value DESC, product",
                 (business_id, treat_ids))
             unknown_items += [{"source": "Treatment", "product": r["product"], "lines": r["lines"],
                                "quantity": r["qty"], "value": r["value"]} for r in cursor.fetchall()]
@@ -361,15 +348,20 @@ def get_cash_basis_report(business_id, owner_user_id, start_date, end_date):
                 "SELECT COUNT(DISTINCT ti.treatment_id) AS n FROM treatment_dispensing d "
                 "JOIN treatment_items ti ON ti.id = d.treatment_item_id "
                 "WHERE d.business_id=%s AND ti.treatment_id = ANY(%s) AND d.unit_price IS NOT NULL "
-                f"  AND NOT {known_cost_sql('d')}",
+                f" AND NOT {known_cost_sql('d')}",
                 (business_id, treat_ids))
             unknown_treatments = cursor.fetchone()["n"]
 
     # ── Aggregate (Decimal throughout; rounded once, at the end) ──
     def bucket():
         return {"amount": _ZERO, "count": 0}
-    coll = {k: bucket() for k in ("stock_initial", "stock_repayment",
-                                   "treatment_initial", "treatment_repayment", "recovery")}
+    # Phase 5B-3: "*_reversal" buckets hold NEGATIVE compensating payment rows
+    # (a mistaken payment that was reversed). They are kept in their own line
+    # so a repayment is never silently reduced, yet every bucket still adds up
+    # to the money-collected total.
+    coll = {k: bucket() for k in ("stock_initial", "stock_repayment", "stock_reversal",
+                                   "treatment_initial", "treatment_repayment",
+                                   "treatment_reversal", "recovery")}
     methods = {}
 
     def add_method(method, kind, amount):
@@ -387,7 +379,8 @@ def get_cash_basis_report(business_id, owner_user_id, start_date, end_date):
     for r in stock_pay_rows:
         amt = r["amount"]
         stock_revenue += amt
-        key = "stock_initial" if r["is_initial"] else "stock_repayment"
+        key = ("stock_reversal" if amt < 0
+               else "stock_initial" if r["is_initial"] else "stock_repayment")
         coll[key]["amount"] += amt
         coll[key]["count"] += 1
         add_method(r["payment_method"], "operating", amt)
@@ -406,7 +399,8 @@ def get_cash_basis_report(business_id, owner_user_id, start_date, end_date):
         amt = r["amount"]
         a = treat_alloc[r["id"]]
         treat_revenue += amt
-        key = "treatment_initial" if a["initial"] else "treatment_repayment"
+        key = ("treatment_reversal" if amt < 0
+               else "treatment_initial" if a["initial"] else "treatment_repayment")
         coll[key]["amount"] += amt
         coll[key]["count"] += 1
         add_method(r["payment_method"], "operating", amt)
@@ -482,4 +476,4 @@ def get_cash_basis_report(business_id, owner_user_id, start_date, end_date):
         "expected_closing_debt": _q(expected_closing),
         "reconciles": _q(expected_closing) == _q(closing_total),
         "payment_history_mismatches": mismatched,
-    }
+}
