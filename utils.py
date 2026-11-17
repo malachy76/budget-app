@@ -99,6 +99,212 @@ def save_income(user_id, bank_id, source, amount, when=None, idempotency_key=Non
         return False, str(e)
 
 
+# ── Ownership-verified Personal Mode edits & deletes (security patch) ───────
+# Every function below puts the OWNERSHIP test inside the database statement that
+# changes the data (the acting user_id comes from the logged-in session, never from
+# a form or URL), so a transaction / expense / bank id can never be used to touch
+# another user's records. Each one runs in a SINGLE transaction (money moves with the
+# record, or neither moves) and acts on the row the database actually returned, so a
+# repeated click or stale page cannot reverse a balance twice. A failed check shows
+# one generic message that reveals nothing about anyone else's data.
+
+NOT_FOUND_MSG = "That entry could not be found."
+
+
+class _NotOwned(Exception):
+    """Raised inside a transaction to roll it back when an ownership check fails."""
+
+
+def delete_income(user_id, tx_id):
+    """Delete one of THIS user's income transactions and reverse it from the bank. Returns (True, {"amount", "bank_id"}) or (False, message)."""
+    try:
+        with get_db() as (conn, cursor):
+            cursor.execute(
+                "DELETE FROM transactions t USING banks b "
+                "WHERE t.id=%s AND t.type='credit' AND t.description LIKE 'Income:%%' "
+                "AND t.bank_id=b.id AND b.user_id=%s "
+                "RETURNING t.id, t.amount, t.bank_id",
+                (tx_id, user_id),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return False, NOT_FOUND_MSG
+            cursor.execute(
+                "UPDATE banks SET balance = balance - %s WHERE id=%s AND user_id=%s",
+                (row["amount"], row["bank_id"], user_id),
+            )
+            if cursor.rowcount != 1:
+                raise _NotOwned()
+        return True, {"amount": row["amount"], "bank_id": row["bank_id"]}
+    except _NotOwned:
+        return False, NOT_FOUND_MSG
+    except Exception as e:
+        return False, str(e)
+
+
+def delete_expense(user_id, expense_id):
+    """Delete one of THIS user's expenses (and its debit transaction) and refund the bank."""
+    try:
+        with get_db() as (conn, cursor):
+            cursor.execute(
+                "DELETE FROM expenses e USING banks b "
+                "WHERE e.id=%s AND e.user_id=%s AND e.bank_id=b.id AND b.user_id=%s "
+                "RETURNING e.id, e.amount, e.bank_id, e.tx_id",
+                (expense_id, user_id, user_id),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return False, NOT_FOUND_MSG
+            if row["tx_id"]:
+                cursor.execute(
+                    "DELETE FROM transactions t USING banks b "
+                    "WHERE t.id=%s AND t.type='debit' AND t.bank_id=%s "
+                    "AND t.bank_id=b.id AND b.user_id=%s RETURNING t.id",
+                    (row["tx_id"], row["bank_id"], user_id),
+                )
+                if cursor.fetchone() is None:
+                    # Row already gone is fine (older data). A row that EXISTS but is not
+                    # this user's debit on this bank means something is wrong: refuse all.
+                    cursor.execute("SELECT 1 FROM transactions WHERE id=%s", (row["tx_id"],))
+                    if cursor.fetchone():
+                        raise _NotOwned()
+            cursor.execute(
+                "UPDATE banks SET balance = balance + %s WHERE id=%s AND user_id=%s",
+                (row["amount"], row["bank_id"], user_id),
+            )
+            if cursor.rowcount != 1:
+                raise _NotOwned()
+        return True, {"amount": row["amount"], "bank_id": row["bank_id"]}
+    except _NotOwned:
+        return False, NOT_FOUND_MSG
+    except Exception as e:
+        return False, str(e)
+
+
+def update_income(user_id, tx_id, source, amount):
+    """Edit one of THIS user's income entries; the bank balance moves by the difference, worked out from the amount the database holds right now (row locked)."""
+    try:
+        amount = int(amount)
+        source = (source or "").strip()
+        if amount <= 0 or not source:
+            return False, "Please enter a source and an amount above zero."
+        with get_db() as (conn, cursor):
+            cursor.execute(
+                "SELECT t.id, t.amount, t.bank_id FROM transactions t "
+                "JOIN banks b ON b.id=t.bank_id "
+                "WHERE t.id=%s AND t.type='credit' AND t.description LIKE 'Income:%%' "
+                "AND b.user_id=%s FOR UPDATE OF t",
+                (tx_id, user_id),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return False, NOT_FOUND_MSG
+            cursor.execute(
+                "UPDATE transactions t SET amount=%s, description=%s FROM banks b "
+                "WHERE t.id=%s AND t.type='credit' AND t.bank_id=b.id AND b.user_id=%s",
+                (amount, f"Income: {source}", tx_id, user_id),
+            )
+            if cursor.rowcount != 1:
+                raise _NotOwned()
+            cursor.execute(
+                "UPDATE banks SET balance = balance + %s WHERE id=%s AND user_id=%s",
+                (amount - row["amount"], row["bank_id"], user_id),
+            )
+            if cursor.rowcount != 1:
+                raise _NotOwned()
+        return True, "Income updated!"
+    except _NotOwned:
+        return False, NOT_FOUND_MSG
+    except Exception as e:
+        return False, str(e)
+
+
+def update_expense(user_id, expense_id, name, category, amount):
+    """Edit one of THIS user's expenses (and its debit transaction) with the balance moving by the difference, worked out from the locked, current row."""
+    try:
+        amount = int(amount)
+        name = (name or "").strip()
+        if amount <= 0 or not name:
+            return False, "Please enter a name and an amount above zero."
+        with get_db() as (conn, cursor):
+            cursor.execute(
+                "SELECT e.id, e.amount, e.bank_id, e.tx_id FROM expenses e "
+                "JOIN banks b ON b.id=e.bank_id AND b.user_id=%s "
+                "WHERE e.id=%s AND e.user_id=%s FOR UPDATE OF e",
+                (user_id, expense_id, user_id),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return False, NOT_FOUND_MSG
+            cursor.execute(
+                "UPDATE banks SET balance = balance - %s WHERE id=%s AND user_id=%s",
+                (amount - row["amount"], row["bank_id"], user_id),
+            )
+            if cursor.rowcount != 1:
+                raise _NotOwned()
+            if row["tx_id"]:
+                cursor.execute(
+                    "UPDATE transactions t SET amount=%s, description=%s FROM banks b "
+                    "WHERE t.id=%s AND t.type='debit' AND t.bank_id=%s "
+                    "AND t.bank_id=b.id AND b.user_id=%s",
+                    (amount, f"Expense: {name}", row["tx_id"], row["bank_id"], user_id),
+                )
+                if cursor.rowcount != 1:
+                    cursor.execute("SELECT 1 FROM transactions WHERE id=%s", (row["tx_id"],))
+                    if cursor.fetchone():
+                        raise _NotOwned()
+            cursor.execute(
+                "UPDATE expenses SET name=%s, category=%s, amount=%s WHERE id=%s AND user_id=%s",
+                (name, category, amount, expense_id, user_id),
+            )
+            if cursor.rowcount != 1:
+                raise _NotOwned()
+        return True, "Expense updated!"
+    except _NotOwned:
+        return False, NOT_FOUND_MSG
+    except Exception as e:
+        return False, str(e)
+
+
+def delete_bank(user_id, bank_id):
+    """Delete one of THIS user's banks with its expenses and transactions (the existing behaviour), in one transaction, only after confirming the bank is theirs."""
+    try:
+        with get_db() as (conn, cursor):
+            cursor.execute("SELECT id FROM banks WHERE id=%s AND user_id=%s FOR UPDATE", (bank_id, user_id))
+            if cursor.fetchone() is None:
+                return False, NOT_FOUND_MSG
+            cursor.execute("UPDATE expenses SET tx_id=NULL WHERE bank_id=%s AND user_id=%s", (bank_id, user_id))
+            cursor.execute("DELETE FROM expenses WHERE bank_id=%s AND user_id=%s", (bank_id, user_id))
+            cursor.execute(
+                "DELETE FROM transactions t USING banks b WHERE t.bank_id=%s AND t.bank_id=b.id AND b.user_id=%s",
+                (bank_id, user_id),
+            )
+            cursor.execute("DELETE FROM banks WHERE id=%s AND user_id=%s", (bank_id, user_id))
+            if cursor.rowcount != 1:
+                raise _NotOwned()
+        return True, "Bank and all its data deleted."
+    except _NotOwned:
+        return False, NOT_FOUND_MSG
+    except Exception as e:
+        return False, str(e)
+
+
+def update_bank(user_id, bank_id, bank_name, account_name, account_number):
+    """Rename one of THIS user's banks."""
+    try:
+        with get_db() as (conn, cursor):
+            cursor.execute(
+                "UPDATE banks SET bank_name=%s, account_name=%s, account_number=%s "
+                "WHERE id=%s AND user_id=%s",
+                (bank_name, account_name, account_number, bank_id, user_id),
+            )
+            if cursor.rowcount != 1:
+                return False, NOT_FOUND_MSG
+        return True, "Bank updated."
+    except Exception as e:
+        return False, str(e)
+
+
 # ── Filter / sort helpers ────────────────────────────────────────────────────
 
 def apply_income_filters(income_data):
