@@ -1,5 +1,5 @@
 from styles import render_page_header
-# transfers.py — transfers page
+# transfers.py â€” transfers page
 import re
 import streamlit as st
 from datetime import datetime
@@ -9,7 +9,7 @@ from db import get_db
 
 def render_transfers(user_id):
     render_page_header()
-    st.title("🔄 Transfers")
+    st.title("ðŸ”„ Transfers")
 
     # Show transfer success message if set (persists across rerun)
     if st.session_state.get("_transfer_success"):
@@ -24,7 +24,7 @@ def render_transfers(user_id):
 
     if len(banks) >= 2:
         bank_map = {
-            f"{b['bank_name']} (****{b['account_number']}) — ₦{b['balance']:,}": b
+            f"{b['bank_name']} (****{b['account_number']}) â€” â‚¦{b['balance']:,}": b
             for b in banks
         }
         opts = list(bank_map.keys())
@@ -49,7 +49,7 @@ def render_transfers(user_id):
                 to_name   = to_b["bank_name"]
                 today     = datetime.now().date()
 
-                # ── Execute transfer, capture result BEFORE st calls ──────────
+                # â”€â”€ Execute transfer, capture result BEFORE st calls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 transfer_ok    = False
                 error_msg      = None
                 current_bal    = None
@@ -61,16 +61,11 @@ def render_transfers(user_id):
                     cursor = conn.cursor()
 
                     # Atomic debit with built-in balance guard
-                    cursor.execute("""
-                        UPDATE banks
-                           SET balance = balance - %s
-                         WHERE id = %s AND user_id = %s AND balance >= %s
-                     RETURNING balance
-                    """, (transfer_amount, from_id, user_id, transfer_amount))
+                    cursor.execute(""" UPDATE banks SET balance = balance - %s WHERE id = %s AND user_id = %s AND balance >= %s RETURNING balance """, (transfer_amount, from_id, user_id, transfer_amount))
                     row = cursor.fetchone()
 
                     if row is None:
-                        # Insufficient funds — read current balance for message
+                        # Insufficient funds â€” read current balance for message
                         cursor.execute(
                             "SELECT balance FROM banks WHERE id=%s AND user_id=%s",
                             (from_id, user_id)
@@ -84,17 +79,20 @@ def render_transfers(user_id):
                             "UPDATE banks SET balance = balance + %s WHERE id=%s AND user_id=%s",
                             (transfer_amount, to_id, user_id)
                         )
+                        if cursor.rowcount != 1:
+                            # Destination is not this user's account: undo the debit above.
+                            raise ValueError("Destination account not found.")
                         # Log debit side
                         cursor.execute(
                             "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
                             "VALUES (%s,'debit',%s,%s,%s)",
-                            (from_id, transfer_amount, f"Transfer to {to_name}" + (f" — {note}" if note else ""), today)
+                            (from_id, transfer_amount, f"Transfer to {to_name}" + (f" â€” {note}" if note else ""), today)
                         )
                         # Log credit side
                         cursor.execute(
                             "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
                             "VALUES (%s,'credit',%s,%s,%s)",
-                            (to_id, transfer_amount, f"Transfer from {from_name}" + (f" — {note}" if note else ""), today)
+                            (to_id, transfer_amount, f"Transfer from {from_name}" + (f" â€” {note}" if note else ""), today)
                         )
                         conn.commit()
                         transfer_ok = True
@@ -116,42 +114,30 @@ def render_transfers(user_id):
                             pass
                     err = str(e)
                     if "QueryCanceled" in err or "timeout" in err.lower():
-                        error_msg = "Connection timed out — please try again."
+                        error_msg = "Connection timed out â€” please try again."
                     elif "could not serialize" in err.lower():
-                        error_msg = "Transfer conflict — please try again."
+                        error_msg = "Transfer conflict â€” please try again."
                     else:
                         error_msg = f"Transfer failed: {err[:150]}"
 
-                # ── Show result AFTER db work is fully done ───────────────────
+                # â”€â”€ Show result AFTER db work is fully done â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 if transfer_ok:
-                    st.session_state["_transfer_success"] = f"✅ ₦{transfer_amount:,} transferred from {from_name} to {to_name}."
+                    st.session_state["_transfer_success"] = f"âœ… â‚¦{transfer_amount:,} transferred from {from_name} to {to_name}."
                     st.rerun()
                 elif current_bal is not None:
                     st.error(
-                        f"Insufficient funds. {from_name} has ₦{current_bal:,} "
-                        f"but you tried to transfer ₦{transfer_amount:,}."
+                        f"Insufficient funds. {from_name} has â‚¦{current_bal:,} "
+                        f"but you tried to transfer â‚¦{transfer_amount:,}."
                     )
                 elif error_msg:
                     st.error(error_msg)
 
-        # ── Transfer History ──────────────────────────────────────────────────
+        # â”€â”€ Transfer History â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         st.divider()
         st.subheader("Transfer History")
 
         with get_db() as (conn, cursor):
-            cursor.execute("""
-                SELECT t.created_at, t.description, t.amount, t.type,
-                       b.bank_name, b.account_number
-                FROM transactions t
-                JOIN banks b ON t.bank_id = b.id
-                WHERE b.user_id = %s
-                  AND (   t.description LIKE 'Transfer to %%'
-                       OR t.description LIKE 'Transfer from %%'
-                       OR t.description LIKE 'Transfer to bank %%'
-                       OR t.description LIKE 'Transfer from bank %%')
-                ORDER BY t.created_at DESC
-                LIMIT 50
-            """, (user_id,))
+            cursor.execute(""" SELECT t.created_at, t.description, t.amount, t.type, b.bank_name, b.account_number FROM transactions t JOIN banks b ON t.bank_id = b.id WHERE b.user_id = %s AND ( t.description LIKE 'Transfer to %%' OR t.description LIKE 'Transfer from %%' OR t.description LIKE 'Transfer to bank %%' OR t.description LIKE 'Transfer from bank %%') ORDER BY t.created_at DESC LIMIT 50 """, (user_id,))
             history = cursor.fetchall()
 
         if history:
@@ -169,7 +155,7 @@ def render_transfers(user_id):
                     '<div class="exp-card-date">' + str(tx["created_at"]) + '</div>'
                     '</div>'
                     '<div class="exp-card-right">'
-                    '<div class="exp-card-amount" style="color:' + color + ';">' + prefix + '₦' + amount_fmt + '</div>'
+                    '<div class="exp-card-amount" style="color:' + color + ';">' + prefix + 'â‚¦' + amount_fmt + '</div>'
                     '</div></div>',
                     unsafe_allow_html=True
                 )
