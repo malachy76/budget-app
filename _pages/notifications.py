@@ -47,56 +47,7 @@ _DEFAULT_CFG = {
     "bg": "#f4f7f6", "border": "#0e7c5b", "label": "Notification", "badge": "#0e7c5b"
 }
 
-_NOTIF_CSS = """
-<style>
-.notif-card {
-    border-radius: 12px;
-    padding: 14px 16px;
-    margin-bottom: 10px;
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
-    border-left: 4px solid #0e7c5b;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.05);
-    transition: opacity 0.2s;
-}
-.notif-card.unread  { opacity: 1; }
-.notif-card.read    { opacity: 0.55; }
-.notif-icon  { font-size: 1.4rem; flex-shrink: 0; margin-top: 1px; }
-.notif-body  { flex: 1; }
-.notif-title {
-    font-weight: 700; font-size: 0.93rem; color: #1a2e3b; margin-bottom: 3px;
-    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-}
-.notif-badge {
-    font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 0.05em; border-radius: 20px;
-    padding: 2px 9px; color: #fff;
-}
-.notif-text  { font-size: 0.88rem; color: #6b7f8e; line-height: 1.5; }
-.notif-time  { font-size: 0.72rem; color: #95a5a6; margin-top: 4px; }
-.streak-banner {
-    background: linear-gradient(90deg, #1a2e3b 0%, #0e7c5b 100%);
-    border-radius: 14px; padding: 18px 22px; margin-bottom: 18px;
-    display: flex; justify-content: space-between; align-items: center;
-    flex-wrap: wrap; gap: 12px; color: #fff;
-}
-.streak-left { }
-.streak-num  {
-    font-size: 2.4rem; font-weight: 900; color: #fff; line-height: 1;
-    display: inline-block; margin-right: 8px;
-}
-.streak-label { font-size: 0.85rem; color: #a8d8c8; font-weight: 600; margin-top: 2px; }
-.streak-sub   { font-size: 0.78rem; color: #a8d8c8; margin-top: 4px; }
-.streak-right { text-align: right; }
-.streak-best  { font-size: 0.78rem; color: #a8d8c8; }
-.streak-best-num { font-size: 1.2rem; font-weight: 800; color: #fff; }
-@media(max-width:640px) {
-    .streak-banner { flex-direction: column; }
-    .streak-right  { text-align: left; }
-}
-</style>
-"""
+_NOTIF_CSS = """ <style> .notif-card { border-radius: 12px; padding: 14px 16px; margin-bottom: 10px; display: flex; align-items: flex-start; gap: 12px; border-left: 4px solid #0e7c5b; box-shadow: 0 1px 4px rgba(0,0,0,0.05); transition: opacity 0.2s; } .notif-card.unread { opacity: 1; } .notif-card.read { opacity: 0.55; } .notif-icon { font-size: 1.4rem; flex-shrink: 0; margin-top: 1px; } .notif-body { flex: 1; } .notif-title { font-weight: 700; font-size: 0.93rem; color: #1a2e3b; margin-bottom: 3px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; } .notif-badge { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; border-radius: 20px; padding: 2px 9px; color: #fff; } .notif-text { font-size: 0.88rem; color: #6b7f8e; line-height: 1.5; } .notif-time { font-size: 0.72rem; color: #95a5a6; margin-top: 4px; } .streak-banner { background: linear-gradient(90deg, #1a2e3b 0%, #0e7c5b 100%); border-radius: 14px; padding: 18px 22px; margin-bottom: 18px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; color: #fff; } .streak-left { } .streak-num { font-size: 2.4rem; font-weight: 900; color: #fff; line-height: 1; display: inline-block; margin-right: 8px; } .streak-label { font-size: 0.85rem; color: #a8d8c8; font-weight: 600; margin-top: 2px; } .streak-sub { font-size: 0.78rem; color: #a8d8c8; margin-top: 4px; } .streak-right { text-align: right; } .streak-best { font-size: 0.78rem; color: #a8d8c8; } .streak-best-num { font-size: 1.2rem; font-weight: 800; color: #fff; } @media(max-width:640px) { .streak-banner { flex-direction: column; } .streak-right { text-align: left; } } </style> """
 
 
 def _format_time(ts) -> str:
@@ -160,21 +111,7 @@ def render_notifications(user_id: int) -> None:
         msg     = f"{curr}-Day Streak"
         sub     = "You are in the top 5% of all Budget Right users. Legendary."
 
-    st.markdown(f"""
-    <div class="streak-banner">
-      <div class="streak-left">
-        <div>
-          <span class="streak-num">{flame}</span>
-          <span style="font-size:1.4rem;font-weight:800;">{msg}</span>
-        </div>
-        <div class="streak-sub">{sub}</div>
-      </div>
-      <div class="streak-right">
-        <div class="streak-best">Personal best</div>
-        <div class="streak-best-num">{best} day{'s' if best != 1 else ''}</div>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(f""" <div class="streak-banner"> <div class="streak-left"> <div> <span class="streak-num">{flame}</span> <span style="font-size:1.4rem;font-weight:800;">{msg}</span> </div> <div class="streak-sub">{sub}</div> </div> <div class="streak-right"> <div class="streak-best">Personal best</div> <div class="streak-best-num">{best} day{'s' if best != 1 else ''}</div> </div> </div> """, unsafe_allow_html=True)
 
     # ── Notification inbox controls ───────────────────────────────────────────
     notifications = get_notifications(user_id, limit=60)
@@ -222,19 +159,7 @@ def render_notifications(user_id: int) -> None:
     shown = [n for n in notifications if filter_type is None or n["type"] == filter_type]
 
     if not shown:
-        st.markdown("""
-        <div style="background:#f4f7f6;border-radius:12px;padding:28px 24px;
-                    text-align:center;color:#6b7f8e;margin:16px 0;">
-          <div style="font-size:2.5rem;">&#x1F514;</div>
-          <div style="font-weight:700;margin:8px 0 4px;color:#1a2e3b;">
-            No notifications yet
-          </div>
-          <div style="font-size:0.92rem;">
-            Log expenses, hit streaks, or set a budget to start receiving
-            personalised reminders and tips here.
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(""" <div style="background:#f4f7f6;border-radius:12px;padding:28px 24px; text-align:center;color:#6b7f8e;margin:16px 0;"> <div style="font-size:2.5rem;">&#x1F514;</div> <div style="font-weight:700;margin:8px 0 4px;color:#1a2e3b;"> No notifications yet </div> <div style="font-size:0.92rem;"> Log expenses, hit streaks, or set a budget to start receiving personalised reminders and tips here. </div> </div> """, unsafe_allow_html=True)
         return
 
     # Maps keywords found in notification title/body to page names
@@ -310,5 +235,5 @@ def render_notifications(user_id: int) -> None:
         with action_col:
             if not notif["read"]:
                 if st.button("✓", key=f"notif_read_{notif['id']}", help="Mark as read"):
-                    mark_notification_read(notif["id"])
+                    mark_notification_read(notif["id"], user_id)
                     st.rerun()
