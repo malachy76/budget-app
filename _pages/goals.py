@@ -15,24 +15,11 @@ def render_goals(user_id, pages):
         cursor.execute("SELECT COUNT(*) AS n FROM banks WHERE user_id=%s", (user_id,))
         goals_bank_count = cursor.fetchone()["n"]
 
-        cursor.execute("""
-            SELECT id, name, target_amount, current_amount, status
-            FROM goals WHERE user_id=%s
-            ORDER BY CASE WHEN status='active' THEN 0 ELSE 1 END, created_at DESC
-        """, (user_id,))
+        cursor.execute(""" SELECT id, name, target_amount, current_amount, status FROM goals WHERE user_id=%s ORDER BY CASE WHEN status='active' THEN 0 ELSE 1 END, created_at DESC """, (user_id,))
         goals = cursor.fetchall()
 
     if goals_bank_count == 0:
-        st.markdown("""
-        <div style="background:#f4f7f6;border-radius:12px;padding:24px;text-align:center;color:#6b7f8e;margin:12px 0;">
-          <div style="font-size:2rem;">&#x1F3AF;</div>
-          <div style="font-weight:700;margin:6px 0 4px;color:#1a2e3b;">Add a bank account first</div>
-          <div style="font-size:0.92rem;">
-            Savings goal contributions are deducted from a bank account.<br>
-            Add your bank on the <strong>Banks</strong> page, then set up your goals here.
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(""" <div style="background:#f4f7f6;border-radius:12px;padding:24px;text-align:center;color:#6b7f8e;margin:12px 0;"> <div style="font-size:2rem;">&#x1F3AF;</div> <div style="font-weight:700;margin:6px 0 4px;color:#1a2e3b;">Add a bank account first</div> <div style="font-size:0.92rem;"> Savings goal contributions are deducted from a bank account.<br> Add your bank on the <strong>Banks</strong> page, then set up your goals here. </div> </div> """, unsafe_allow_html=True)
         if st.button("Go to Banks page", key="goals_goto_banks"):
             st.session_state.nav_radio = pages.index("Banks")
             st.rerun()
@@ -147,8 +134,11 @@ def render_goals(user_id, pages):
                         bank_id = bank_options[selected_bank]
                         try:
                             with get_db() as (conn, cursor):
-                                cursor.execute("SELECT balance FROM banks WHERE id=%s", (bank_id,))
-                                bank_balance = int(cursor.fetchone()["balance"])
+                                cursor.execute("SELECT balance FROM banks WHERE id=%s AND user_id=%s FOR UPDATE", (bank_id, user_id))
+                                _bank_row = cursor.fetchone()
+                                if _bank_row is None:
+                                    raise ValueError("Bank account not found.")
+                                bank_balance = int(_bank_row["balance"])
                                 if amt > bank_balance:
                                     st.error(f"Insufficient funds. Bank balance is ₦{bank_balance:,}.")
                                 else:
@@ -159,10 +149,14 @@ def render_goals(user_id, pages):
                                         "UPDATE goals SET current_amount=%s, status=%s WHERE id=%s AND user_id=%s",
                                         (new_current, new_status, goal_id, user_id)
                                     )
+                                    if cursor.rowcount != 1:
+                                        raise ValueError("Goal not found.")
                                     cursor.execute(
-                                        "UPDATE banks SET balance = balance - %s WHERE id=%s",
-                                        (amt, bank_id)
+                                        "UPDATE banks SET balance = balance - %s WHERE id=%s AND user_id=%s",
+                                        (amt, bank_id, user_id)
                                     )
+                                    if cursor.rowcount != 1:
+                                        raise ValueError("Bank account not found.")
                                     cursor.execute(
                                         "INSERT INTO transactions (bank_id, type, amount, description, created_at) "
                                         "VALUES (%s, 'debit', %s, %s, %s)",
@@ -198,16 +192,7 @@ def render_goals(user_id, pages):
     # ── Goals list — active first, then completed ──
 
     if not goals:
-        st.markdown("""
-        <div style="background:#f4f7f6;border-radius:12px;padding:24px;text-align:center;color:#6b7f8e;margin-top:8px;">
-          <div style="font-size:2.2rem;">&#x1F3AF;</div>
-          <div style="font-weight:700;margin:8px 0 4px;color:#1a2e3b;">No savings goals yet</div>
-          <div style="font-size:0.93rem;">
-            Use the <strong>Create New Goal</strong> form above to set a target — emergency fund,
-            new phone, school fees, rent, or anything you're saving towards.
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(""" <div style="background:#f4f7f6;border-radius:12px;padding:24px;text-align:center;color:#6b7f8e;margin-top:8px;"> <div style="font-size:2.2rem;">&#x1F3AF;</div> <div style="font-weight:700;margin:8px 0 4px;color:#1a2e3b;">No savings goals yet</div> <div style="font-size:0.93rem;"> Use the <strong>Create New Goal</strong> form above to set a target — emergency fund, new phone, school fees, rent, or anything you're saving towards. </div> </div> """, unsafe_allow_html=True)
     else:
         active_goals    = [g for g in goals if g["status"] == "active"]
         completed_goals = [g for g in goals if g["status"] == "completed"]
@@ -281,16 +266,7 @@ def render_goals(user_id, pages):
         st.divider()
         st.subheader("Contribution History")
         with get_db() as (conn, cursor):
-            cursor.execute("""
-                SELECT gc.contributed_at, g.name AS goal_name, b.bank_name,
-                       gc.amount
-                FROM goal_contributions gc
-                JOIN goals g ON gc.goal_id = g.id
-                JOIN banks b ON gc.bank_id = b.id
-                WHERE gc.user_id = %s
-                ORDER BY gc.contributed_at DESC
-                LIMIT 50
-            """, (user_id,))
+            cursor.execute(""" SELECT gc.contributed_at, g.name AS goal_name, b.bank_name, gc.amount FROM goal_contributions gc JOIN goals g ON gc.goal_id = g.id JOIN banks b ON gc.bank_id = b.id WHERE gc.user_id = %s ORDER BY gc.contributed_at DESC LIMIT 50 """, (user_id,))
             contrib_history = cursor.fetchall()
 
         if contrib_history:
