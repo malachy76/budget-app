@@ -5,13 +5,13 @@
 #
 # Public API
 # ──────────
-#   run_retention_engine(user_id)          → call after every successful login
-#   get_streak(user_id)                    → dict {current, longest, last_active_date}
-#   get_notifications(user_id, unread_only)→ list of notification dicts
-#   mark_notifications_read(user_id)       → mark all as read
-#   mark_notification_read(notif_id)       → mark one as read
-#   get_unread_count(user_id)              → int
-#   push_notification(user_id, type, title, body, icon) → insert one notification
+# run_retention_engine(user_id) → call after every successful login
+# get_streak(user_id) → dict {current, longest, last_active_date}
+# get_notifications(user_id, unread_only)→ list of notification dicts
+# mark_notifications_read(user_id) → mark all as read
+# mark_notification_read(notif_id, user_id) → mark one as read (owner-checked)
+# get_unread_count(user_id) → int
+# push_notification(user_id, type, title, body, icon) → insert one notification
 from __future__ import annotations
 
 import streamlit as st
@@ -106,11 +106,7 @@ _STREAK_MILESTONES = [
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_retention_engine(user_id: int) -> None:
-    """
-    Call once per login. Updates streak, delivers onboarding tips, generates
-    smart in-app reminders, and fires milestone notifications.
-    All operations are idempotent for the same calendar day.
-    """
+    """ Call once per login. Updates streak, delivers onboarding tips, generates smart in-app reminders, and fires milestone notifications. All operations are idempotent for the same calendar day. """
     today = datetime.now().date()
 
     _update_streak(user_id, today)
@@ -134,10 +130,7 @@ def _update_streak(user_id: int, today: date) -> None:
 
         if row is None:
             # First ever login — create the streak row
-            cursor.execute("""
-                INSERT INTO user_streaks (user_id, current_streak, longest_streak, last_active_date)
-                VALUES (%s, 1, 1, %s)
-            """, (user_id, today))
+            cursor.execute(""" INSERT INTO user_streaks (user_id, current_streak, longest_streak, last_active_date) VALUES (%s, 1, 1, %s) """, (user_id, today))
             _maybe_fire_milestone(cursor, user_id, 1)
             return
 
@@ -158,14 +151,7 @@ def _update_streak(user_id: int, today: date) -> None:
 
         new_longest = max(longest, new_streak)
 
-        cursor.execute("""
-            UPDATE user_streaks
-            SET current_streak = %s,
-                longest_streak = %s,
-                last_active_date = %s,
-                streak_updated_at = NOW()
-            WHERE user_id = %s
-        """, (new_streak, new_longest, today, user_id))
+        cursor.execute(""" UPDATE user_streaks SET current_streak = %s, longest_streak = %s, last_active_date = %s, streak_updated_at = NOW() WHERE user_id = %s """, (new_streak, new_longest, today, user_id))
 
         _maybe_fire_milestone(cursor, user_id, new_streak)
 
@@ -175,15 +161,9 @@ def _maybe_fire_milestone(cursor, user_id: int, streak: int) -> None:
     for days, title, body, icon in _STREAK_MILESTONES:
         if streak == days:
             # Check we haven't already sent this milestone
-            cursor.execute("""
-                SELECT id FROM notifications
-                WHERE user_id = %s AND type = 'milestone' AND title = %s
-            """, (user_id, title))
+            cursor.execute(""" SELECT id FROM notifications WHERE user_id = %s AND type = 'milestone' AND title = %s """, (user_id, title))
             if not cursor.fetchone():
-                cursor.execute("""
-                    INSERT INTO notifications (user_id, type, title, body, icon)
-                    VALUES (%s, 'milestone', %s, %s, %s)
-                """, (user_id, title, body, icon))
+                cursor.execute(""" INSERT INTO notifications (user_id, type, title, body, icon) VALUES (%s, 'milestone', %s, %s, %s) """, (user_id, title, body, icon))
             break
 
 
@@ -210,10 +190,7 @@ def get_streak(user_id: int) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _deliver_onboarding_tip(user_id: int, today: date) -> None:
-    """
-    Send the next onboarding tip to a new user — one per day, up to 7 total.
-    Stops after all tips are sent OR the account is more than 14 days old.
-    """
+    """ Send the next onboarding tip to a new user — one per day, up to 7 total. Stops after all tips are sent OR the account is more than 14 days old. """
     with get_db() as (conn, cursor):
         # Check account age
         cursor.execute("SELECT created_at FROM users WHERE id = %s", (user_id,))
@@ -250,16 +227,9 @@ def _deliver_onboarding_tip(user_id: int, today: date) -> None:
 
         icon, title, body = _ONBOARDING_TIPS[tips_sent]
 
-        cursor.execute("""
-            INSERT INTO notifications (user_id, type, title, body, icon)
-            VALUES (%s, 'tip', %s, %s, %s)
-        """, (user_id, title, body, icon))
+        cursor.execute(""" INSERT INTO notifications (user_id, type, title, body, icon) VALUES (%s, 'tip', %s, %s, %s) """, (user_id, title, body, icon))
 
-        cursor.execute("""
-            UPDATE onboarding_tips
-            SET tips_sent = tips_sent + 1, last_tip_at = %s
-            WHERE user_id = %s
-        """, (today, user_id))
+        cursor.execute(""" UPDATE onboarding_tips SET tips_sent = tips_sent + 1, last_tip_at = %s WHERE user_id = %s """, (today, user_id))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -268,22 +238,12 @@ def _deliver_onboarding_tip(user_id: int, today: date) -> None:
 
 def _already_sent_today(cursor, user_id: int, title_prefix: str, today: date) -> bool:
     """Return True if a notification with this title prefix was sent today."""
-    cursor.execute("""
-        SELECT id FROM notifications
-        WHERE user_id = %s AND title LIKE %s
-          AND created_at::DATE = %s
-    """, (user_id, title_prefix + "%", today))
+    cursor.execute(""" SELECT id FROM notifications WHERE user_id = %s AND title LIKE %s AND created_at::DATE = %s """, (user_id, title_prefix + "%", today))
     return cursor.fetchone() is not None
 
 
 def _generate_reminders(user_id: int, today: date) -> None:
-    """
-    Fetch ALL data needed for every reminder in a single DB round-trip,
-    then build and insert reminders in Python — zero extra queries.
-
-    BEFORE: 8+ separate SELECT calls (one per _already_sent_today check + data query).
-    AFTER:  1 preflight SELECT with CTEs, then INSERT only what fires.
-    """
+    """ Fetch ALL data needed for every reminder in a single DB round-trip, then build and insert reminders in Python — zero extra queries. BEFORE: 8+ separate SELECT calls (one per _already_sent_today check + data query). AFTER: 1 preflight SELECT with CTEs, then INSERT only what fires. """
     import calendar as _cal
     month_start   = today.replace(day=1)
     week_start    = today - timedelta(days=today.weekday())
@@ -303,66 +263,7 @@ def _generate_reminders(user_id: int, today: date) -> None:
         # 8. Last login date (for re-engagement)
         # 9. Monthly income/spend (for month-end nudge)
         # 10. Last week expense count (for Monday check-in)
-        cursor.execute("""
-            WITH sent_today AS (
-                SELECT DISTINCT LEFT(title, 20) AS prefix
-                FROM notifications
-                WHERE user_id = %(uid)s AND created_at::DATE = %(today)s
-            ),
-            user_data AS (
-                SELECT monthly_spending_limit, last_login
-                FROM users WHERE id = %(uid)s
-            ),
-            monthly_spend AS (
-                SELECT COALESCE(SUM(CASE WHEN t.type='debit'  THEN t.amount ELSE 0 END),0) AS spent,
-                       COALESCE(SUM(CASE WHEN t.type='credit' THEN t.amount ELSE 0 END),0) AS income
-                FROM transactions t JOIN banks b ON t.bank_id=b.id
-                WHERE b.user_id=%(uid)s AND t.created_at >= %(month_start)s
-            ),
-            bills_due AS (
-                SELECT name, amount, next_due
-                FROM recurring_items
-                WHERE user_id=%(uid)s AND active=1
-                  AND next_due IS NOT NULL
-                  AND next_due BETWEEN %(today)s AND %(three_days)s
-                ORDER BY next_due LIMIT 3
-            ),
-            streak_row AS (
-                SELECT last_active_date, current_streak
-                FROM user_streaks WHERE user_id=%(uid)s
-            ),
-            near_goal AS (
-                SELECT name, target_amount, current_amount
-                FROM goals
-                WHERE user_id=%(uid)s AND status='active'
-                  AND current_amount > 0 AND target_amount > 0
-                  AND (current_amount::float/target_amount) >= 0.9
-                ORDER BY (current_amount::float/target_amount) DESC LIMIT 1
-            ),
-            last_expense AS (
-                SELECT MAX(e.created_at) AS last_date
-                FROM expenses e JOIN banks b ON e.bank_id=b.id
-                WHERE b.user_id=%(uid)s
-            ),
-            last_week_count AS (
-                SELECT COUNT(*) AS n
-                FROM expenses e JOIN banks b ON e.bank_id=b.id
-                WHERE b.user_id=%(uid)s AND e.created_at >= %(last_week_start)s
-                  AND e.created_at < %(week_start)s
-            )
-            SELECT
-                (SELECT json_agg(prefix) FROM sent_today)             AS sent_prefixes,
-                (SELECT monthly_spending_limit FROM user_data)         AS spending_limit,
-                (SELECT last_login FROM user_data)                     AS last_login,
-                (SELECT spent FROM monthly_spend)                      AS m_spent,
-                (SELECT income FROM monthly_spend)                     AS m_income,
-                (SELECT json_agg(bills_due) FROM bills_due)            AS bills,
-                (SELECT last_active_date FROM streak_row)              AS streak_date,
-                (SELECT current_streak FROM streak_row)                AS streak_curr,
-                (SELECT row_to_json(near_goal) FROM near_goal)         AS goal_row,
-                (SELECT last_date FROM last_expense)                   AS last_exp_date,
-                (SELECT n FROM last_week_count)                        AS last_week_n
-        """, {
+        cursor.execute(""" WITH sent_today AS ( SELECT DISTINCT LEFT(title, 20) AS prefix FROM notifications WHERE user_id = %(uid)s AND created_at::DATE = %(today)s ), user_data AS ( SELECT monthly_spending_limit, last_login FROM users WHERE id = %(uid)s ), monthly_spend AS ( SELECT COALESCE(SUM(CASE WHEN t.type='debit' THEN t.amount ELSE 0 END),0) AS spent, COALESCE(SUM(CASE WHEN t.type='credit' THEN t.amount ELSE 0 END),0) AS income FROM transactions t JOIN banks b ON t.bank_id=b.id WHERE b.user_id=%(uid)s AND t.created_at >= %(month_start)s ), bills_due AS ( SELECT name, amount, next_due FROM recurring_items WHERE user_id=%(uid)s AND active=1 AND next_due IS NOT NULL AND next_due BETWEEN %(today)s AND %(three_days)s ORDER BY next_due LIMIT 3 ), streak_row AS ( SELECT last_active_date, current_streak FROM user_streaks WHERE user_id=%(uid)s ), near_goal AS ( SELECT name, target_amount, current_amount FROM goals WHERE user_id=%(uid)s AND status='active' AND current_amount > 0 AND target_amount > 0 AND (current_amount::float/target_amount) >= 0.9 ORDER BY (current_amount::float/target_amount) DESC LIMIT 1 ), last_expense AS ( SELECT MAX(e.created_at) AS last_date FROM expenses e JOIN banks b ON e.bank_id=b.id WHERE b.user_id=%(uid)s ), last_week_count AS ( SELECT COUNT(*) AS n FROM expenses e JOIN banks b ON e.bank_id=b.id WHERE b.user_id=%(uid)s AND e.created_at >= %(last_week_start)s AND e.created_at < %(week_start)s ) SELECT (SELECT json_agg(prefix) FROM sent_today) AS sent_prefixes, (SELECT monthly_spending_limit FROM user_data) AS spending_limit, (SELECT last_login FROM user_data) AS last_login, (SELECT spent FROM monthly_spend) AS m_spent, (SELECT income FROM monthly_spend) AS m_income, (SELECT json_agg(bills_due) FROM bills_due) AS bills, (SELECT last_active_date FROM streak_row) AS streak_date, (SELECT current_streak FROM streak_row) AS streak_curr, (SELECT row_to_json(near_goal) FROM near_goal) AS goal_row, (SELECT last_date FROM last_expense) AS last_exp_date, (SELECT n FROM last_week_count) AS last_week_n """, {
             "uid":            user_id,
             "today":          today,
             "month_start":    month_start,
@@ -390,10 +291,7 @@ def _generate_reminders(user_id: int, today: date) -> None:
             return any(p.startswith(prefix[:20]) for p in sent_today_prefixes)
 
         def _insert(ntype, title, body, icon):
-            cursor.execute("""
-                INSERT INTO notifications (user_id, type, title, body, icon)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (user_id, ntype, title, body, icon))
+            cursor.execute(""" INSERT INTO notifications (user_id, type, title, body, icon) VALUES (%s, %s, %s, %s, %s) """, (user_id, ntype, title, body, icon))
 
         # ── 1. Bills due in next 3 days ────────────────────────────────────────
         if bills and not _already_sent("Bill Due"):
@@ -500,20 +398,14 @@ def _generate_reminders(user_id: int, today: date) -> None:
 # NOTIFICATION INBOX API
 # ─────────────────────────────────────────────────────────────────────────────
 
-def push_notification(user_id: int, ntype: str, title: str, body: str,
-                      icon: str = "&#x1F514;") -> None:
+def push_notification(user_id: int, ntype: str, title: str, body: str, icon: str = "&#x1F514;") -> None:
     """Insert a single notification manually."""
     with get_db() as (conn, cursor):
-        cursor.execute("""
-            INSERT INTO notifications (user_id, type, title, body, icon)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (user_id, ntype, title, body, icon))
+        cursor.execute(""" INSERT INTO notifications (user_id, type, title, body, icon) VALUES (%s, %s, %s, %s, %s) """, (user_id, ntype, title, body, icon))
 
 
 def get_notifications(user_id: int, unread_only: bool = False, limit: int = 50) -> list:
-    """Return list of notification dicts, newest first.
-    Cached for 30 s — invalidated whenever a write happens via _invalidate_notif_cache().
-    """
+    """Return list of notification dicts, newest first. Cached for 30 s — invalidated whenever a write happens via _invalidate_notif_cache(). """
     return _get_notifications_cached(user_id, unread_only, limit)
 
 
@@ -521,19 +413,9 @@ def get_notifications(user_id: int, unread_only: bool = False, limit: int = 50) 
 def _get_notifications_cached(user_id: int, unread_only: bool, limit: int) -> list:
     with get_db() as (conn, cursor):
         if unread_only:
-            cursor.execute("""
-                SELECT id, type, title, body, icon, read, created_at
-                FROM notifications
-                WHERE user_id = %s AND read = 0
-                ORDER BY created_at DESC LIMIT %s
-            """, (user_id, limit))
+            cursor.execute(""" SELECT id, type, title, body, icon, read, created_at FROM notifications WHERE user_id = %s AND read = 0 ORDER BY created_at DESC LIMIT %s """, (user_id, limit))
         else:
-            cursor.execute("""
-                SELECT id, type, title, body, icon, read, created_at
-                FROM notifications
-                WHERE user_id = %s
-                ORDER BY created_at DESC LIMIT %s
-            """, (user_id, limit))
+            cursor.execute(""" SELECT id, type, title, body, icon, read, created_at FROM notifications WHERE user_id = %s ORDER BY created_at DESC LIMIT %s """, (user_id, limit))
         return cursor.fetchall()
 
 
@@ -567,11 +449,11 @@ def mark_notifications_read(user_id: int) -> None:
     _invalidate_notif_cache()
 
 
-def mark_notification_read(notif_id: int) -> None:
+def mark_notification_read(notif_id: int, user_id: int) -> None:
     with get_db() as (conn, cursor):
         cursor.execute(
-            "UPDATE notifications SET read = 1 WHERE id = %s",
-            (notif_id,)
+            "UPDATE notifications SET read = 1 WHERE id = %s AND user_id = %s",
+            (notif_id, user_id)
         )
     _invalidate_notif_cache()
 
