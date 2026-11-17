@@ -13,14 +13,7 @@ st.set_page_config(
 )
 
 # ── Hide Streamlit's auto-generated multipage nav (belt + suspenders) ─────────
-st.markdown("""
-<style>
-/* Hide any auto-generated multipage nav Streamlit adds above the sidebar */
-[data-testid="stSidebarNav"] { display: none !important; }
-div[data-testid="stSidebarNavItems"] { display: none !important; }
-section[data-testid="stSidebar"] ul { display: none !important; }
-</style>
-""", unsafe_allow_html=True)
+st.markdown(""" <style> /* Hide any auto-generated multipage nav Streamlit adds above the sidebar */ [data-testid="stSidebarNav"] { display: none !important; } div[data-testid="stSidebarNavItems"] { display: none !important; } section[data-testid="stSidebar"] ul { display: none !important; } </style> """, unsafe_allow_html=True)
 
 from cookies_compat import CookieManagerCompat
 
@@ -151,13 +144,7 @@ if st.session_state.get("demo_mode"):
     # ── Demo sidebar ─────────────────────────────────────────────────────────
     with st.sidebar:
         # Demo badge — always visible
-        st.markdown("""
-        <div style="background:#f39c12;color:#fff;border-radius:10px;
-                    padding:8px 14px;margin-bottom:10px;text-align:center;
-                    font-weight:700;font-size:0.88rem;letter-spacing:0.03em;">
-          &#x1F3A8; DEMO MODE
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(""" <div style="background:#f39c12;color:#fff;border-radius:10px; padding:8px 14px;margin-bottom:10px;text-align:center; font-weight:700;font-size:0.88rem;letter-spacing:0.03em;"> &#x1F3A8; DEMO MODE </div> """, unsafe_allow_html=True)
         st.markdown("### Hello, Demo User")
         st.markdown(
             '<div style="background:#1a3c5e;border-radius:10px;padding:10px 14px;'
@@ -373,14 +360,7 @@ if st.session_state.app_mode == "personal":
         else:
             steps_done = sum([_ob["has_bank"], _ob["has_income"],
                               _ob["has_expense"], _ob["has_budget"]])
-            st.markdown("""
-            <style>
-            .ob-step { display:flex; align-items:center; gap:10px; background:#f0f7f4;
-                border-radius:8px; padding:10px 14px; margin-bottom:6px; font-size:0.92rem; }
-            .ob-done { border-left:4px solid #0e7c5b; color:#2c7a5a; }
-            .ob-todo { border-left:4px solid #d0d0d0; color:#555; }
-            .ob-icon { font-size:1.2rem; }
-            </style>""", unsafe_allow_html=True)
+            st.markdown(""" <style> .ob-step { display:flex; align-items:center; gap:10px; background:#f0f7f4; border-radius:8px; padding:10px 14px; margin-bottom:6px; font-size:0.92rem; } .ob-done { border-left:4px solid #0e7c5b; color:#2c7a5a; } .ob-todo { border-left:4px solid #d0d0d0; color:#555; } .ob-icon { font-size:1.2rem; } </style>""", unsafe_allow_html=True)
 
             with st.expander(f"&#x1F680; Setup checklist — {steps_done}/4 done", expanded=(steps_done == 0)):
                 st.progress(steps_done / 4, text=f"{steps_done * 25}% set up")
@@ -436,7 +416,7 @@ if st.session_state.app_mode == "personal":
                         if ob_inc_source and ob_inc_amount > 0:
                             bk_id = ob_bank_map[ob_inc_bank]
                             with get_db() as (conn, cursor):
-                                cursor.execute("UPDATE banks SET balance=balance+%s WHERE id=%s", (int(ob_inc_amount), bk_id))
+                                cursor.execute("UPDATE banks SET balance=balance+%s WHERE id=%s AND user_id=%s", (int(ob_inc_amount), bk_id, user_id))
                                 cursor.execute(
                                     "INSERT INTO transactions (bank_id,type,amount,description,created_at) VALUES (%s,'credit',%s,%s,%s)",
                                     (bk_id, int(ob_inc_amount), f"Income: {ob_inc_source}", datetime.now().date())
