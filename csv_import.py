@@ -1,8 +1,6 @@
 # csv_import.py
 # -*- coding: utf-8 -*-
-"""
-Safe CSV bank-statement importer for Budget Right.
-"""
+""" Safe CSV bank-statement importer for Budget Right. """
 
 import re
 import hashlib
@@ -236,65 +234,63 @@ def _load_existing_fingerprints(cur, bank_id):
 
 
 def _ensure_import_tables(cur, conn):
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS import_batches (
-            id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            bank_id INTEGER NOT NULL REFERENCES banks(id) ON DELETE CASCADE,
-            filename TEXT,
-            row_count INTEGER DEFAULT 0,
-            total_amount INTEGER DEFAULT 0,
-            imported_at TIMESTAMP DEFAULT NOW(),
-            undone INTEGER DEFAULT 0
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS import_batch_items (
-            id SERIAL PRIMARY KEY,
-            batch_id INTEGER NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
-            expense_id INTEGER REFERENCES expenses(id) ON DELETE SET NULL,
-            tx_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL,
-            amount INTEGER NOT NULL,
-            bank_id INTEGER NOT NULL REFERENCES banks(id) ON DELETE CASCADE
-        )
-    """)
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_import_batches_user_id
-            ON import_batches(user_id, imported_at DESC)
-    """)
+    cur.execute(""" CREATE TABLE IF NOT EXISTS import_batches ( id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, bank_id INTEGER NOT NULL REFERENCES banks(id) ON DELETE CASCADE, filename TEXT, row_count INTEGER DEFAULT 0, total_amount INTEGER DEFAULT 0, imported_at TIMESTAMP DEFAULT NOW(), undone INTEGER DEFAULT 0 ) """)
+    cur.execute(""" CREATE TABLE IF NOT EXISTS import_batch_items ( id SERIAL PRIMARY KEY, batch_id INTEGER NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE, expense_id INTEGER REFERENCES expenses(id) ON DELETE SET NULL, tx_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL, amount INTEGER NOT NULL, bank_id INTEGER NOT NULL REFERENCES banks(id) ON DELETE CASCADE ) """)
+    cur.execute(""" CREATE INDEX IF NOT EXISTS idx_import_batches_user_id ON import_batches(user_id, imported_at DESC) """)
     conn.commit()
 
 
 def _get_last_batch(cur, user_id):
-    cur.execute("""
-        SELECT id, filename, row_count, total_amount, imported_at, bank_id
-        FROM import_batches
-        WHERE user_id = %s AND undone = 0
-        ORDER BY imported_at DESC LIMIT 1
-    """, (user_id,))
+    cur.execute(""" SELECT id, filename, row_count, total_amount, imported_at, bank_id FROM import_batches WHERE user_id = %s AND undone = 0 ORDER BY imported_at DESC LIMIT 1 """, (user_id,))
     return cur.fetchone()
 
 
 def _undo_batch(cur, conn, batch_id, user_id):
-    cur.execute("""
-        SELECT ibi.expense_id, ibi.tx_id, ibi.amount, ibi.bank_id
-        FROM import_batch_items ibi WHERE ibi.batch_id = %s
-    """, (batch_id,))
+    cur.execute(""" SELECT ibi.expense_id, ibi.tx_id, ibi.amount, ibi.bank_id FROM import_batch_items ibi JOIN import_batches ib ON ib.id = ibi.batch_id WHERE ibi.batch_id = %s AND ib.user_id = %s AND ib.undone = 0 """, (batch_id, user_id))
     items = cur.fetchall()
     rows_reversed  = 0
     total_reversed = 0
     for item in items:
         amt     = item["amount"]
         bank_id = item["bank_id"]
-        cur.execute("UPDATE banks SET balance = balance + %s WHERE id = %s", (amt, bank_id))
-        if item["expense_id"]:
-            cur.execute("DELETE FROM expenses WHERE id = %s AND user_id = %s",
-                        (item["expense_id"], user_id))
+        # Security patch: each imported row is undone all-or-nothing (savepoint), and
+        # only when EVERY record it touches is verified to belong to this user:
+        # * the expense is this user's and sits on the bank recorded for the import;
+        # * the linked transaction is a DEBIT on that SAME bank, and that bank is this user's;
+        # * the bank refund also names this user.
+        # If any check fails the row is skipped untouched. The bank is refunded ONLY if
+        # the expense was really deleted now, so an expense the user already deleted by
+        # hand is never refunded a second time.
+        if not item["expense_id"]:
+            continue
+        cur.execute("SAVEPOINT undo_item")
+        cur.execute("DELETE FROM expenses WHERE id = %s AND user_id = %s AND bank_id = %s",
+                    (item["expense_id"], user_id, bank_id))
+        if cur.rowcount != 1:
+            cur.execute("ROLLBACK TO SAVEPOINT undo_item")
+            continue
         if item["tx_id"]:
-            cur.execute("DELETE FROM transactions WHERE id = %s", (item["tx_id"],))
+            cur.execute(
+                "DELETE FROM transactions t USING banks b "
+                "WHERE t.id = %s AND t.type = 'debit' AND t.bank_id = %s "
+                "AND t.bank_id = b.id AND b.user_id = %s RETURNING t.id",
+                (item["tx_id"], bank_id, user_id))
+            if cur.fetchone() is None:
+                # Gone already is fine (older data). A transaction that EXISTS but is not
+                # this user's debit on this bank is never deleted: skip the whole row.
+                cur.execute("SELECT 1 FROM transactions WHERE id = %s", (item["tx_id"],))
+                if cur.fetchone():
+                    cur.execute("ROLLBACK TO SAVEPOINT undo_item")
+                    continue
+        cur.execute("UPDATE banks SET balance = balance + %s WHERE id = %s AND user_id = %s",
+                    (amt, bank_id, user_id))
+        if cur.rowcount != 1:
+            cur.execute("ROLLBACK TO SAVEPOINT undo_item")
+            continue
+        cur.execute("RELEASE SAVEPOINT undo_item")
         rows_reversed  += 1
         total_reversed += amt
-    cur.execute("UPDATE import_batches SET undone = 1 WHERE id = %s", (batch_id,))
+    cur.execute("UPDATE import_batches SET undone = 1 WHERE id = %s AND user_id = %s", (batch_id, user_id))
     conn.commit()
     return rows_reversed, total_reversed
 
@@ -305,34 +301,10 @@ def csv_import_page(conn, user_id: int):
     cur = conn.cursor()
     _ensure_import_tables(cur, conn)
 
-    st.markdown("""
-    <style>
-    .import-badge      { display:inline-block; background:#0e7c5b; color:#fff;
-                         border-radius:20px; padding:2px 12px; font-size:0.78rem; font-weight:700; margin-left:6px; }
-    .import-badge-warn { background:#e65100; color:#fff; }
-    .import-badge-dup  { background:#6a1b9a; color:#fff; }
-    .import-section    { background:#1a3c5e; border-radius:10px; padding:14px 18px; margin-bottom:12px; color:#e8f0f7; }
-    .import-section strong { color:#a8d8c8; }
-    .format-chip       { display:inline-block; background:#0e7c5b; color:#fff;
-                         border-radius:8px; padding:4px 12px; font-size:0.82rem; font-weight:600; }
-    .how-it-works      { background:#1a3c5e; border-radius:12px; padding:16px 20px;
-                         color:#e8f0f7; margin-bottom:16px; font-size:0.92rem; line-height:1.8; }
-    .how-it-works b    { color:#a8d8c8; }
-    </style>
-    """, unsafe_allow_html=True)
+    st.markdown(""" <style> .import-badge { display:inline-block; background:#0e7c5b; color:#fff; border-radius:20px; padding:2px 12px; font-size:0.78rem; font-weight:700; margin-left:6px; } .import-badge-warn { background:#e65100; color:#fff; } .import-badge-dup { background:#6a1b9a; color:#fff; } .import-section { background:#1a3c5e; border-radius:10px; padding:14px 18px; margin-bottom:12px; color:#e8f0f7; } .import-section strong { color:#a8d8c8; } .format-chip { display:inline-block; background:#0e7c5b; color:#fff; border-radius:8px; padding:4px 12px; font-size:0.82rem; font-weight:600; } .how-it-works { background:#1a3c5e; border-radius:12px; padding:16px 20px; color:#e8f0f7; margin-bottom:16px; font-size:0.92rem; line-height:1.8; } .how-it-works b { color:#a8d8c8; } </style> """, unsafe_allow_html=True)
 
     # How it works — single instance, always visible, dark background for readability
-    st.markdown("""
-    <div class="how-it-works">
-      <b>How CSV import works:</b><br>
-      1. Download your bank statement as a CSV from your bank app or internet banking.<br>
-      2. Select the bank account it belongs to, then upload the file below.<br>
-      3. Budget Right auto-detects your bank format and maps the columns.<br>
-      4. Review the preview, then click <b>Import</b> — each row becomes an expense.<br>
-      <br>
-      <b>Supported banks:</b> GTB, Access, Zenith, UBA, First Bank, Opay, Kuda, Fidelity, Moniepoint, FCMB, Stanbic IBTC, Polaris, and more.
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(""" <div class="how-it-works"> <b>How CSV import works:</b><br> 1. Download your bank statement as a CSV from your bank app or internet banking.<br> 2. Select the bank account it belongs to, then upload the file below.<br> 3. Budget Right auto-detects your bank format and maps the columns.<br> 4. Review the preview, then click <b>Import</b> — each row becomes an expense.<br> <br> <b>Supported banks:</b> GTB, Access, Zenith, UBA, First Bank, Opay, Kuda, Fidelity, Moniepoint, FCMB, Stanbic IBTC, Polaris, and more. </div> """, unsafe_allow_html=True)
 
     # 1. Load banks
     cur.execute("SELECT id, bank_name, account_number, balance FROM banks WHERE user_id = %s", (user_id,))
@@ -541,11 +513,10 @@ def csv_import_page(conn, user_id: int):
         imported      = 0
         import_errors = []
         try:
-            cur.execute("""
-                INSERT INTO import_batches
-                    (user_id, bank_id, filename, row_count, total_amount, imported_at)
-                VALUES (%s, %s, %s, %s, %s, NOW()) RETURNING id
-            """, (user_id, bank_id, filename, len(new_rows), total_new))
+            cur.execute("SELECT 1 FROM banks WHERE id = %s AND user_id = %s", (bank_id, user_id))
+            if cur.fetchone() is None:
+                raise ValueError("Bank account not found.")
+            cur.execute(""" INSERT INTO import_batches (user_id, bank_id, filename, row_count, total_amount, imported_at) VALUES (%s, %s, %s, %s, %s, NOW()) RETURNING id """, (user_id, bank_id, filename, len(new_rows), total_new))
             batch_id = cur.fetchone()["id"]
 
             for r in new_rows:
@@ -555,27 +526,18 @@ def csv_import_page(conn, user_id: int):
                     cat      = r["category"]
                     txn_date = r["date"]
 
-                    cur.execute("""
-                        INSERT INTO transactions (bank_id, type, amount, description, created_at)
-                        VALUES (%s, 'debit', %s, %s, %s) RETURNING id
-                    """, (bank_id, amt, f"Expense: {desc}", txn_date))
+                    cur.execute(""" INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, 'debit', %s, %s, %s) RETURNING id """, (bank_id, amt, f"Expense: {desc}", txn_date))
                     tx_id = cur.fetchone()["id"]
 
-                    cur.execute("""
-                        INSERT INTO expenses
-                            (user_id, bank_id, name, category, amount, created_at, tx_id)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
-                    """, (user_id, bank_id, desc, cat, amt, txn_date, tx_id))
+                    cur.execute(""" INSERT INTO expenses (user_id, bank_id, name, category, amount, created_at, tx_id) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id """, (user_id, bank_id, desc, cat, amt, txn_date, tx_id))
                     expense_id = cur.fetchone()["id"]
 
-                    cur.execute("UPDATE banks SET balance = balance - %s WHERE id = %s",
-                                (amt, bank_id))
+                    cur.execute("UPDATE banks SET balance = balance - %s WHERE id = %s AND user_id = %s",
+                                (amt, bank_id, user_id))
+                    if cur.rowcount != 1:
+                        raise ValueError("Bank account not found.")
 
-                    cur.execute("""
-                        INSERT INTO import_batch_items
-                            (batch_id, expense_id, tx_id, amount, bank_id)
-                        VALUES (%s, %s, %s, %s, %s)
-                    """, (batch_id, expense_id, tx_id, amt, bank_id))
+                    cur.execute(""" INSERT INTO import_batch_items (batch_id, expense_id, tx_id, amount, bank_id) VALUES (%s, %s, %s, %s, %s) """, (batch_id, expense_id, tx_id, amt, bank_id))
 
                     imported += 1
                 except Exception as row_exc:
