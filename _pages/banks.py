@@ -6,6 +6,7 @@ import plotly.express as px
 from datetime import datetime, timedelta
 
 from db import get_db
+from utils import delete_bank, update_bank
 from utils import save_expense, apply_income_filters, apply_expense_filters, \
     render_filter_bar_income, render_filter_bar_expenses, \
     get_category_budgets, compute_daily_safe_to_spend, BUDGET_CATEGORIES, upsert_category_budget
@@ -65,14 +66,13 @@ def render_banks(user_id):
                     cc1, cc2 = st.columns(2)
                     with cc1:
                         if st.button("Yes, delete all", key=f"confirm_yes_bank_{bank['id']}"):
-                            with get_db() as (conn, cursor):
-                                cursor.execute("UPDATE expenses SET tx_id=NULL WHERE bank_id=%s", (bank["id"],))
-                                cursor.execute("DELETE FROM expenses WHERE bank_id=%s", (bank["id"],))
-                                cursor.execute("DELETE FROM transactions WHERE bank_id=%s", (bank["id"],))
-                                cursor.execute("DELETE FROM banks WHERE id=%s", (bank["id"],))
+                            ok_bd, msg_bd = delete_bank(user_id, bank["id"])
                             st.session_state.confirm_delete.pop(del_key, None)
-                            st.success("Bank and all its data deleted.")
-                            st.rerun()
+                            if ok_bd:
+                                st.success(msg_bd)
+                                st.rerun()
+                            else:
+                                st.error(msg_bd)
                     with cc2:
                         if st.button("Cancel", key=f"confirm_no_bank_{bank['id']}"):
                             st.session_state.confirm_delete.pop(del_key, None)
@@ -85,7 +85,7 @@ def render_banks(user_id):
         if st.session_state.get("edit_bank_id"):
             edit_id = st.session_state.edit_bank_id
             with get_db() as (conn, cursor):
-                cursor.execute("SELECT bank_name, account_name, account_number FROM banks WHERE id=%s", (edit_id,))
+                cursor.execute("SELECT bank_name, account_name, account_number FROM banks WHERE id=%s AND user_id=%s", (edit_id, user_id))
                 bank = cursor.fetchone()
             if bank:
                 st.markdown("### Edit Bank")
@@ -93,20 +93,14 @@ def render_banks(user_id):
                 new_acc_name = st.text_input("Account Name",   value=bank["account_name"])
                 new_acc_num  = st.text_input("Account Number", value=bank["account_number"])
                 if st.button("Update Bank"):
-                    with get_db() as (conn, cursor):
-                        cursor.execute("UPDATE banks SET bank_name=%s, account_name=%s, account_number=%s WHERE id=%s",
-                                       (new_name, new_acc_name, new_acc_num, edit_id))
-                    st.success("Bank updated.")
-                    st.session_state.edit_bank_id = None
-                    st.rerun()
+                    ok_bu, msg_bu = update_bank(user_id, edit_id, new_name, new_acc_name, new_acc_num)
+                    if ok_bu:
+                        st.success(msg_bu)
+                        st.session_state.edit_bank_id = None
+                        st.rerun()
+                    else:
+                        st.error(msg_bu)
     else:
-        st.markdown("""
-        <div style="background:#f4f7f6;border-radius:10px;padding:20px 22px;text-align:center;color:#6b7f8e;margin-top:12px;">
-          <div style="font-size:2rem;">&#x1F3E6;</div>
-          <div style="font-weight:700;margin:6px 0 4px;color:#1a2e3b;">No bank accounts yet</div>
-          <div style="font-size:0.92rem;">Use the form above to add your GTB, Access, Opay, or any other account.<br>
-          Your ATM card number is never needed — just your bank name and last 4 digits.</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(""" <div style="background:#f4f7f6;border-radius:10px;padding:20px 22px;text-align:center;color:#6b7f8e;margin-top:12px;"> <div style="font-size:2rem;">&#x1F3E6;</div> <div style="font-weight:700;margin:6px 0 4px;color:#1a2e3b;">No bank accounts yet</div> <div style="font-size:0.92rem;">Use the form above to add your GTB, Access, Opay, or any other account.<br> Your ATM card number is never needed — just your bank name and last 4 digits.</div> </div> """, unsafe_allow_html=True)
 
 # ================= PAGE: TRANSFERS =================
