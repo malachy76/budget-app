@@ -42,33 +42,12 @@ def _due_badge(next_due, today):
 
 
 def _run_auto_posting(user_id: int, today) -> list:
-    """
-    Check all recurring items with auto_post=1 that are due today or overdue.
-    Post them (create transaction/expense record), advance next_due, update last_posted_at.
-    Returns a list of result strings for display.
-
-    Rules:
-    - allow_overdraft=0: only post if bank has sufficient balance
-    - allow_overdraft=1: post even if balance goes negative
-    - Each item uses a savepoint so one failure never cancels others
-    - If bank_id is NULL, skip (no bank linked)
-    """
+    """ Check all recurring items with auto_post=1 that are due today or overdue. Post them (create transaction/expense record), advance next_due, update last_posted_at. Returns a list of result strings for display. Rules: - allow_overdraft=0: only post if bank has sufficient balance - allow_overdraft=1: post even if balance goes negative - Each item uses a savepoint so one failure never cancels others - If bank_id is NULL, skip (no bank linked) """
     results = []
     try:
         with get_db() as (conn, cursor):
             # Load all due auto-post items in one query
-            cursor.execute("""
-                SELECT r.id, r.type, r.name, r.category, r.amount, r.frequency,
-                       r.next_due, r.bank_id, r.allow_overdraft,
-                       b.balance, b.bank_name
-                FROM recurring_items r
-                LEFT JOIN banks b ON r.bank_id = b.id
-                WHERE r.user_id = %s
-                  AND r.auto_post = 1
-                  AND r.active = 1
-                  AND r.next_due IS NOT NULL
-                  AND r.next_due <= %s
-            """, (user_id, today))
+            cursor.execute(""" SELECT r.id, r.type, r.name, r.category, r.amount, r.frequency, r.next_due, r.bank_id, r.allow_overdraft, b.balance, b.bank_name FROM recurring_items r LEFT JOIN banks b ON r.bank_id = b.id WHERE r.user_id = %s AND r.auto_post = 1 AND r.active = 1 AND r.next_due IS NOT NULL AND r.next_due <= %s """, (user_id, today))
             due_items = cursor.fetchall()
 
             for item in due_items:
@@ -81,11 +60,15 @@ def _run_auto_posting(user_id: int, today) -> list:
 
                     # Re-fetch live balance with row lock
                     cursor.execute(
-                        "SELECT balance FROM banks WHERE id = %s FOR UPDATE",
-                        (item["bank_id"],)
+                        "SELECT balance FROM banks WHERE id = %s AND user_id = %s FOR UPDATE",
+                        (item["bank_id"], user_id)
                     )
                     bank_row     = cursor.fetchone()
-                    bank_balance = int(bank_row["balance"] or 0) if bank_row else 0
+                    if bank_row is None:
+                        cursor.execute("ROLLBACK TO SAVEPOINT ap_item")
+                        results.append(f"⚠️ **{item['name']}** — Skipped (bank account not found)")
+                        continue
+                    bank_balance = int(bank_row["balance"] or 0)
                     amount       = int(item["amount"])
                     allow_od     = bool(item["allow_overdraft"])
                     item_type    = item["type"]
@@ -101,31 +84,20 @@ def _run_auto_posting(user_id: int, today) -> list:
                     tx_type       = "credit" if item_type == "income" else "debit"
                     balance_delta = amount if item_type == "income" else -amount
 
-                    cursor.execute("""
-                        INSERT INTO transactions (bank_id, type, amount, description, created_at)
-                        VALUES (%s, %s, %s, %s, %s)
-                    """, (item["bank_id"], tx_type, amount,
+                    cursor.execute(""" INSERT INTO transactions (bank_id, type, amount, description, created_at) VALUES (%s, %s, %s, %s, %s) """, (item["bank_id"], tx_type, amount,
                           f"Auto-posted: {item['name']}", today))
 
                     if item_type == "expense":
-                        cursor.execute("""
-                            INSERT INTO expenses
-                                (user_id, bank_id, name, category, amount, created_at)
-                            VALUES (%s, %s, %s, %s, %s, %s)
-                        """, (user_id, item["bank_id"], item["name"],
+                        cursor.execute(""" INSERT INTO expenses (user_id, bank_id, name, category, amount, created_at) VALUES (%s, %s, %s, %s, %s, %s) """, (user_id, item["bank_id"], item["name"],
                               item.get("category") or item["name"], amount, today))
 
                     cursor.execute(
-                        "UPDATE banks SET balance = balance + %s WHERE id = %s",
-                        (balance_delta, item["bank_id"])
+                        "UPDATE banks SET balance = balance + %s WHERE id = %s AND user_id = %s",
+                        (balance_delta, item["bank_id"], user_id)
                     )
 
                     new_next_due = _next_due(item["frequency"], today)
-                    cursor.execute("""
-                        UPDATE recurring_items
-                        SET next_due = %s, last_posted_at = %s
-                        WHERE id = %s AND user_id = %s
-                    """, (new_next_due, today, item["id"], user_id))
+                    cursor.execute(""" UPDATE recurring_items SET next_due = %s, last_posted_at = %s WHERE id = %s AND user_id = %s """, (new_next_due, today, item["id"], user_id))
 
                     cursor.execute("RELEASE SAVEPOINT ap_item")
 
@@ -172,16 +144,7 @@ def render_tracker(user_id):
             f'<div style="padding:6px 0;font-size:0.9rem;color:#e0f0ea;border-bottom:1px solid rgba(255,255,255,0.08);line-height:1.5;">{msg}</div>'
             for msg in st.session_state[_ap_key]
         )
-        st.markdown(f"""
-        <div style="background:#0f2540;border:1px solid #0e7c5b;border-radius:12px;
-                    padding:14px 16px;margin-bottom:12px;">
-          <div style="font-size:0.82rem;font-weight:700;color:#a8d8c8;
-                      text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;">
-            ⚙️ Auto-posting results (today)
-          </div>
-          {msgs_html}
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f""" <div style="background:#0f2540;border:1px solid #0e7c5b;border-radius:12px; padding:14px 16px;margin-bottom:12px;"> <div style="font-size:0.82rem;font-weight:700;color:#a8d8c8; text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px;"> ⚙️ Auto-posting results (today) </div> {msgs_html} </div> """, unsafe_allow_html=True)
 
     # ── Load banks once for all tabs ──────────────────────────────────────────
     with get_db() as (conn, cursor):
@@ -227,12 +190,7 @@ def render_tracker(user_id):
                     if ri_name and ri_amt > 0:
                         bk_id = bank_map.get(ri_bank) if ri_bank != "— none —" else None
                         with get_db() as (conn, cursor):
-                            cursor.execute("""
-                                INSERT INTO recurring_items
-                                    (user_id, type, name, amount, frequency,
-                                     next_due, bank_id, auto_post)
-                                VALUES (%s,'income',%s,%s,%s,%s,%s,%s)
-                            """, (user_id, ri_name, int(ri_amt), ri_freq, ri_due,
+                            cursor.execute(""" INSERT INTO recurring_items (user_id, type, name, amount, frequency, next_due, bank_id, auto_post) VALUES (%s,'income',%s,%s,%s,%s,%s,%s) """, (user_id, ri_name, int(ri_amt), ri_freq, ri_due,
                                   bk_id, 1 if ri_auto else 0))
                         st.success(f"'{ri_name}' added.")
                         st.session_state.pop(_ap_key, None)  # reset so it re-checks
@@ -241,14 +199,7 @@ def render_tracker(user_id):
                         st.warning("Please enter a name and amount.")
 
         with get_db() as (conn, cursor):
-            cursor.execute("""
-                SELECT r.id, r.name, r.amount, r.frequency, r.next_due,
-                       r.auto_post, r.last_posted_at, b.bank_name
-                FROM recurring_items r
-                LEFT JOIN banks b ON r.bank_id = b.id
-                WHERE r.user_id=%s AND r.type='income'
-                ORDER BY r.next_due NULLS LAST
-            """, (user_id,))
+            cursor.execute(""" SELECT r.id, r.name, r.amount, r.frequency, r.next_due, r.auto_post, r.last_posted_at, b.bank_name FROM recurring_items r LEFT JOIN banks b ON r.bank_id = b.id WHERE r.user_id=%s AND r.type='income' ORDER BY r.next_due NULLS LAST """, (user_id,))
             rec_incomes = cursor.fetchall()
 
         if not rec_incomes:
@@ -333,12 +284,7 @@ def render_tracker(user_id):
                         bk_id = bank_map.get(re_bank) if re_bank != "— none —" else None
                         cat   = None if re_cat == "— select —" else re_cat
                         with get_db() as (conn, cursor):
-                            cursor.execute("""
-                                INSERT INTO recurring_items
-                                    (user_id, type, name, category, amount, frequency,
-                                     next_due, bank_id, auto_post, allow_overdraft)
-                                VALUES (%s,'expense',%s,%s,%s,%s,%s,%s,%s,%s)
-                            """, (user_id, re_name, cat, int(re_amt), re_freq, re_due,
+                            cursor.execute(""" INSERT INTO recurring_items (user_id, type, name, category, amount, frequency, next_due, bank_id, auto_post, allow_overdraft) VALUES (%s,'expense',%s,%s,%s,%s,%s,%s,%s,%s) """, (user_id, re_name, cat, int(re_amt), re_freq, re_due,
                                   bk_id, 1 if re_auto else 0, 1 if re_od else 0))
                         st.success(f"'{re_name}' added.")
                         st.session_state.pop(_ap_key, None)
@@ -347,14 +293,7 @@ def render_tracker(user_id):
                         st.warning("Please enter a name and amount.")
 
         with get_db() as (conn, cursor):
-            cursor.execute("""
-                SELECT r.id, r.name, r.category, r.amount, r.frequency, r.next_due,
-                       r.auto_post, r.allow_overdraft, r.last_posted_at, b.bank_name
-                FROM recurring_items r
-                LEFT JOIN banks b ON r.bank_id = b.id
-                WHERE r.user_id=%s AND r.type='expense'
-                ORDER BY r.next_due NULLS LAST
-            """, (user_id,))
+            cursor.execute(""" SELECT r.id, r.name, r.category, r.amount, r.frequency, r.next_due, r.auto_post, r.allow_overdraft, r.last_posted_at, b.bank_name FROM recurring_items r LEFT JOIN banks b ON r.bank_id = b.id WHERE r.user_id=%s AND r.type='expense' ORDER BY r.next_due NULLS LAST """, (user_id,))
             rec_expenses = cursor.fetchall()
 
         if not rec_expenses:
@@ -408,15 +347,7 @@ def render_tracker(user_id):
         st.caption("All recurring items due within the next 30 days.")
 
         with get_db() as (conn, cursor):
-            cursor.execute("""
-                SELECT r.id, r.name, r.type, r.category, r.amount, r.frequency,
-                       r.next_due, r.auto_post, b.bank_name
-                FROM recurring_items r
-                LEFT JOIN banks b ON r.bank_id = b.id
-                WHERE r.user_id = %s AND r.active = 1
-                  AND r.next_due IS NOT NULL
-                ORDER BY r.next_due
-            """, (user_id,))
+            cursor.execute(""" SELECT r.id, r.name, r.type, r.category, r.amount, r.frequency, r.next_due, r.auto_post, b.bank_name FROM recurring_items r LEFT JOIN banks b ON r.bank_id = b.id WHERE r.user_id = %s AND r.active = 1 AND r.next_due IS NOT NULL ORDER BY r.next_due """, (user_id,))
             all_items = cursor.fetchall()
 
         upcoming = [r for r in all_items if (r["next_due"] - today).days <= 30]
@@ -525,12 +456,7 @@ def render_tracker(user_id):
                     if d_name and d_principal > 0:
                         full_notes = f"[{d_cat}] {d_notes.strip()}".strip()
                         with get_db() as (conn, cursor):
-                            cursor.execute("""
-                                INSERT INTO debts
-                                    (user_id, name, type, principal, balance_remaining,
-                                     interest_rate, monthly_payment, due_date, counterparty, notes)
-                                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                            """, (user_id, d_name, d_type, int(d_principal), int(d_remaining),
+                            cursor.execute(""" INSERT INTO debts (user_id, name, type, principal, balance_remaining, interest_rate, monthly_payment, due_date, counterparty, notes) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) """, (user_id, d_name, d_type, int(d_principal), int(d_remaining),
                                   d_rate, int(d_monthly), d_due,
                                   d_party.strip() or None, full_notes or None))
                         st.success(f"'{d_name}' added.")
@@ -541,22 +467,13 @@ def render_tracker(user_id):
         # ── Load debts + payment history ──────────────────────────────────────
         import re as _re
         with get_db() as (conn, cursor):
-            cursor.execute("""
-                SELECT id, name, type, principal, balance_remaining, interest_rate,
-                       monthly_payment, due_date, counterparty, notes, status
-                FROM debts WHERE user_id=%s ORDER BY status, due_date NULLS LAST
-            """, (user_id,))
+            cursor.execute(""" SELECT id, name, type, principal, balance_remaining, interest_rate, monthly_payment, due_date, counterparty, notes, status FROM debts WHERE user_id=%s ORDER BY status, due_date NULLS LAST """, (user_id,))
             debts = cursor.fetchall()
 
             # Load all payment history in one query
             if debts:
                 debt_ids = [d["id"] for d in debts]
-                cursor.execute("""
-                    SELECT debt_id, amount, payment_date, note
-                    FROM debt_payments
-                    WHERE debt_id = ANY(%s)
-                    ORDER BY payment_date DESC, created_at DESC
-                """, (debt_ids,))
+                cursor.execute(""" SELECT debt_id, amount, payment_date, note FROM debt_payments WHERE debt_id = ANY(%s) ORDER BY payment_date DESC, created_at DESC """, (debt_ids,))
                 all_payments = cursor.fetchall()
             else:
                 all_payments = []
@@ -686,11 +603,7 @@ def render_tracker(user_id):
                             with get_db() as (conn, cursor):
                                 # Record final payment as payment history
                                 if balance > 0:
-                                    cursor.execute("""
-                                        INSERT INTO debt_payments
-                                            (debt_id, user_id, amount, payment_date, note)
-                                        VALUES (%s,%s,%s,%s,'Marked as fully paid')
-                                    """, (d["id"], user_id, balance, today))
+                                    cursor.execute(""" INSERT INTO debt_payments (debt_id, user_id, amount, payment_date, note) VALUES (%s,%s,%s,%s,'Marked as fully paid') """, (d["id"], user_id, balance, today))
                                 cursor.execute(
                                     "UPDATE debts SET status='paid', balance_remaining=0 "
                                     "WHERE id=%s AND user_id=%s", (d["id"], user_id)
@@ -717,11 +630,7 @@ def render_tracker(user_id):
                                     new_status  = "paid" if new_balance == 0 else "active"
                                     with get_db() as (conn, cursor):
                                         # Record in payment history
-                                        cursor.execute("""
-                                            INSERT INTO debt_payments
-                                                (debt_id, user_id, amount, payment_date, note)
-                                            VALUES (%s,%s,%s,%s,%s)
-                                        """, (d["id"], user_id, int(amt_paid), today,
+                                        cursor.execute(""" INSERT INTO debt_payments (debt_id, user_id, amount, payment_date, note) VALUES (%s,%s,%s,%s,%s) """, (d["id"], user_id, int(amt_paid), today,
                                               pay_note.strip() or None))
                                         # Update debt balance
                                         cursor.execute(
@@ -767,20 +676,11 @@ def render_tracker(user_id):
             three_months_ago = today.replace(day=1)
             for _ in range(2):
                 three_months_ago = (three_months_ago - timedelta(days=1)).replace(day=1)
-            cursor.execute("""
-                SELECT COALESCE(SUM(t.amount), 0) AS total
-                FROM transactions t JOIN banks b ON t.bank_id = b.id
-                WHERE b.user_id = %s AND t.type = 'debit'
-                  AND t.created_at >= %s AND t.created_at < %s
-            """, (user_id, three_months_ago, today.replace(day=1)))
+            cursor.execute(""" SELECT COALESCE(SUM(t.amount), 0) AS total FROM transactions t JOIN banks b ON t.bank_id = b.id WHERE b.user_id = %s AND t.type = 'debit' AND t.created_at >= %s AND t.created_at < %s """, (user_id, three_months_ago, today.replace(day=1)))
             three_mo_total = int(cursor.fetchone()["total"] or 0)
             actual_avg_monthly = three_mo_total // 3 if three_mo_total > 0 else 0
 
-            cursor.execute("""
-                SELECT COALESCE(SUM(t.amount), 0) AS total
-                FROM transactions t JOIN banks b ON t.bank_id = b.id
-                WHERE b.user_id = %s AND t.type = 'credit' AND t.created_at >= %s
-            """, (user_id, today.replace(day=1)))
+            cursor.execute(""" SELECT COALESCE(SUM(t.amount), 0) AS total FROM transactions t JOIN banks b ON t.bank_id = b.id WHERE b.user_id = %s AND t.type = 'credit' AND t.created_at >= %s """, (user_id, today.replace(day=1)))
             income_this_month = int(cursor.fetchone()["total"] or 0)
 
             # Check for a linked savings goal
@@ -795,13 +695,7 @@ def render_tracker(user_id):
 
             # Look for an existing "Emergency Fund" goal to auto-link
             if not linked_goal:
-                cursor.execute("""
-                    SELECT id, name, target_amount, current_amount, status
-                    FROM goals
-                    WHERE user_id=%s AND status='active'
-                      AND LOWER(name) LIKE '%%emergency%%'
-                    ORDER BY created_at LIMIT 1
-                """, (user_id,))
+                cursor.execute(""" SELECT id, name, target_amount, current_amount, status FROM goals WHERE user_id=%s AND status='active' AND LOWER(name) LIKE '%%emergency%%' ORDER BY created_at LIMIT 1 """, (user_id,))
                 linked_goal = cursor.fetchone()
                 # Auto-link it
                 if linked_goal and ef:
@@ -876,16 +770,7 @@ def render_tracker(user_id):
 
         if ef_saved_btn:
             with get_db() as (conn, cursor):
-                cursor.execute("""
-                    INSERT INTO emergency_fund_plan
-                        (user_id, target_months, monthly_expenses_estimate, current_saved, updated_at)
-                    VALUES (%s,%s,%s,%s,%s)
-                    ON CONFLICT (user_id) DO UPDATE SET
-                        target_months             = EXCLUDED.target_months,
-                        monthly_expenses_estimate = EXCLUDED.monthly_expenses_estimate,
-                        current_saved             = EXCLUDED.current_saved,
-                        updated_at                = EXCLUDED.updated_at
-                """, (user_id, ef_months, int(ef_monthly), int(ef_saved), today))
+                cursor.execute(""" INSERT INTO emergency_fund_plan (user_id, target_months, monthly_expenses_estimate, current_saved, updated_at) VALUES (%s,%s,%s,%s,%s) ON CONFLICT (user_id) DO UPDATE SET target_months = EXCLUDED.target_months, monthly_expenses_estimate = EXCLUDED.monthly_expenses_estimate, current_saved = EXCLUDED.current_saved, updated_at = EXCLUDED.updated_at """, (user_id, ef_months, int(ef_monthly), int(ef_saved), today))
             st.success("Plan saved.")
             st.rerun()
 
