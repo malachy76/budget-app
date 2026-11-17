@@ -6,6 +6,7 @@ import plotly.express as px
 from datetime import datetime, timedelta
 
 from db import get_db
+from utils import delete_expense, update_expense
 from utils import save_expense, apply_income_filters, apply_expense_filters, \
     render_filter_bar_income, render_filter_bar_expenses, \
     get_category_budgets, compute_daily_safe_to_spend, BUDGET_CATEGORIES, upsert_category_budget
@@ -35,18 +36,14 @@ def render_expenses(user_id, pages):
                 save_clicked   = save_col.form_submit_button("Save Changes")
                 cancel_clicked = cancel_col.form_submit_button("Cancel")
             if save_clicked:
-                diff = new_amount - exp_row["amount"]
-                with get_db() as (conn, cursor):
-                    cursor.execute("UPDATE banks SET balance = balance - %s WHERE id=%s", (diff, exp_row["bank_id"]))
-                    if exp_row["tx_id"]:
-                        cursor.execute("UPDATE transactions SET amount=%s, description=%s WHERE id=%s",
-                                       (new_amount, f"Expense: {new_name}", exp_row["tx_id"]))
-                    cursor.execute("UPDATE expenses SET name=%s, category=%s, amount=%s WHERE id=%s AND user_id=%s",
-                                   (new_name, new_category, new_amount, edit_id, user_id))
-                st.success("Expense updated!")
-                st.cache_data.clear()
-                st.session_state.edit_exp_id = None
-                st.rerun()
+                ok_upd, msg_upd = update_expense(user_id, edit_id, new_name, new_category, new_amount)
+                if ok_upd:
+                    st.success(msg_upd)
+                    st.cache_data.clear()
+                    st.session_state.edit_exp_id = None
+                    st.rerun()
+                else:
+                    st.error(msg_upd)
             if cancel_clicked:
                 st.session_state.edit_exp_id = None
                 st.rerun()
@@ -205,13 +202,13 @@ def render_expenses(user_id, pages):
                         c1, c2 = st.columns(2)
                         with c1:
                             if st.button("✓", key=f"confirm_yes_exp_{exp['id']}", help="Confirm delete", type="primary"):
-                                with get_db() as (conn, cursor):
-                                    cursor.execute("UPDATE banks SET balance = balance + %s WHERE id=%s", (exp["amount"], exp["bank_id"]))
-                                    if exp["tx_id"]:
-                                        cursor.execute("DELETE FROM transactions WHERE id=%s", (exp["tx_id"],))
-                                    cursor.execute("DELETE FROM expenses WHERE id=%s AND user_id=%s", (exp["id"], user_id))
+                                ok_del, res_del = delete_expense(user_id, exp["id"])
                                 st.session_state.confirm_delete.pop(del_key, None)
-                                st.toast(f"Deleted — ₦{exp['amount']:,} refunded to {exp['bank_name']}", icon="🗑️")
+                                if ok_del:
+                                    st.cache_data.clear()
+                                    st.toast(f"Deleted — ₦{exp['amount']:,} refunded to {exp['bank_name']}", icon="🗑️")
+                                else:
+                                    st.toast(res_del, icon="⚠️")
                                 st.rerun()
                         with c2:
                             if st.button("✗", key=f"confirm_no_exp_{exp['id']}", help="Cancel"):
