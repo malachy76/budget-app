@@ -106,6 +106,23 @@ def render_business_daily_report(user_id):
             st.caption(f"\u2022 {m}: {_n(v['total'])}")
     st.divider()
 
+    # ── 2b. Sales returns and refunds (Phase 5C) — only shown when there is something to show ──
+    if r["sales_returns_count"] or r["refunds_paid"] or r["debt_reduced_by_returns"]:
+        st.markdown("#### Sales returns and refunds")
+        g1, g2 = st.columns(2)
+        g1.metric("Gross sales", _n(r["gross_sales"]))
+        g2.metric("Goods returned", _n(r["sales_returns_value"]))
+        g3, g4 = st.columns(2)
+        g3.metric("Net sales", _n(r["net_sales"]))
+        g4.metric("Refunds paid out", _n(r["refunds_paid"]))
+        st.markdown(f"Customer debt reduced by returns (not a cash refund): **{_n(r['debt_reduced_by_returns'])}**")
+        st.markdown(f"Money received minus refunds: **{_n(r['net_cash_after_refunds'])}**")
+        for m, v in r["refunds_by_method"].items():
+            st.caption(f"\u2022 Refunded by {m}: {_n(v)}")
+        st.caption(f"{r['sales_returns_count']} return(s) recorded in this period. Gross profit below is "
+                   "adjusted for returns and refunds.")
+        st.divider()
+
     # ── 3. Realised revenue and gross profit ──
     st.markdown("#### Realised revenue and gross profit")
     st.caption("Counted only from money received. Recoveries of written-off debt are not included.")
