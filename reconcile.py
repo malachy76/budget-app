@@ -25,6 +25,7 @@ from contacts import normalize_phone
 from baddebt import active_write_off_sql, _treatment_total_sql, SOURCE_SALE, SOURCE_TREATMENT
 import customers
 import daily_report
+from returns import return_credit_sql
 
 _ZERO = Decimal("0")
 
@@ -101,6 +102,42 @@ def reconcile_business(business_id, owner_user_id):
                              "Every sale's status matches its amounts.",
                              "{n} sale(s) show a status that does not match their amounts."))
 
+        # ── Sales returns (Phase 5C) ───────────────────────────────────────
+        cur.execute(
+            "SELECT sr.id, sr.return_value, COALESCE(i.items_value, 0) AS items_value FROM sale_returns sr "
+            "LEFT JOIN (SELECT return_id, SUM(line_value) AS items_value FROM sale_return_items "
+            " WHERE business_id=%s GROUP BY return_id) i ON i.return_id = sr.id "
+            "WHERE sr.business_id=%s AND sr.return_value <> COALESCE(i.items_value, 0)", (business_id, business_id))
+        checks.append(_check("return_value_vs_items", "Each return's value equals its items", cur.fetchall(),
+                             "Every return's value equals the sum of its returned items.",
+                             "{n} return(s) have a value that does not match their items."))
+
+        cur.execute(
+            "SELECT si.id AS sale_item_id, si.quantity AS sold, r.returned FROM sale_items si "
+            "JOIN (SELECT sale_item_id, SUM(quantity) AS returned FROM sale_return_items "
+            " WHERE business_id=%s GROUP BY sale_item_id) r ON r.sale_item_id = si.id "
+            "WHERE si.business_id=%s AND r.returned > si.quantity", (business_id, business_id))
+        checks.append(_check("over_returned", "Nothing has been returned more than once over", cur.fetchall(),
+                             "No sale line has more returned than was sold.",
+                             "{n} sale line(s) have more returned than was sold."))
+
+        cur.execute(
+            "SELECT s.id, s.amount_paid, r.refunded FROM sales s "
+            "JOIN (SELECT sale_id, SUM(refund_amount) AS refunded FROM sale_returns "
+            " WHERE business_id=%s GROUP BY sale_id) r ON r.sale_id = s.id "
+            "WHERE s.business_id=%s AND r.refunded > s.amount_paid", (business_id, business_id))
+        checks.append(_check("refund_exceeds_paid", "No sale has been refunded more than was paid", cur.fetchall(),
+                             "No refund exceeds the money actually paid on its sale.",
+                             "{n} sale(s) were refunded more than the customer paid."))
+
+        cur.execute(
+            "SELECT s.id FROM sales s WHERE s.business_id=%s AND "
+            f"s.total_amount - s.amount_paid - {active_write_off_sql(SOURCE_SALE, 's')} - {return_credit_sql('s')} < 0",
+            b)
+        checks.append(_check("negative_balance", "No sale shows a negative amount owed", cur.fetchall(),
+                             "No sale has a negative balance after payments, returns and write-offs.",
+                             "{n} sale(s) show a negative balance."))
+
         # ── Treatments ─────────────────────────────────────────────────────
         cur.execute(
             "SELECT t.id, t.amount_paid, COALESCE(p.paid, 0) AS payments_total FROM treatments t "
@@ -128,8 +165,12 @@ def reconcile_business(business_id, owner_user_id):
             "UNION ALL SELECT 'treatment.customer', t.id FROM treatments t JOIN customers c ON c.id = t.customer_id "
             " WHERE t.business_id=%s AND c.business_id <> t.business_id "
             "UNION ALL SELECT 'treatment_item.product', ti.id FROM treatment_items ti JOIN products p ON p.id = ti.product_id "
-            " WHERE ti.business_id=%s AND p.business_id <> ti.business_id",
-            (business_id,) * 4)
+            " WHERE ti.business_id=%s AND p.business_id <> ti.business_id "
+            "UNION ALL SELECT 'sale_return.sale', sr.id FROM sale_returns sr JOIN sales s ON s.id = sr.sale_id "
+            " WHERE sr.business_id=%s AND s.business_id <> sr.business_id "
+            "UNION ALL SELECT 'sale_return_item.product', i.id FROM sale_return_items i JOIN products p ON p.id = i.product_id "
+            " WHERE i.business_id=%s AND p.business_id <> i.business_id",
+            (business_id,) * 6)
         checks.append(_check("cross_business", "No record points at another business's data", cur.fetchall(),
                              "No sale, treatment or item refers to another business's customer or product.",
                              "{n} record(s) refer to another business's customer or product."))
@@ -140,7 +181,8 @@ def reconcile_business(business_id, owner_user_id):
             " COALESCE(SUM(GREATEST(x.c, 0)) FILTER (WHERE x.customer_id IS NULL), 0) AS unlinked, "
             " COALESCE(SUM(GREATEST(x.c, 0)) FILTER (WHERE x.customer_id IS NOT NULL), 0) AS linked "
             "FROM (SELECT s.customer_id, "
-            f" s.total_amount - s.amount_paid - {active_write_off_sql(SOURCE_SALE, 's')} AS c "
+            f" s.total_amount - s.amount_paid - {active_write_off_sql(SOURCE_SALE, 's')} "
+            f" - {return_credit_sql('s')} AS c "
             " FROM sales s WHERE s.business_id=%s) x", b)
         raw_sale = cur.fetchone()
         cur.execute(
@@ -235,6 +277,6 @@ def reconcile_business(business_id, owner_user_id):
         "limitations": [
             "Records written before Phase 5A-1 have no cost snapshot; their profit is reported as unknown, never invented.",
             "Rows older than the Phase 5B-3 database rules were not re-validated or changed; this check reports any that disagree.",
-            "Sales are not voided or returned in this version \u2014 only payments can be reversed.",
+            "A recorded return cannot be undone; record a new sale if goods are taken back. Returned goods re-enter stock at the current average cost.",
         ],
-    }
+}
