@@ -38,6 +38,7 @@ import psycopg2.errors
 from db import get_db
 from business import get_business
 from sales import PAYMENT_METHODS
+from returns import return_credit_sql
 
 BUSINESS_TZ = "Africa/Lagos"
 
@@ -152,7 +153,7 @@ def _base_rows_sql(source_type):
         return (
             "SELECT 'sale' AS source_type, s.id AS tx_id, s.customer_id, "
             " ('Sale #' || s.id) AS label, s.created_at AS tx_created_at, "
-            " s.total_amount AS total, s.amount_paid AS paid, "
+            f" (s.total_amount - {return_credit_sql('s')}) AS total, s.amount_paid AS paid, "
             f" {active_write_off_sql(SOURCE_SALE, 's')} AS written_off, "
             f" {_recovered_sql(SOURCE_SALE, 's')} AS recovered "
             "FROM sales s WHERE s.business_id = %s"
@@ -182,8 +183,8 @@ def _snapshot(cursor, source_type, tx_id, business_id, lock=False):
     suffix = " FOR UPDATE" if lock else ""
     if source_type == SOURCE_SALE:
         cursor.execute(
-            "SELECT id, customer_id, total_amount AS total, amount_paid AS paid, "
-            "created_at FROM sales WHERE id=%s AND business_id=%s" + suffix,
+            f"SELECT id, customer_id, (total_amount - {return_credit_sql('sales')}) AS total, "
+            "amount_paid AS paid, created_at FROM sales WHERE id=%s AND business_id=%s" + suffix,
             (tx_id, business_id),
         )
         row = cursor.fetchone()
@@ -654,5 +655,16 @@ def get_transaction_history(source_type, transaction_id, business_id, owner_user
                            "detail": f"via {r['payment_method']}"
                                      + (f" \u2014 {r['note']}" if r["note"] else ""),
                            "by": r["username"]})
+        if source_type == SOURCE_SALE:
+            # Phase 5C: returns on this sale are part of its history (never hidden).
+            cursor.execute(
+                "SELECT sr.id, sr.return_value, sr.debt_reduction, sr.refund_amount, sr.reason, "
+                "sr.created_at, u.username FROM sale_returns sr LEFT JOIN users u ON u.id = sr.created_by "
+                "WHERE sr.sale_id=%s AND sr.business_id=%s", (transaction_id, business_id))
+            for r in cursor.fetchall():
+                events.append({"kind": "Sale return", "amount": r["return_value"], "at": _aware(r["created_at"]),
+                               "detail": f"Return #{r['id']} \u2014 debt reduced \u20A6{r['debt_reduction']:,.2f}, "
+                                         f"refunded \u20A6{r['refund_amount']:,.2f} \u2014 {r['reason']}",
+                               "by": r["username"]})
     events.sort(key=lambda e: e["at"], reverse=True)
     return snap, events
