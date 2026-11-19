@@ -61,8 +61,13 @@ def get_today_sales_summary(business_id, owner_user_id):
             " COALESCE((SELECT SUM(total_amount) FROM sales "
             " WHERE business_id=%s AND created_at::date = CURRENT_DATE), 0) AS sales_today, "
             " COALESCE((SELECT SUM(amount) FROM payments "
-            " WHERE business_id=%s AND created_at::date = CURRENT_DATE), 0) AS payments_today",
-            (business_id, business_id),
+            " WHERE business_id=%s AND created_at::date = CURRENT_DATE), 0) AS payments_today, "
+            # Phase 5C: value of goods returned today, and money actually refunded today
+            " COALESCE((SELECT SUM(return_value) FROM sale_returns "
+            " WHERE business_id=%s AND created_at::date = CURRENT_DATE), 0) AS returns_today, "
+            " COALESCE((SELECT SUM(refund_amount) FROM sale_returns "
+            " WHERE business_id=%s AND created_at::date = CURRENT_DATE), 0) AS refunds_today",
+            (business_id, business_id, business_id, business_id),
         )
         return cursor.fetchone()
 
@@ -350,12 +355,27 @@ def get_stock_sales_profit_summary(business_id, owner_user_id, start_date, end_d
         )
         row = cursor.fetchone()
 
-        net_revenue = row["net_revenue"]
-        cogs = row["cogs"]
+        # Phase 5C: goods RETURNED in the period (by return date) come off revenue and cost.
+        # Each returned line carries the original sale line's cost snapshot, so the cost
+        # reversed is exactly the cost that was charged; unknown cost stays unknown.
+        cursor.execute(
+            "SELECT COALESCE(SUM(sri.line_value), 0) AS returned_value, "
+            f" COALESCE(SUM(sri.line_value) FILTER (WHERE {known_cost_sql('sri')}), 0) AS returned_known_value, "
+            f" COALESCE(SUM(sri.quantity * sri.unit_cost) FILTER (WHERE {known_cost_sql('sri')}), 0) AS returned_cogs, "
+            f" COUNT(*) FILTER (WHERE NOT {known_cost_sql('sri')}) AS returned_lines_missing_cost "
+            "FROM sale_return_items sri JOIN sale_returns sr ON sr.id = sri.return_id "
+            "WHERE sr.business_id=%s AND sr.created_at::date BETWEEN %s AND %s",
+            (business_id, start_date, end_date),
+        )
+        ret = cursor.fetchone()
+
+        gross_sales = row["net_revenue"]
+        net_revenue = gross_sales - ret["returned_value"]
+        cogs = row["cogs"] - ret["returned_cogs"]
         # Gross profit/margin computed only from the portion of revenue
         # whose cost is actually known — mixing in unknown-cost revenue
         # at an assumed cost of zero would inflate profit.
-        known_revenue = row["revenue_with_known_cost"]
+        known_revenue = row["revenue_with_known_cost"] - ret["returned_known_value"]
         gross_profit = known_revenue - cogs
         gross_margin_pct = (
             (gross_profit / known_revenue * 100) if known_revenue > 0 else None
@@ -363,6 +383,8 @@ def get_stock_sales_profit_summary(business_id, owner_user_id, start_date, end_d
 
         return {
             "sales_count": row["sales_count"],
+            "gross_sales": gross_sales,
+            "returns_value": ret["returned_value"],
             "net_revenue": net_revenue,
             "cogs": cogs,
             "gross_profit": gross_profit,
