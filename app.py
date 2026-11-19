@@ -308,7 +308,7 @@ with st.sidebar:
         # Business Mode — Phase 2 adds Products/Inventory alongside the
         # Phase 1 business-home screen. More will be added here in later
         # phases without touching the Personal branch above.
-        business_pages = ["Business Home", "Products / Inventory", "Sales / Point of Sale", "Customers / Credit", "End-of-Day Summary", "Bad Debts"]
+        business_pages = ["Business Home", "Products / Inventory", "Sales / Point of Sale", "Sales Returns", "Customers / Credit", "End-of-Day Summary", "Bad Debts"]
 
         # Phase 5B-1: Treatment Management only appears when this business
         # has it switched on. Fails closed: any error => hidden.
@@ -495,6 +495,9 @@ if st.session_state.app_mode == "business":
     elif current_page == "Sales / Point of Sale":
         from _pages.business_sales import render_business_sales
         render_business_sales(user_id)
+    elif current_page == "Sales Returns":
+        from _pages.business_returns import render_business_returns
+        render_business_returns(user_id)
     elif current_page == "Customers / Credit":
         from _pages.business_customers import render_business_customers
         render_business_customers(user_id)
