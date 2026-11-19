@@ -7,6 +7,7 @@
 import streamlit as st
 from db import get_db
 import schema_5b3
+import schema_5c
 
 
 def _col_type(cursor, table, column):
@@ -203,6 +204,14 @@ def create_tables():
         # (enforced for new writes only — no existing row is scanned, changed
         # or rejected). Nothing is dropped, deleted, reset or rewritten.
         for _stmt in schema_5b3.statements():
+            cursor.execute(_stmt)
+
+        # ── Phase 5C: sales returns & refunds ──────────────────────────────────
+        # Two NEW tables + indexes (see schema_5c.py and
+        # migrations/phase_5c_sales_returns.sql). Additive and repeatable;
+        # nothing existing is altered, and until a return is recorded every
+        # figure in the app is unchanged.
+        for _stmt in schema_5c.statements():
             cursor.execute(_stmt)
 
         # Partial unique index: allows many NULLs (existing users without a
