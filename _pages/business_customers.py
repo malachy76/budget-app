@@ -205,9 +205,17 @@ def _render_customer_detail(customer_id, business_id, user_id):
             m3.metric("Outstanding", f"\u20A6{sale['outstanding']:,.2f}")
             if sale["written_off"] > 0 and sale["outstanding"] <= 0:
                 sale_status = "Written Off"
+            elif sale["returned_value"] > 0 and sale["outstanding"] <= 0:
+                sale_status = "Settled (after a return)"
             else:
                 sale_status = _STATUS_LABEL.get(sale["payment_status"], sale["payment_status"])
             st.caption(f"Status: {sale_status}")
+            if sale["returned_value"] > 0:
+                st.caption(
+                    f"\u21A9\uFE0F Goods returned: \u20A6{sale['returned_value']:,.2f}"
+                    + (f" \u00b7 refunded to customer: \u20A6{sale['refunded']:,.2f}" if sale["refunded"] > 0 else "")
+                    + " \u2014 see Sales Returns"
+                )
             if sale["written_off"] > 0:
                 st.caption(f"Written off as bad debt: \u20A6{sale['written_off']:,.2f}")
 
