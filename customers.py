@@ -31,6 +31,7 @@ from sales import PAYMENT_METHODS
 # fragment lives in baddebt.py so every balance in the app uses the identical
 # definition of "active write-off" (not reversed).
 from baddebt import active_write_off_sql, SOURCE_SALE, SOURCE_TREATMENT
+from returns import return_credit_sql
 
 
 class CreditError(Exception):
@@ -115,7 +116,7 @@ def get_customers_with_balance(business_id, owner_user_id):
             " COUNT(*) FILTER (WHERE collectible > 0) AS unpaid_count, "
             " MAX(created_at) AS last_at "
             "FROM (SELECT s.customer_id, s.created_at, "
-            f" s.total_amount - s.amount_paid - {active_write_off_sql(SOURCE_SALE, 's')} AS collectible "
+            f" s.total_amount - s.amount_paid - {active_write_off_sql(SOURCE_SALE, 's')} - {return_credit_sql('s')} AS collectible "
             " FROM sales s WHERE s.business_id=%s) x GROUP BY customer_id",
             (business_id,),
         )
@@ -183,7 +184,11 @@ def get_customer_sales(customer_id, business_id, owner_user_id):
         cursor.execute(
             "SELECT s.*, "
             f" {active_write_off_sql(SOURCE_SALE, 's')} AS written_off, "
-            f" (s.total_amount - s.amount_paid - {active_write_off_sql(SOURCE_SALE, 's')}) AS outstanding "
+            f" (s.total_amount - s.amount_paid - {active_write_off_sql(SOURCE_SALE, 's')} - {return_credit_sql('s')}) AS outstanding, "
+            " COALESCE((SELECT SUM(sr.return_value) FROM sale_returns sr WHERE sr.business_id = s.business_id "
+            " AND sr.sale_id = s.id), 0) AS returned_value, "
+            " COALESCE((SELECT SUM(sr.refund_amount) FROM sale_returns sr WHERE sr.business_id = s.business_id "
+            " AND sr.sale_id = s.id), 0) AS refunded "
             "FROM sales s WHERE s.customer_id=%s AND s.business_id=%s "
             "ORDER BY s.created_at DESC",
             (customer_id, business_id),
@@ -294,13 +299,20 @@ def record_payment(sale_id, business_id, owner_user_id, created_by_user_id, amou
                 (business_id, sale_id),
             )
             written_off = cursor.fetchone()["wo"]
-            outstanding = sale["total_amount"] - sale["amount_paid"] - written_off
+            # Phase 5C: debt already cleared by sales returns is not collectible either.
+            cursor.execute(
+                "SELECT COALESCE(SUM(debt_reduction), 0) AS d FROM sale_returns "
+                "WHERE business_id=%s AND sale_id=%s", (business_id, sale_id))
+            return_credit = cursor.fetchone()["d"]
+            outstanding = sale["total_amount"] - sale["amount_paid"] - written_off - return_credit
             if outstanding <= 0:
                 if written_off > 0:
                     raise CreditError(
                         "Nothing is left to collect on this sale — the balance was written off. "
                         "Use Bad Debts \u2192 Record Recovery if the customer is paying it back."
                     )
+                if return_credit > 0:
+                    raise CreditError("Nothing is left to collect on this sale \u2014 the balance was cleared by a return.")
                 raise CreditError("This sale is already fully paid.")
             if amount > outstanding:
                 raise CreditError(
@@ -392,7 +404,17 @@ def reverse_payment(payment_id, business_id, owner_user_id, created_by_user_id, 
                 (business_id, pay["sale_id"]),
             )
             written_off = cursor.fetchone()["wo"]
-            owed_after = sale["total_amount"] - new_paid - written_off
+            # Phase 5C: money already refunded to the customer was paid out of this payment's
+            # pool, and debt already cleared by returns is not owed — both must be respected.
+            cursor.execute(
+                "SELECT COALESCE(SUM(debt_reduction), 0) AS d, COALESCE(SUM(refund_amount), 0) AS r "
+                "FROM sale_returns WHERE business_id=%s AND sale_id=%s", (business_id, pay["sale_id"]))
+            rr = cursor.fetchone()
+            if new_paid < rr["r"]:
+                raise CreditError(
+                    "This payment can't be reversed: part of the money paid has already been "
+                    "refunded to the customer through a sales return.")
+            owed_after = sale["total_amount"] - new_paid - written_off - rr["d"]
             if owed_after > 0:
                 if sale["customer_id"] is None:
                     raise CreditError(
